@@ -1,0 +1,3 @@
+BasedOnStyle: Microsoft
+PointerAlignment: Left
+InsertBraces: true

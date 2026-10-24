@@ -1,0 +1,221 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BlueV</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1c2024;--mut:#6b7480;--line:#e3e6ea;--acc:#2563eb;--ok:#15803d;--bad:#b91c1c}
+@media (prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1d2026;--fg:#e8eaed;--mut:#9aa3ad;--line:#2c313a;--acc:#6ea0ff;--ok:#4ade80;--bad:#f87171}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grow{flex:1;min-width:0}
+.mut{color:var(--mut);font-size:13px}
+.badge{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;border:1px solid var(--line)}
+.badge.streaming{color:var(--ok);border-color:var(--ok)}
+.badge.connecting,.badge.scanning{color:var(--acc);border-color:var(--acc)}
+input[type=radio]{appearance:none;-webkit-appearance:none;width:16px;height:16px;margin:0;border:2px solid var(--mut);border-radius:50%;flex:none;cursor:pointer}
+input[type=radio]:checked{border-color:var(--fg);background:radial-gradient(circle,var(--fg) 0 42%,transparent 46%)}
+input[type=radio]:disabled{cursor:default}
+input[type=radio]:disabled:not(:checked){opacity:.45}
+button{font:inherit;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+button:disabled{opacity:.45;cursor:default}
+.warn{margin-top:10px;padding:10px 12px;border:1px solid var(--bad);border-left-width:5px;border-radius:8px}
+.warn b{color:var(--bad)}
+.warn label{display:flex;gap:8px;align-items:flex-start;margin-top:8px;cursor:pointer}
+.dev{padding:10px 0;border-top:1px solid var(--line)}
+.dev:first-child{border-top:0}
+.name{font-weight:600}
+pre[hidden]{display:none}
+pre{margin:0;max-height:300px;overflow:auto;font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;word-break:break-all}
+</style>
+</head>
+<body>
+<main>
+<h1>BlueV <span class="mut" style="font-weight:400;font-size:14px">Bluetooth audio for PS5</span></h1>
+
+<div class="card" id="radioCard">
+  <div class="row" style="margin-bottom:6px">
+    <b class="grow">Bluetooth adapter</b>
+    <span id="radioBadge" class="badge">Radio off</span>
+  </div>
+  <label class="row"><input type="radio" name="ad" value="internal" checked onchange="adapterChanged(true)">
+    <span class="grow">Internal (the console's own chip)</span></label>
+  <label class="row"><input type="radio" name="ad" value="external" onchange="adapterChanged(true)">
+    <span class="grow">External (USB adapter)</span>
+    <select id="extDev" disabled></select>
+    <button id="btnFind" onclick="findAdapters()" disabled>Find</button></label>
+  <div class="row" style="margin-top:6px">
+    <button id="btnStart" class="pri" onclick="startRadio()">Start</button>
+    <button id="btnRadioOff" onclick="post('radio/off')" disabled>Turn off</button>
+    <span id="radioNote" class="grow mut"></span>
+  </div>
+  <div id="internalNote" class="warn">
+    <b>Before you start the internal Bluetooth</b>
+    <div class="mut" style="margin-top:4px">The console's own Bluetooth chip is shared with your gamepad. While BlueV is running, a gamepad that is switched off and on again, or reconnects, can end up connected but without input until the console is restarted.</div>
+    <ul class="mut" style="margin:6px 0 0 18px;padding:0">
+      <li>Switch the gamepad on <b style="color:inherit">now</b>, before pressing Start.</li>
+      <li>Do not switch it off or on, and do not unplug or plug its cable, while the radio is on.</li>
+      <li>Nothing touches the Bluetooth chip until you press Start. Turning the radio off does not undo the problem.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <span id="state" class="badge">...</span>
+    <span id="msg" class="grow mut"></span>
+    <button id="btnDisc" onclick="post('disconnect')" disabled>Disconnect</button>
+    <button id="btnStop" onclick="stopPayload()">Stop BlueV</button>
+  </div>
+  <div id="stream" class="mut" style="margin-top:8px"></div>
+</div>
+
+<div class="card">
+  <div class="row" style="margin-bottom:6px">
+    <b class="grow">Devices</b>
+    <button id="btnScan" class="pri" onclick="post('scan')">Scan</button>
+  </div>
+  <div id="devs" class="mut">No devices yet. Put the device in pairing mode and press Scan.</div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <b class="grow">Log</b>
+    <button id="btnLog" onclick="toggleLog()">Show log</button>
+  </div>
+  <pre id="log" hidden style="margin-top:10px"></pre>
+</div>
+</main>
+<script>
+var busy=false, since=0, state='idle', stopped=false, radioOn=false, listedOnce=false;
+function $(i){return document.getElementById(i)}
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function post(cmd,addr){
+  var u='/api/'+cmd+(addr?'?addr='+encodeURIComponent(addr):'');
+  fetch(u,{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+    if(!j.ok)$('msg').textContent='Error: '+j.message;
+    refresh();
+  }).catch(function(){$('msg').textContent='Request failed'});
+}
+function logShown(){return !$('log').hidden}
+function toggleLog(){
+  var p=$('log'),show=p.hidden;
+  p.hidden=!show;
+  $('btnLog').textContent=show?'Hide log':'Show log';
+  if(show)p.scrollTop=p.scrollHeight;
+  try{localStorage.setItem('bluev-log',show?'1':'0')}catch(e){}
+}
+function adapterChanged(user){
+  var ext=document.querySelector('input[name=ad]:checked').value==='external';
+  $('extDev').disabled=!ext||radioOn; $('btnFind').disabled=!ext||radioOn;
+  $('internalNote').style.display=ext?'none':'';
+  if(user&&ext&&!$('extDev').options.length)findAdapters();
+}
+var VENDORS={0x0a12:'CSR',0x0bda:'Realtek',0x8087:'Intel',0x0cf3:'Qualcomm Atheros',0x0489:'Foxconn',
+  0x04ca:'Lite-On',0x13d3:'IMC Networks',0x0a5c:'Broadcom',0x0b05:'ASUS',0x2357:'TP-Link',0x0930:'Toshiba',
+  0x1286:'Marvell',0x04e8:'Samsung',0x0e8d:'MediaTek',0x1131:'Integrated System Solution',0x0a8d:'Motorola'};
+function real(t){return t&&!/^(product|vendor) 0x/.test(t)}
+function hex4(n){return ('000'+n.toString(16)).slice(-4)}
+// a name a person can read: what the adapter says about itself, else its maker
+function adapterName(a){
+  if(real(a.product))return a.product;
+  var maker=real(a.vendor)?a.vendor:(VENDORS[a.vid]||'Unknown maker');
+  return maker+' Bluetooth adapter';
+}
+function findAdapters(){
+  fetch('/api/adapters').then(function(r){return r.json()}).then(function(j){
+    // Bluetooth class (e0/01/01) or vendor specific; gamepads, drives and so on stay out
+    var list=j.external.filter(function(a){return a.class===224||a.class===255});
+    var sel=$('extDev'),seen={};
+    sel.innerHTML=list.map(function(a){
+      var n=adapterName(a);
+      seen[n]=(seen[n]||0)+1;
+      return '<option value="'+esc(a.device)+'">'+esc(n+(seen[n]>1?' #'+seen[n]:'')+' ('+hex4(a.vid)+':'+hex4(a.pid)+', '+a.device+')')+'</option>';
+    }).join('');
+    $('radioNote').textContent=list.length?'':'No Bluetooth adapter found in the USB ports.';
+  }).catch(function(){$('radioNote').textContent='Request failed'});
+}
+function startRadio(){
+  var ext=document.querySelector('input[name=ad]:checked').value==='external';
+  if(ext&&!$('extDev').value){$('radioNote').textContent='Choose a USB adapter first.';return}
+  var u='/api/radio/on?adapter='+(ext?'external&dev='+encodeURIComponent($('extDev').value):'internal');
+  fetch(u,{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+    $('radioNote').textContent=j.ok?'':'Error: '+j.message;
+    refresh();
+  }).catch(function(){$('radioNote').textContent='Request failed'});
+}
+function stopPayload(){
+  if(!confirm('Stop BlueV? The Bluetooth controller is released. Send the payload again or use the launcher to start it.'))return;
+  fetch('/api/quit',{method:'POST'}).catch(function(){});
+  stopped=true;
+  $('state').textContent='Stopped';
+  $('state').className='badge';
+  $('msg').textContent='BlueV has been stopped.';
+  $('btnDisc').disabled=true;$('btnScan').disabled=true;$('btnStop').disabled=true;$('btnStart').disabled=true;$('btnRadioOff').disabled=true;
+}
+function refresh(){
+  if(stopped)return;
+  fetch('/api/status').then(function(r){return r.json()}).then(function(s){
+    state=s.state;
+    var b=$('state'); b.textContent=({idle:'Idle',scanning:'Scanning',connecting:'Connecting',streaming:'Streaming'})[s.state]||s.state;
+    b.className='badge '+s.state;
+    $('msg').textContent=s.message;
+    radioOn=!!(s.radio&&s.radio.on);
+    if(radioOn){   // show which adapter is in use, not the last thing that was clicked
+      var ext_on=s.radio.adapter==='external';
+      document.querySelector('input[name=ad][value='+(ext_on?'external':'internal')+']').checked=true;
+      if(ext_on&&s.radio.device){
+        var sel=$('extDev'),found=false;
+        for(var o=0;o<sel.options.length;o++)if(sel.options[o].value===s.radio.device){sel.selectedIndex=o;found=true}
+        if(!found){var opt=document.createElement('option');opt.value=s.radio.device;opt.textContent='USB Bluetooth adapter';sel.appendChild(opt);sel.value=s.radio.device;if(!listedOnce){listedOnce=true;findAdapters()}}
+      }
+    }
+    $('radioBadge').textContent=radioOn?(s.radio.adapter==='external'?'External on':'Internal on'):'Radio off';
+    $('radioBadge').className='badge '+(radioOn?'streaming':'');
+    var ext=document.querySelector('input[name=ad]:checked').value==='external';
+    $('btnStart').disabled=radioOn||s.state!=='idle';
+    $('btnRadioOff').disabled=!radioOn||s.state!=='idle';
+    document.querySelectorAll('input[name=ad]').forEach(function(e){e.disabled=radioOn});
+    adapterChanged();
+    $('btnDisc').disabled=!radioOn||(s.state==='idle'||s.state==='scanning');
+    $('btnScan').disabled=!radioOn||(s.state!=='idle');
+    $('stream').textContent=(s.state==='streaming')
+      ? (s.peer.name||s.peer.addr)+' · '+s.stream.rate+' Hz · '+s.stream.pps+' packets/s · queue '+s.stream.queue_ms+' ms'
+      : '';
+  }).catch(function(){$('state').textContent='no connection'});
+  fetch('/api/devices').then(function(r){return r.json()}).then(drawDevs).catch(function(){});
+  fetch('/api/log?since='+since).then(function(r){return r.json()}).then(function(j){
+    since=j.next;
+    if(j.text){var p=$('log');var end=p.hidden||p.scrollTop+p.clientHeight>=p.scrollHeight-8;p.textContent+=j.text;if(end)p.scrollTop=p.scrollHeight}
+  }).catch(function(){});
+}
+function drawDevs(list){
+  var el=$('devs');
+  if(!list.length){return}
+  var idle=(state==='idle')&&radioOn;
+  el.className='';
+  el.innerHTML=list.map(function(d){
+    var tags=[];
+    if(d.connected)tags.push('connected');
+    if(d.bonded)tags.push('paired');
+    if(d.other)tags.push('may not be an audio device');
+    var sig=d.rssi>-128?(' · '+d.rssi+' dBm'):'';
+    return '<div class="dev row"><div class="grow"><div class="name">'+esc(d.name||'(unnamed)')+'</div>'+
+      '<div class="mut">'+esc(d.addr)+sig+(tags.length?' · '+tags.join(', '):'')+'</div></div>'+
+      '<button class="pri" '+(idle?'':'disabled')+' onclick="post(\'connect\',\''+d.addr+'\')">Connect</button>'+
+      (d.bonded?'<button '+(idle?'':'disabled')+' onclick="if(confirm(\'Forget this pairing?\'))post(\'forget\',\''+d.addr+'\')">Forget</button>':'')+
+      '</div>';
+  }).join('');
+}
+try{if(localStorage.getItem('bluev-log')==='1')toggleLog()}catch(e){}
+adapterChanged(); refresh(); setInterval(refresh,1500);
+</script>
+</body>
+</html>

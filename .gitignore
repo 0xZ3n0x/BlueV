@@ -1,0 +1,11 @@
+# build output
+/build/
+*.o
+*.d
+
+# editor / OS
+*.swp
+*~
+.DS_Store
+tools/*/*.elf
+/build-host/
