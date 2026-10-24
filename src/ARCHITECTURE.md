@@ -759,7 +759,6 @@ Security
 Console and hardware
 
 - Run the transport and USB directory after the move to the SDK's USB structures on the console (external adapter first). Nothing in them is tested on the PC.
-- The number we use to close each transfer is `USB_FS_UNINIT` in the SDK, not `USB_FS_CLOSE`; it works, find out what the console's driver does with it.
 - Other adapters: Broadcom-family sticks with the vendor-specific class (`ff/01/01`) are untested; the descriptor lookup only accepts `e0/01/01`.
 - Longer runs than 21 minutes, other speakers, and the capture running together with Remote Play.
 - The Sony WH-CH720N does not work on the internal chip (it works on a USB adapter); the Creative speaker does. Find out why.
