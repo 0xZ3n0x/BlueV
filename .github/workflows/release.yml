@@ -44,7 +44,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # GitHub's generated notes name the authors and add a "New
+          # Contributors" section; keep only the list of changes.
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${GITHUB_REF_NAME}" --jq .body \
+            | sed -E 's/ by @[A-Za-z0-9-]+( in |$)/\1/' \
+            | awk '/^## New Contributors/ {skip=1; next} /^\*\*Full Changelog/ {skip=0} !skip' \
+            > release-notes.md
           gh release create "${GITHUB_REF_NAME}" \
             build/release/bluev.elf build/release/bluev.elf.sha256 \
             --title "BlueV ${GITHUB_REF_NAME#v}" \
-            --generate-notes
+            --notes-file release-notes.md
