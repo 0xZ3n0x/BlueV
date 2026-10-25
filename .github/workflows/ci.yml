@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: Host tests (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [plain, address, thread]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang cmake ninja-build
+      - name: Configure
+        run: |
+          SAN=${{ matrix.mode }}
+          [ "$SAN" = plain ] && SAN=""
+          cmake -S . -B build-host -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang \
+            -DBLUEV_SANITIZE="$SAN"
+      - name: Build
+        run: cmake --build build-host
+      - name: Test
+        run: ctest --test-dir build-host --output-on-failure
+
+  format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check formatting
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format
+          git ls-files 'src/*.cpp' 'src/*.h' 'tests/*.cpp' 'tests/*.h' \
+            | grep -v '^src/compat/' \
+            | xargs clang-format --dry-run --Werror
+
+  ps5-build:
+    name: Console build (ps5-payload-sdk)
+    runs-on: ubuntu-latest
+    env:
+      # Official SDK release, pinned so builds are reproducible.
+      SDK_VERSION: v0.43
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-18 lld-18 llvm-18 unzip python3
+      - name: Download ps5-payload-sdk
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/ps5-payload-sdk.zip" \
+            "https://github.com/ps5-payload-dev/sdk/releases/download/${SDK_VERSION}/ps5-payload-sdk.zip"
+          unzip -q "$RUNNER_TEMP/ps5-payload-sdk.zip" -d "$RUNNER_TEMP"
+          echo "TOOLCHAIN=$RUNNER_TEMP/ps5-payload-sdk/bin" >> "$GITHUB_ENV"
+          # the SDK wrappers pick the highest llvm-config they find; pin it to
+          # the version installed above (which has clang and lld)
+          # (an absolute path: the wrapper resolves it with readlink -f)
+          echo "LLVM_CONFIG=$(command -v llvm-config-18)" >> "$GITHUB_ENV"
+      - name: make release
+        run: make release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bluev
+          path: |
+            build/release/bluev.elf
+            build/release/bluev.elf.sha256
+          if-no-files-found: error

@@ -20,7 +20,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # a directory prefix, up to and including its last slash
 PATTERNS = [
-    rb"/tmp/[A-Za-z0-9_.-]+/tmp\.[A-Za-z0-9]+/",
+    rb"/tmp/(?:[A-Za-z0-9_.-]+/)?tmp\.[A-Za-z0-9]+/",
     rb"/home/[^/\0\s]+/",
     rb"/Users/[^/\0\s]+/",
 ]
