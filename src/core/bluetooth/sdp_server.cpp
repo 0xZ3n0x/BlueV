@@ -147,16 +147,30 @@ int patternMatches(const std::uint8_t* pat, std::uint32_t len, int* consumed)
             uuid = static_cast<std::uint32_t>(e[ehdr]) << 8 | e[ehdr + 1];
         }
 
-        if (uuid == kPublicBrowseRoot)
-        {
-            hit = 1;
-        }
+        bool ours = uuid == kPublicBrowseRoot;
+
         for (std::uint32_t known : kA2dpUuids)
         {
             if (uuid == known)
             {
-                hit = 1;
+                ours = true;
             }
+        }
+        if (ours)
+        {
+            hit = 1;
+        }
+        if (elen == 0x10)
+        {
+            const std::uint8_t* u = e + ehdr;
+
+            logLine("sdp: searched uuid %02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x (%s)",
+                    u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11], u[12], u[13], u[14],
+                    u[15], ours ? "ours" : "not ours");
+        }
+        else
+        {
+            logLine("sdp: searched uuid %#06x (%s)", static_cast<unsigned>(uuid), ours ? "ours" : "not ours");
         }
 
         off += elen + ehdr;
