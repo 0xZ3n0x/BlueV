@@ -1,0 +1,50 @@
+name: Release
+
+# Push a tag like v0.2.0 on main; this builds the console payload and
+# publishes it as a GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    env:
+      # Official SDK release, pinned so builds are reproducible.
+      SDK_VERSION: v0.43
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Check the tag is on main and matches VERSION
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::tag ${GITHUB_REF_NAME} is not on main"; exit 1; }
+          [ "${GITHUB_REF_NAME}" = "v$(cat VERSION)" ] \
+            || { echo "::error::tag ${GITHUB_REF_NAME} does not match VERSION $(cat VERSION)"; exit 1; }
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-18 lld-18 llvm-18 unzip python3
+      - name: Download ps5-payload-sdk
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/ps5-payload-sdk.zip" \
+            "https://github.com/ps5-payload-dev/sdk/releases/download/${SDK_VERSION}/ps5-payload-sdk.zip"
+          unzip -q "$RUNNER_TEMP/ps5-payload-sdk.zip" -d "$RUNNER_TEMP"
+          echo "TOOLCHAIN=$RUNNER_TEMP/ps5-payload-sdk/bin" >> "$GITHUB_ENV"
+          echo "LLVM_CONFIG=$(command -v llvm-config-18)" >> "$GITHUB_ENV"
+      - name: make release
+        run: make release
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            build/release/bluev.elf build/release/bluev.elf.sha256 \
+            --title "BlueV ${GITHUB_REF_NAME#v}" \
+            --generate-notes
