@@ -291,9 +291,10 @@ immediately. Inbound commands are answered by `on_signal_frame`:
 
 When the headset made the connection, `A2dpSession::start` first waits up to twenty
 seconds for its signaling channel. When **we** made the connection it waits
-three: the Sony WH-CH720N hangs up about eight seconds after a connection the
-host made if the host starts nothing, and the Creative speaker only opens the
-channel after that. After the three seconds we open the channel ourselves
+one: the Sony WH-CH720N hangs up about eight seconds after a connection the
+host made if the host starts nothing, the WH-1000XM5 after two to three, and
+the Creative speaker only opens the channel after that. After the second we
+open the channel ourselves
 (`avdtp: signaling channel opened by us`), take over after 1.5 s of silence
 instead of four, and fall back to waiting for the headset if our own attempt
 fails. With this both devices connect from our side in about ten seconds (an
@@ -707,7 +708,7 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | Endpoint layout read from the USB descriptors (`libSceUsbd`), not guessed by behaviour | Behaviour detection armed reads on the wrong pipes and broke the gamepad's reconnection (12c) |
 | Service mode: a paired device that dials in is accepted; an unpaired one is refused and counted (`foreign_requests`) | The console is not pairable by whoever walks past; a speaker that reconnects by itself just works |
 | Pairings are files, per adapter and device; names per device | The same speaker can be paired with the internal chip and with an adapter at once; plain files are easy to inspect and to test |
-| AVDTP: wait for the device to start the procedure (3 s if we made the connection, 20 s if it did), then drive it ourselves | Headsets differ: the Sony WH-CH720N hangs up after about 8 s if the host does nothing, the Creative speaker opens its channel later; starting at once collided with a device that drives (link timeout, 2026-10-18) |
+| AVDTP: wait for the device to start the procedure (1 s if we made the connection, 20 s if it did), then drive it ourselves | Headsets differ: the Sony WH-CH720N hangs up after about 8 s if the host does nothing, the WH-1000XM5 after 2-3 s (was 3 s here, 2026-10-25), the Creative speaker opens its channel later; starting at once collided with a device that drives (link timeout, 2026-10-18) |
 | Flow control: at most 5 unconfirmed packets, a missing completion report counts as done after 31 ms | Limits of 3 packets and 100 ms cap the stream near 40 packets/s and dropped audio (`bt_stack.cpp`) |
 | Streaming: as many SBC frames per packet as the MTU allows (at most 8), the queue cut to 50 ms, sending paced to the clock | Low delay without bursts; silence fills the gaps when the capture has nothing |
 | SBC only, joint stereo preferred, bitpool 40 within the device's range, 48 kHz preferred, linear resampling to 44.1 kHz | Every audio device speaks SBC; the parameters are simple and were enough in the soak test (12d) |

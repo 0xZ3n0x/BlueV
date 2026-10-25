@@ -142,14 +142,14 @@ TEST_F(Session, ASpeakerThatDialsInWhileWeWaitIsAccepted)
     EXPECT_EQ(1, speaker.signals[0]);
 }
 
-TEST_F(Session, AfterAConnectionWeMakeWeWaitOnlyThreeSecondsBeforeOpeningTheChannel)
+TEST_F(Session, AfterAConnectionWeMakeWeWaitOnlyOneSecondBeforeOpeningTheChannel)
 {
     const auto t0 = clock.nowMs();
     ASSERT_TRUE(session.start(true));
     EXPECT_TRUE(sink.has("avdtp: signaling channel opened by us"));
-    // 3 s of waiting, then the setup and short quiet period
+    // 1 s of waiting, then the setup and short quiet period
     EXPECT_LT(clock.nowMs() - t0, 9000u);
-    EXPECT_GE(clock.nowMs() - t0, 3000u);
+    EXPECT_GE(clock.nowMs() - t0, 1000u);
 }
 
 TEST_F(Session, WithoutOurConnectionTheSpeakerGetsTwentySeconds)

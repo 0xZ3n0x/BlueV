@@ -89,13 +89,13 @@ bool A2dpSession::start(bool initiatedByUs)
 
     // Many headsets open the AVDTP signaling channel themselves when they
     // reconnect; give them a moment before opening it ourselves. When we made
-    // the connection the wait is short: some headsets (the Sony WH-CH720N)
-    // hang up about eight seconds after connecting if the host has not
-    // started anything, while others (the Creative speaker) only open the
-    // channel after that. If our own attempt fails the headset still gets the
-    // rest of the twenty seconds.
+    // the connection the wait is short: some headsets hang up if the host has
+    // not started anything (the Sony WH-CH720N after about eight seconds, the
+    // WH-1000XM5 after two to three), while others (the Creative speaker)
+    // only open the channel after that. If our own attempt fails the headset
+    // still gets the rest of the twenty seconds.
     m_bt.bindInbound(kAvdtpPsm, m_sig, onFrame);
-    std::uint64_t deadline = m_clock.nowMs() + (initiatedByUs ? 3000 : 20000);
+    std::uint64_t deadline = m_clock.nowMs() + (initiatedByUs ? 1000 : 20000);
     while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !signalingUp())
     {
         m_bt.poll(50);
