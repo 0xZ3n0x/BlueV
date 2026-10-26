@@ -112,6 +112,7 @@ class FakeController final : public IHciTransport
     } remote;
     std::vector<InquiryDevice> inquiryDevices;
     std::uint32_t inquiryDurationMs = 3000;
+    int inquiryRefusals = 0; // answer this many Inquiry commands with 0x0c first
 
     // ---- what the test reads ----
     std::vector<SentCommand> commands;

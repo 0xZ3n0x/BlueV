@@ -85,37 +85,99 @@ void BtStack::onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const 
     }
 }
 
+// Starts an inquiry and retries until `until` when the controller is
+// already inquiring (0x0c), which happens when the console's own stack is
+// scanning. Returns the last status, or -1 when the status reply went to the
+// console's read.
+int BtStack::startInquiry(std::uint64_t until)
+{
+    int status = -1;
+
+    for (int attempt = 1;; attempt++)
+    {
+        status = commandStatus(hci::kInquiry, kInquiryParams, 5, 1000);
+        if (status <= 0)
+        {
+            return status;
+        }
+        logLine("inquiry: the controller refused to start (%s, status %#04x), attempt %d", hciStatusName(status),
+                status, attempt);
+        if (m_clock.nowMs() >= until)
+        {
+            return status;
+        }
+        cmd(hci::kInquiryCancel);
+        poll(500);
+    }
+}
+
 void BtStack::runInquiry(std::uint32_t timeoutMs)
 {
     m_inqDone = false;
-    if (!cmd(hci::kInquiry, kInquiryParams, 5))
+    m_inquiryStopped = false;
+    // The console's stack can leave an Inquiry Result event filter behind;
+    // clear it, or the shared controller reports no inquiry result at all.
+    const std::uint8_t all = 0x00;
+    cmd(hci::kSetEventFilter, &all, 1);
+    poll(50);
+
+    const std::uint64_t deadline = m_clock.nowMs() + timeoutMs;
+    std::uint64_t firstUntil = m_clock.nowMs() + 1600;
+    if (firstUntil > deadline)
     {
+        firstUntil = deadline;
+    }
+    m_inquiryActive = true;
+    int status = startInquiry(firstUntil);
+    if (status > 0)
+    {
+        logLine("inquiry: could not start (%s)", hciStatusName(status));
+        m_inquiryActive = false;
         return;
     }
-    const std::uint64_t deadline = m_clock.nowMs() + timeoutMs;
+    if (status < 0)
+    {
+        // the status reply can go to the console's own read on the shared chip
+        logLine("inquiry: no status from the controller, assuming it started");
+    }
+
     while (!m_inqDone)
     {
+        if (m_inquiryStopped)
+        {
+            // The console's Inquiry Cancel stops the inquiry on the shared
+            // controller; start ours again with the time that is left.
+            m_inquiryStopped = false;
+            m_inqDone = false;
+            if (m_clock.nowMs() >= deadline)
+            {
+                break;
+            }
+            logLine("inquiry: the console stopped it, starting it again");
+            poll(500);
+            status = startInquiry(deadline);
+            if (status > 0)
+            {
+                logLine("inquiry: could not start it again (%s)", hciStatusName(status));
+                break;
+            }
+            continue;
+        }
         if (m_clock.nowMs() >= deadline)
         {
-            if (m_inqDone)
-            {
-                return;
-            }
             cmd(hci::kInquiryCancel);
             poll(200);
-            return;
+            break;
         }
         poll(100);
-        if ((m_connDone && m_connStatus == 0) || m_inqDone)
+        if (m_connDone && m_connStatus == 0)
         {
-            if (!m_inqDone)
-            {
-                cmd(hci::kInquiryCancel);
-                poll(200);
-            }
-            return;
+            cmd(hci::kInquiryCancel);
+            poll(200);
+            break;
         }
     }
+    m_inquiryActive = false;
 }
 
 int BtStack::scan(std::uint32_t timeoutMs)

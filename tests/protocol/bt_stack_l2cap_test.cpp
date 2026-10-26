@@ -198,7 +198,9 @@ TEST_F(L2cap, ASilentPeerAfterConnectContinuesAfterAGracePeriod)
         }
     };
     L2Channel ch("signaling", 0x40);
+    const auto t0 = clock.nowMs();
     ASSERT_TRUE(stack.openChannel(ch, 0x19, nullptr));
+    EXPECT_LT(clock.nowMs() - t0, 2000u); // not the old 8 s wait
     EXPECT_TRUE(sink.has("no configure request from the peer, continuing anyway"));
     EXPECT_FALSE(ch.configured);
 }
