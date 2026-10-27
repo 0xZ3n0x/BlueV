@@ -9,6 +9,7 @@
 
 #include "core/bluetooth/address.hpp"
 #include "core/ports/log.hpp"
+#include "platform/posix/quit_signal.hpp"
 #include "service/json.hpp"
 
 namespace bluev
@@ -358,6 +359,19 @@ void Service::publishDevices()
 // called by the radio's poll about once a second
 void Service::tick()
 {
+    // A newer copy found us by name and asked us (SIGUSR1) to step aside;
+    // take exactly the same, peaceful path "quit" from the web interface
+    // does: finish what is running, then stop. Checked here rather than at
+    // the top of run()'s loop: a session (runSession(), called from there)
+    // is a synchronous call that blocks that loop for as long as it runs,
+    // but tick() keeps running regardless — it is called once a second
+    // from inside BtStack::poll(), which a stream keeps calling too.
+    if (takeQuitRequestedFlag())
+    {
+        logLine("service: asked by a newer copy to quit");
+        m_quit.store(true);
+        m_disconnectRequested.store(true);
+    }
     flushLog();
     {
         const std::string name = m_radio.peerName();
@@ -519,6 +533,18 @@ bool Service::run(bool capturing)
 
     while (!m_quit.load())
     {
+        // Also checked in tick(), which a session keeps calling (that loop
+        // does not reach back here until the session ends) but which is
+        // itself never called while idle with the radio off (the Command::
+        // None case below just sleeps, it never reaches m_radio.poll()) —
+        // the one state this loop iterates through regardless.
+        if (takeQuitRequestedFlag())
+        {
+            logLine("service: asked by a newer copy to quit");
+            m_quit.store(true);
+            m_disconnectRequested.store(true);
+            continue;
+        }
         // started at boot, the network may not be up yet
         if (!m_serverUp && std::chrono::steady_clock::now() - lastServerTry > std::chrono::seconds(2))
         {

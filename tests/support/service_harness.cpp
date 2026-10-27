@@ -19,7 +19,7 @@ using ::testing::Return;
 int ServiceHarness::nextPortBase()
 {
     static std::atomic<int> next{21000 + (static_cast<int>(::getpid()) % 50) * 20};
-    return next.fetch_add(10);
+    return next.fetch_add(1);
 }
 
 ServiceHarness::ServiceHarness()
@@ -131,7 +131,7 @@ bool ServiceHarness::startService(bool capturing)
 {
     Service::Ports ports{radio, usb, system, shortcut, log, page, address};
 
-    m_service = std::make_unique<Service>(ports, ServerPorts{m_portBase, m_portBase + 9});
+    m_service = std::make_unique<Service>(ports, ServerPorts{m_portBase});
     m_thread = std::thread([this, capturing] { m_service->run(capturing); });
     for (int i = 0; i < 100 && port == 0; i++)
     {

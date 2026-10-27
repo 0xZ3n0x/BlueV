@@ -548,37 +548,9 @@ TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
     EXPECT_TRUE(waitForState("idle", 5000));
 }
 
-TEST_F(HttpApi, ARunningCopyIsAskedToQuitByANewOne)
-{
-    ASSERT_TRUE(startService());
-    EXPECT_TRUE(HttpServer::quitRunningInstance(ServerPorts{port, port}));
-}
-
-TEST_F(HttpApi, NothingRunningMeansNobodyToAsk)
-{
-    EXPECT_FALSE(HttpServer::quitRunningInstance(ServerPorts{29990, 29991}));
-}
-
-TEST_F(HttpApi, ServerComesUpOnTheNextFreePort)
-{
-    // occupy the first port, then start: the service must take the next one
-    const int taken = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in address{};
-    // find our harness range base by starting once, stopping, then blocking its first port
-    ASSERT_TRUE(startService());
-    const int first = port;
-    stopService();
-    port = 0;
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
-    address.sin_port = htons(static_cast<std::uint16_t>(first));
-    int one = 1;
-    setsockopt(taken, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    ASSERT_EQ(0, bind(taken, reinterpret_cast<sockaddr*>(&address), sizeof address));
-    listen(taken, 1);
-
-    ASSERT_TRUE(startService());
-    EXPECT_EQ(first + 1, port);
-    close(taken);
-}
+// Finding and asking an older copy to quit is no longer HTTP-based (a new
+// copy looks it up by process name through the kernel, see
+// platform/ps5/process_identity.hpp), and the server listens on one fixed
+// port rather than a range, so there is no fallback-port behaviour left to
+// cover here. Both are PS5-only (thr_set_name/sysctl) and are not part of
+// the host test build.
