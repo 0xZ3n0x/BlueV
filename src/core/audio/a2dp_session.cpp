@@ -86,11 +86,14 @@ void A2dpSession::stop()
     m_bt.closeChannel(m_sig);
 }
 
-bool A2dpSession::start(bool initiatedByUs)
+// Gets the AVDTP signaling channel up, from either side. `openedByUs` tells
+// which side did it. False when neither did.
+bool A2dpSession::openSignaling(bool initiatedByUs, bool& openedByUs)
 {
-    bool openedByUs = false;
     const auto onFrame = [this](std::uint32_t, const std::uint8_t* buf, int len) { onSignal(buf, len); };
     const auto signalingUp = [this] { return m_sig.up && m_sig.configured; };
+
+    openedByUs = false;
 
     // Many headsets open the AVDTP signaling channel themselves when they
     // reconnect; give them a moment before opening it ourselves. When we made
@@ -104,32 +107,36 @@ bool A2dpSession::start(bool initiatedByUs)
     if (m_sig.connDone && signalingUp())
     {
         logLine("avdtp: the device opened the signaling channel");
+        return true;
     }
-    else if (m_bt.openChannel(m_sig, kAvdtpPsm, onFrame))
+    if (m_bt.openChannel(m_sig, kAvdtpPsm, onFrame))
     {
         openedByUs = true;
         logLine("avdtp: signaling channel opened by us");
+        return true;
     }
-    else if (initiatedByUs && !m_bt.linkLost())
-    {
-        m_bt.wait(signalingUp, 17000);
-        if (!(m_sig.connDone && signalingUp()))
-        {
-            return false;
-        }
-        logLine("avdtp: the device opened the signaling channel");
-    }
-    else
+    if (!initiatedByUs || m_bt.linkLost())
     {
         return false;
     }
+    m_bt.wait(signalingUp, 17000);
+    if (!(m_sig.connDone && signalingUp()))
+    {
+        return false;
+    }
+    logLine("avdtp: the device opened the signaling channel");
+    return true;
+}
 
-    // Give the headset time to run the procedure itself. As long as it keeps
-    // sending commands it is driving, however slowly (the pause between its
-    // commands has been seen to reach two seconds); only a headset that has
-    // been silent for four seconds is left to us, and never wait longer than
-    // twenty seconds in all.
+// Give the headset time to run the procedure itself. As long as it keeps
+// sending commands it is driving, however slowly (the pause between its
+// commands has been seen to reach two seconds); only a headset that has been
+// silent for four seconds is left to us, and never wait longer than twenty
+// seconds in all.
+void A2dpSession::waitForPeerSetup(bool openedByUs)
+{
     const std::uint64_t began = m_clock.nowMs();
+
     while (!m_bt.linkLost() && !m_peerConfigured)
     {
         const std::uint64_t now = m_clock.nowMs();
@@ -141,6 +148,17 @@ bool A2dpSession::start(bool initiatedByUs)
         }
         m_bt.poll(50);
     }
+}
+
+bool A2dpSession::start(bool initiatedByUs)
+{
+    bool openedByUs = false;
+
+    if (!openSignaling(initiatedByUs, openedByUs))
+    {
+        return false;
+    }
+    waitForPeerSetup(openedByUs);
     return m_peerConfigured ? followPeer() : driveSetup();
 }
 

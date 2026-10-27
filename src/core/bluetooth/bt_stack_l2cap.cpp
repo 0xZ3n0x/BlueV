@@ -95,50 +95,53 @@ bool BtStack::sendSignal(std::uint8_t code, std::uint8_t id, std::initializer_li
     return send(1, pkt, static_cast<int>(p - pkt));
 }
 
-bool BtStack::openChannel(L2Channel& ch, std::uint16_t psm, FrameHandler handler)
+// Asks for the channel until the device answers; a busy device is asked again
+// shortly.
+BtStack::Request BtStack::requestChannel(L2Channel& ch, std::uint16_t psm)
 {
-    const std::uint32_t ourCid = ch.ourCid;
     int retries = 0;
-
-    addChannel(ch, std::move(handler));
 
     for (;;)
     {
         ch.connDone = false;
-        if (!sendSignal(0x02, m_sigId++, {psm, ourCid})) // connection request
+        if (!sendSignal(0x02, m_sigId++, {psm, ch.ourCid})) // connection request
         {
-            return false;
+            return Request::Failed;
         }
-
         if (!wait([&ch] { return ch.connDone; }, 10000))
         {
             logLine("l2cap: %s connection timed out", ch.name);
-            return false;
+            return Request::Failed;
         }
-        if (ch.result == 4 && retries++ < 6)
+        if (ch.result != 4 || retries++ >= 6)
         {
-            // "no resources": the peer is still busy, ask again shortly
-            logLine("l2cap: %s: peer busy, asking again", ch.name);
-            poll(2000);
-            if (ch.up && ch.configured)
-            {
-                return true; // the peer opened it meanwhile
-            }
-            continue;
+            break;
         }
-        break;
+        // "no resources": the peer is still busy, ask again shortly
+        logLine("l2cap: %s: peer busy, asking again", ch.name);
+        poll(2000);
+        if (ch.up && ch.configured)
+        {
+            return Request::OpenedByPeer;
+        }
     }
     if (ch.result != 0)
     {
         logLine("l2cap: %s connection refused (%d)", ch.name, static_cast<int>(ch.result));
-        return false;
+        return Request::Failed;
     }
-    ch.up = false;
+    return Request::Accepted;
+}
 
-    // keep sending configure requests until the channel is up
+// Keeps sending configure requests until the channel is up and the device has
+// configured its side too.
+bool BtStack::configureChannel(L2Channel& ch)
+{
     std::uint64_t cfgDeadline = 0;
     const std::uint64_t deadline = m_clock.nowMs() + 14000;
     std::uint64_t upSince = 0;
+
+    ch.up = false;
     for (;;)
     {
         if (ch.up && ch.configured)
@@ -175,6 +178,22 @@ bool BtStack::openChannel(L2Channel& ch, std::uint16_t psm, FrameHandler handler
         }
         poll(100);
     }
+}
+
+bool BtStack::openChannel(L2Channel& ch, std::uint16_t psm, FrameHandler handler)
+{
+    addChannel(ch, std::move(handler));
+
+    switch (requestChannel(ch, psm))
+    {
+    case Request::Accepted:
+        return configureChannel(ch);
+    case Request::OpenedByPeer:
+        return true;
+    case Request::Failed:
+        break;
+    }
+    return false;
 }
 
 void BtStack::closeChannel(L2Channel& ch)

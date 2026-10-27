@@ -237,9 +237,6 @@ void BtStack::onConnectionComplete(const std::uint8_t* e)
             m_disconnected = false;
             clearSecurity();
             resetCredits();
-        }
-        if (e[0] == 0)
-        {
             logLine("connection complete: handle %#05x", m_handle);
         }
         else
@@ -412,8 +409,7 @@ void BtStack::onCompletedPackets(const std::uint8_t* e, int n)
                 {
                     break;
                 }
-                m_ifHead = (m_ifHead + 1) % 64;
-                m_ifCount--;
+                popInFlight();
             }
         }
         else

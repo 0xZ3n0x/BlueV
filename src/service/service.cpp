@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "service/service.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -20,7 +21,7 @@ namespace
 {
 
 constexpr int kScanMilliseconds = 30000;
-constexpr std::size_t kMaxDevices = 32;
+constexpr std::size_t kMaxListed = 32;
 
 bool validNode(std::string_view node)
 {
@@ -289,16 +290,15 @@ Service::Pending Service::takePending()
     return taken;
 }
 
-// Rebuilds the device list: scan results first, then paired devices that
-// were not seen. A scan result without a name keeps the name saved with the
-// bond.
+// Scan results first, then paired devices that were not seen. A scan result
+// without a name keeps the name saved with the bond.
 void Service::publishDevices()
 {
     std::vector<DeviceInfo> devices;
 
     for (const BtDevice& found : m_radio.devices())
     {
-        if (devices.size() >= kMaxDevices)
+        if (devices.size() >= kMaxListed)
         {
             break;
         }
@@ -312,17 +312,23 @@ void Service::publishDevices()
         info.connected = m_current == found.address;
         devices.push_back(std::move(info));
     }
+    addBondedDevices(devices);
 
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_devices = std::move(devices);
+}
+
+// Names the unnamed entries from their bonds, and appends the bonded devices
+// that are not in the list yet.
+void Service::addBondedDevices(std::vector<DeviceInfo>& devices)
+{
     const std::vector<BondEntry> bonds = m_radio.bonds();
+
     for (DeviceInfo& info : devices)
     {
-        if (!info.name.empty())
-        {
-            continue;
-        }
         for (const BondEntry& bond : bonds)
         {
-            if (info.address == addressString(bond.peer))
+            if (info.name.empty() && info.address == addressString(bond.peer))
             {
                 info.name = bond.name;
             }
@@ -330,16 +336,13 @@ void Service::publishDevices()
     }
     for (const BondEntry& bond : bonds)
     {
-        if (devices.size() >= kMaxDevices)
+        const std::string address = addressString(bond.peer);
+        const bool seen = std::any_of(devices.begin(), devices.end(),
+                                      [&address](const DeviceInfo& info) { return info.address == address; });
+
+        if (devices.size() >= kMaxListed)
         {
             break;
-        }
-        const std::string address = addressString(bond.peer);
-        bool seen = false;
-
-        for (const DeviceInfo& info : devices)
-        {
-            seen = seen || info.address == address;
         }
         if (seen)
         {
@@ -352,9 +355,6 @@ void Service::publishDevices()
         info.connected = m_current == bond.peer;
         devices.push_back(std::move(info));
     }
-
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_devices = std::move(devices);
 }
 
 // A newer copy found us by name and asked us (SIGTERM) to step aside; take

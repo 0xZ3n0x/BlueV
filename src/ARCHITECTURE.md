@@ -767,7 +767,7 @@ Console and hardware
 - Longer runs than 21 minutes, other speakers, and the capture running together with Remote Play.
 - The Sony WH-CH720N does not work on the internal chip (it works on a USB adapter); the Creative speaker does. Find out why.
 - Only a PS5 Slim was tested; reports from a PS5 Pro and the fat PS5 are wanted (README, Contributing); other models lay the chip out differently (the `0x82/0x01` layout in the code comments) and the home screen entry's `AppInstallTitleDir` is missing on firmware 12.40.
-- On-screen notifications start with "Debug:". Tried (2026-10-24): the request laid out as 11 ints, `useIconImageUri = 1`, `targetId = -1` and the icon `cxml://psnotification/tex_icon_system`, which is reported to remove the label; the console still showed "Debug:". Find which fields give a plain toast (`src/platform/ps5/ps5_system.cpp`).
+- On-screen notifications start with "Debug:". Tried (2026-10-24): the request laid out as 11 ints, `useIconImageUri = 1`, `targetId = -1` and the icon `cxml://psnotification/tex_icon_system`, which is reported to remove the label; the console still showed "Debug:". Find which fields give a plain toast (`src/platform/ps5/notification.cpp`).
 - Open ideas for the shared chip: read the console's own copy of the events instead of taking them from USB; what interface 3 carries.
 
 Code and tests

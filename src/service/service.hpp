@@ -133,6 +133,7 @@ class Service final
     void setState(State state, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
     Pending takePending();
     void publishDevices();
+    void addBondedDevices(std::vector<DeviceInfo>& devices);
     // One connection from start to end; `address` null = a device dialled in.
     void runSession(bool capturing, const BdAddr* address);
     // Opens the controller (empty node = the console's chip); false, with the

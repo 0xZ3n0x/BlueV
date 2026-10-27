@@ -72,6 +72,11 @@ class UgenTransport final : public IHciTransport
     };
 
     std::uint32_t reap();
+    void onTransferComplete(int t);
+    static void queuePackets(Ring& ring, const std::uint8_t* buf, std::uint32_t len, std::uint32_t hdr);
+    static void ringPush(Ring& ring, const std::uint8_t* data, std::uint32_t length);
+    bool openTransfer(int transfer, std::uint8_t endpoint, std::uint32_t length);
+    int openTransfers(int first, int last, std::uint8_t endpoint, std::uint32_t length);
     void closeFd();
     static int ringPop(Ring& ring, std::uint8_t* out, int max);
     bool startTransfer(int t);

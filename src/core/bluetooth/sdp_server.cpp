@@ -274,122 +274,130 @@ int errorResponse(std::uint8_t* out, const std::uint8_t* req, std::uint8_t code 
     return 7;
 }
 
+constexpr std::uint32_t kRecordHandle = 0x10001;
+
+// Service Search: the record handle when the pattern names one of our UUIDs.
+int serviceSearch(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* out)
+{
+    int consumed = 0;
+    const int r = patternMatches(req + 5, plen, &consumed);
+
+    if (r < 0)
+    {
+        return errorResponse(out, req);
+    }
+    logLine("sdp: service search -> %d record(s)", r);
+    beginResponse(out, 0x03, req);
+    putBe16(out + 5, r); // total record count
+    putBe16(out + 7, r); // current record count
+    if (r == 0)
+    {
+        out[9] = 0; // no continuation state
+        putBe16(out + 3, 5);
+        return 10;
+    }
+    putBe32(out + 9, kRecordHandle);
+    out[13] = 0;
+    putBe16(out + 3, 9);
+    return 14;
+}
+
+// Service Attribute: the attributes asked for, of our one record.
+int serviceAttribute(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* out, int outcap)
+{
+    int consumed = 0;
+
+    if (plen < 6)
+    {
+        return errorResponse(out, req);
+    }
+    if (getBe32(req + 5) != kRecordHandle)
+    {
+        return errorResponse(out, req, kInvalidRecordHandle);
+    }
+    const int r = buildAttributes(req + 11, plen - 6, &consumed, out + 7, outcap - 8);
+
+    if (r < 0)
+    {
+        return errorResponse(out, req);
+    }
+    logLine("sdp: attribute request -> %d bytes", r);
+    beginResponse(out, 0x05, req);
+    const std::uint32_t outlen = static_cast<std::uint32_t>(r);
+
+    putBe16(out + 5, outlen);
+    out[outlen + 7] = 0; // no continuation state
+    putBe16(out + 3, outlen + 3);
+    return static_cast<int>(outlen + 8);
+}
+
+// Service Search Attribute: the attributes of the record when the pattern
+// names one of our UUIDs, an empty list when not.
+int serviceSearchAttribute(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* out, int outcap)
+{
+    int consumed = 0;
+    const int r = patternMatches(req + 5, plen, &consumed);
+
+    if (r < 0 || consumed + 2 > static_cast<int>(plen))
+    {
+        return errorResponse(out, req);
+    }
+    if (r == 0)
+    {
+        out[7] = 0x35; // empty attribute list
+        out[8] = 0;
+        logLine("sdp: search+attributes -> %d record(s), %d bytes", 0, 2);
+        beginResponse(out, 0x07, req);
+        putBe16(out + 5, 2);
+        out[9] = 0; // no continuation state
+        putBe16(out + 3, 5);
+        return 10;
+    }
+    int ignored = 0;
+    const std::int32_t outlen = buildAttributes(req + 5 + consumed + 2, plen - static_cast<std::uint32_t>(consumed) - 2,
+                                                &ignored, out + 10, outcap - 11);
+
+    if (outlen < 0)
+    {
+        return errorResponse(out, req);
+    }
+    out[7] = 0x36;
+    putBe16(out + 8, outlen);
+    logLine("sdp: search+attributes -> %d record(s), %d bytes", r, outlen + 3);
+    beginResponse(out, 0x07, req);
+    putBe16(out + 5, outlen + 3);
+    out[outlen + 3 + 7] = 0;
+    putBe16(out + 3, outlen + 3 + 3);
+    return outlen + 3 + 8;
+}
+
 } // namespace
 
 int handleSdpRequest(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_t* out, int outcap)
 {
-    if (static_cast<int>(reqlen) < 5)
+    if (static_cast<int>(reqlen) < 5 || outcap < 64)
     {
         return 0;
     }
 
-    const std::uint8_t pdu = req[0];
     const std::uint32_t plen = getBe16(req + 3);
-    int consumed = 0;
-    int r;
 
-    if (outcap < 64)
-    {
-        return 0;
-    }
     if (reqlen < plen + 5)
     {
         return errorResponse(out, req);
     }
-
-    switch (pdu)
+    switch (req[0])
     {
-    case 0x02: { // service search
-        r = patternMatches(req + 5, plen, &consumed);
-        if (r < 0)
-        {
-            return errorResponse(out, req);
-        }
-        logLine("sdp: service search -> %d record(s)", r);
-        beginResponse(out, 0x03, req);
-        putBe16(out + 5, r); // total record count
-        putBe16(out + 7, r); // current record count
-        if (r != 0)
-        {
-            out[9] = 0x00;
-            out[10] = 0x01;
-            out[11] = 0x00;
-            out[12] = 0x01;
-            out[13] = 0;
-            out[3] = 0;
-            out[4] = 13 - 4;
-            return 14;
-        }
-        out[9] = 0;
-        out[3] = 0;
-        out[4] = 9 - 4;
-        return 10;
-    }
-    case 0x04: { // service attribute
-        if (plen < 6)
-        {
-            return errorResponse(out, req);
-        }
-        const std::uint32_t handle = getBe32(req + 5);
-
-        if (handle != 0x10001)
-        {
-            return errorResponse(out, req, kInvalidRecordHandle);
-        }
-        r = buildAttributes(req + 11, plen - 6, &consumed, out + 7, outcap - 8);
-        if (r < 0)
-        {
-            return errorResponse(out, req);
-        }
-        logLine("sdp: attribute request -> %d bytes", r);
-        beginResponse(out, 0x05, req);
-        const std::uint32_t outlen = static_cast<std::uint32_t>(r);
-
-        putBe16(out + 5, outlen);
-        out[outlen + 7] = 0; // no continuation state
-        putBe16(out + 3, outlen + 3);
-        return static_cast<int>(outlen + 8);
-    }
-    case 0x06: { // service search attribute
-        r = patternMatches(req + 5, plen, &consumed);
-        if (r < 0 || consumed + 2 > static_cast<int>(plen))
-        {
-            return errorResponse(out, req);
-        }
-        if (r == 0)
-        {
-            out[7] = 0x35; // empty attribute list
-            out[8] = 0;
-            r = 2;
-            logLine("sdp: search+attributes -> %d record(s), %d bytes", 0, r);
-            beginResponse(out, 0x07, req);
-            putBe16(out + 5, r);
-            out[r + 7] = 0;
-            putBe16(out + 3, r + 3);
-            return r + 8;
-        }
-        int dummy = 0;
-        const std::int32_t outlen = buildAttributes(
-            req + 5 + consumed + 2, plen - static_cast<std::uint32_t>(consumed) - 2, &dummy, out + 10, outcap - 11);
-
-        if (outlen < 0)
-        {
-            return errorResponse(out, req);
-        }
-        out[7] = 0x36;
-        putBe16(out + 8, outlen);
-        logLine("sdp: search+attributes -> %d record(s), %d bytes", r, outlen + 3);
-        beginResponse(out, 0x07, req);
-        putBe16(out + 5, outlen + 3);
-        out[outlen + 3 + 7] = 0;
-        putBe16(out + 3, outlen + 3 + 3);
-        return outlen + 3 + 8;
-    }
+    case 0x02:
+        return serviceSearch(req, plen, out);
+    case 0x04:
+        return serviceAttribute(req, plen, out, outcap);
+    case 0x06:
+        return serviceSearchAttribute(req, plen, out, outcap);
     default:
-        logLine("sdp: unhandled PDU %#04x", pdu);
-        break;
+        logLine("sdp: unhandled PDU %#04x", req[0]);
+        return errorResponse(out, req);
     }
-    return errorResponse(out, req);
 }
 
 } // namespace bluev

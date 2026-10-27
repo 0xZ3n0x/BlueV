@@ -16,7 +16,7 @@ namespace
 {
 // Inquiry: GIAC LAP 0x9E8B33, ~10.24 s, unlimited responses
 const std::uint8_t kInquiryParams[5] = {0x33, 0x8b, 0x9e, 0x18, 0x00};
-constexpr std::size_t kMaxDevices = 16;
+constexpr std::size_t kMaxFound = 16;
 } // namespace
 
 void BtStack::onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const std::uint8_t* eir, int eirLength)
@@ -52,7 +52,7 @@ void BtStack::onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const 
     const bool isNew = dev == nullptr;
     if (isNew)
     {
-        if (m_devices.size() >= kMaxDevices)
+        if (m_devices.size() >= kMaxFound)
         {
             return;
         }

@@ -73,6 +73,78 @@ void* resolve(int module, const char* nid)
     return reinterpret_cast<void*>(kernel_dynlib_resolve(getpid(), static_cast<uint32_t>(module), nid));
 }
 
+// The endpoints of a Bluetooth interface: the interrupt IN for events, the bulk
+// IN for ACL data and the bulk OUT for ACL data, which is the one with the
+// number of the bulk IN when there is such (0x82/0x02 on the Slim, 0x81/0x01 on
+// the fat console). False when one of the three is missing.
+bool readEndpoints(const libusb_interface_descriptor& id, HciLayout& out)
+{
+    int events = -1, aclIn = -1, aclOut = -1, aclOutPaired = -1;
+
+    for (int e = 0; e < id.bNumEndpoints; e++)
+    {
+        const libusb_endpoint_descriptor& ep = id.endpoint[e];
+        const int type = ep.bmAttributes & 3;
+        const bool isIn = (ep.bEndpointAddress & 0x80) != 0;
+
+        if (type == 3 && isIn && events < 0)
+        {
+            events = ep.bEndpointAddress;
+        }
+        else if (type == 2 && isIn && aclIn < 0)
+        {
+            aclIn = ep.bEndpointAddress;
+        }
+        else if (type == 2 && !isIn && aclOut < 0)
+        {
+            aclOut = ep.bEndpointAddress;
+        }
+    }
+    for (int e = 0; e < id.bNumEndpoints; e++)
+    {
+        const libusb_endpoint_descriptor& ep = id.endpoint[e];
+
+        if ((ep.bmAttributes & 3) == 2 && !(ep.bEndpointAddress & 0x80) && aclIn >= 0 &&
+            (ep.bEndpointAddress & 0x0f) == (aclIn & 0x0f))
+        {
+            aclOutPaired = ep.bEndpointAddress;
+        }
+    }
+    if (aclOutPaired >= 0)
+    {
+        aclOut = aclOutPaired;
+    }
+    if (events < 0 || aclIn < 0 || aclOut < 0)
+    {
+        return false;
+    }
+    out.interface = id.bInterfaceNumber;
+    out.events = static_cast<std::uint8_t>(events);
+    out.aclIn = static_cast<std::uint8_t>(aclIn);
+    out.aclOut = static_cast<std::uint8_t>(aclOut);
+    return true;
+}
+
+// The first Bluetooth interface (class e0, subclass 1, protocol 1, alternate
+// setting 0) of a configuration that has the endpoints HCI needs.
+bool findHciInterface(const libusb_config_descriptor& cfg, HciLayout& out)
+{
+    for (int n = 0; n < cfg.bNumInterfaces; n++)
+    {
+        for (int a = 0; a < cfg.interface[n].num_altsetting; a++)
+        {
+            const libusb_interface_descriptor& id = cfg.interface[n].altsetting[a];
+
+            if (id.bAlternateSetting == 0 && id.bInterfaceClass == 0xe0 && id.bInterfaceSubClass == 1 &&
+                id.bInterfaceProtocol == 1 && readEndpoints(id, out))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 bool Ps5UsbDirectory::nodeInfo(const char* node, UsbDevice& out)
@@ -181,63 +253,7 @@ bool Ps5UsbDirectory::discoverLayout(const char* node, HciLayout& out)
         {
             break;
         }
-        for (int n = 0; n < cfg->bNumInterfaces && !found; n++)
-        {
-            for (int a = 0; a < cfg->interface[n].num_altsetting && !found; a++)
-            {
-                const libusb_interface_descriptor* id = &cfg->interface[n].altsetting[a];
-                int ev = -1, in = -1, outep = -1, same = -1;
-
-                if (id->bAlternateSetting != 0 || id->bInterfaceClass != 0xe0 || id->bInterfaceSubClass != 1 ||
-                    id->bInterfaceProtocol != 1)
-                {
-                    continue;
-                }
-                for (int e = 0; e < id->bNumEndpoints; e++)
-                {
-                    const libusb_endpoint_descriptor* ep = &id->endpoint[e];
-                    const int type = ep->bmAttributes & 3;
-                    const bool isIn = (ep->bEndpointAddress & 0x80) != 0;
-
-                    if (type == 3 && isIn && ev < 0)
-                    {
-                        ev = ep->bEndpointAddress;
-                    }
-                    else if (type == 2 && isIn && in < 0)
-                    {
-                        in = ep->bEndpointAddress;
-                    }
-                    else if (type == 2 && !isIn && outep < 0)
-                    {
-                        outep = ep->bEndpointAddress;
-                    }
-                }
-                // a bulk out with the number of the bulk in is the ACL out
-                // (0x82/0x02 on the Slim, 0x81/0x01 on the fat console)
-                for (int e = 0; e < id->bNumEndpoints; e++)
-                {
-                    const libusb_endpoint_descriptor* ep = &id->endpoint[e];
-
-                    if ((ep->bmAttributes & 3) == 2 && !(ep->bEndpointAddress & 0x80) && in >= 0 &&
-                        (ep->bEndpointAddress & 0x0f) == (in & 0x0f))
-                    {
-                        same = ep->bEndpointAddress;
-                    }
-                }
-                if (same >= 0)
-                {
-                    outep = same;
-                }
-                if (ev >= 0 && in >= 0 && outep >= 0)
-                {
-                    out.interface = id->bInterfaceNumber;
-                    out.events = static_cast<std::uint8_t>(ev);
-                    out.aclIn = static_cast<std::uint8_t>(in);
-                    out.aclOut = static_cast<std::uint8_t>(outep);
-                    found = true;
-                }
-            }
-        }
+        found = findHciInterface(*cfg, out);
         m_freeConfig(cfg);
     }
     if (list != nullptr)

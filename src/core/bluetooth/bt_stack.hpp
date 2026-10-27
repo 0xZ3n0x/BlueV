@@ -53,7 +53,6 @@ struct L2Channel
     bool closed = false;          // the device closed it, or the link went down
     std::uint32_t theirMtu = 672; // 672 is the L2CAP default until they say otherwise
 
-    // forget a previous session's state
     // the device asked for this channel: remember its id, wait for the configuration
     void accept(std::uint32_t theirCid_)
     {
@@ -63,6 +62,7 @@ struct L2Channel
         configured = false;
         closed = false;
     }
+    // forget a previous session's state
     void reset()
     {
         theirCid = 0;
@@ -85,7 +85,7 @@ class BtStack
     // The four ports are used, not owned; they must outlive the stack.
     BtStack(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IClock& clock);
 
-    // ---- the controller (bt_stack.cpp) ----
+    // ---- the controller (bt_stack_controller.cpp) ----
     // Choose the controller before start(): the console's own chip (empty) or
     // an adapter in a USB port (a name under /dev).
     void useAdapter(const std::string& node);
@@ -158,7 +158,7 @@ class BtStack
     {
         return m_peerMac.empty() ? "--" : m_peerMac;
     }
-    // Connection requests from unpaired devices that were refused (service mode).
+    // Connection requests from unpaired devices that were refused.
     long foreignRequests() const
     {
         return m_foreignRequests.load();
@@ -212,12 +212,12 @@ class BtStack
     // Whether a command reply answers a command we sent recently (the console's
     // stack shares the chip and its replies arrive here too).
     bool replyIsOurs(std::uint16_t opcode);
-    // Turns scanning off and disconnects the link we hold, if any.
     bool openTransport();
     void readBufferSize();
     bool identifyController();
     void logControllerSettings();
     void configureController();
+    // Turns scanning off and disconnects the link we hold, if any.
     void dropStaleLinks();
 
     // events (bt_stack_events.cpp)
@@ -245,6 +245,8 @@ class BtStack
     void runInquiry(std::uint32_t timeoutMs);
 
     // link
+    bool pageAttempts(std::uint8_t* request);
+    bool recoverExistingLink(std::uint8_t* request);
     bool pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t clock);
     bool encryptLink();
     void resetLinkState(); // keeps the target
@@ -255,6 +257,8 @@ class BtStack
     void clearConnectResult();                 // m_connDone, m_connStatus
     void clearSecurity();                      // authentication and encryption results
     void resetCredits();                       // all ACL buffers free, nothing in flight
+    void pushInFlight(std::uint64_t sentAt);   // a packet went out
+    void popInFlight();                        // the oldest packet is accounted for
     void sendDisconnect(std::uint16_t handle); // "remote user terminated"
     void dropAllLinks(std::uint32_t pauseMs);  // Disconnect for every handle a controller could hold
 
@@ -267,6 +271,14 @@ class BtStack
     void onChannelClose(std::uint8_t id, const std::uint8_t* params);
     void onEchoRequest(std::uint8_t id, const std::uint8_t* params, std::uint16_t length);
     void onInformationRequest(std::uint8_t id, const std::uint8_t* params);
+    enum class Request
+    {
+        Failed,
+        Accepted,
+        OpenedByPeer
+    };
+    Request requestChannel(L2Channel& channel, std::uint16_t psm);
+    bool configureChannel(L2Channel& channel);
     void dispatch(std::uint32_t cid, const std::uint8_t* data, int length);
     void addChannel(L2Channel& channel, FrameHandler handler);
     L2Channel* channelByTheirs(std::uint16_t cid);
@@ -306,8 +318,6 @@ class BtStack
 
     // the link
     BdAddr m_target{};
-    std::uint8_t m_targetPsrm = 0;
-    std::uint16_t m_targetClock = 0;
     BondKey m_key;
     std::string m_peerName;
     std::string m_peerMac;
@@ -334,7 +344,8 @@ class BtStack
     int m_creditsMax = 0;
     long m_sent = 0, m_reported = 0, m_assumed = 0;
     long m_otherCompleted = 0, m_otherAcl = 0;
-    std::uint64_t m_inflight[64] = {};
+    static constexpr int kInFlightSlots = 64;
+    std::uint64_t m_inflight[kInFlightSlots] = {};
     int m_ifHead = 0, m_ifCount = 0;
 
     // L2CAP

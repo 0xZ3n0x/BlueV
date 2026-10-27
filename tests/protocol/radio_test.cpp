@@ -42,7 +42,7 @@ TEST_F(RadioTest, OpenStartsTheControllerInServiceMode)
     EXPECT_TRUE(radio.open("ugen1.2"));
     EXPECT_EQ("ugen1.2", controller.selectedNode);
     EXPECT_EQ("", radio.openError());
-    // service mode: an unknown device dialing in is counted, not accepted
+    // an unknown device dialing in is counted, not accepted
     controller.event(0x04, {0x99, 0, 0, 0, 0, 0, 0x04, 0x04, 0x24, 1});
     radio.poll(10);
     EXPECT_EQ(1, radio.foreignRequests());
