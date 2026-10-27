@@ -34,6 +34,50 @@ BtStack::BtStack(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb
 // ------------------------------------------------------------------
 // commands
 // ------------------------------------------------------------------
+bool BtStack::isTarget(const std::uint8_t* address) const
+{
+    return std::memcmp(address, m_target.data(), 6) == 0;
+}
+
+void BtStack::clearConnectResult()
+{
+    m_connDone = false;
+    m_connStatus = 0;
+}
+
+void BtStack::clearSecurity()
+{
+    m_authDone = false;
+    m_authStatus = 0;
+    m_encOn = false;
+    m_encStatus = 0;
+}
+
+void BtStack::resetCredits()
+{
+    m_credits = m_creditsMax;
+    m_ifHead = 0;
+    m_ifCount = 0;
+}
+
+void BtStack::dropAllLinks(std::uint32_t pauseMs)
+{
+    for (int h = 1; h <= 8; h++)
+    {
+        sendDisconnect(static_cast<std::uint16_t>(h));
+        poll(pauseMs);
+    }
+}
+
+void BtStack::sendDisconnect(std::uint16_t handle)
+{
+    std::uint8_t disc[3];
+
+    putLe16(disc, handle);
+    disc[2] = 0x13;
+    cmd(hci::kDisconnect, disc, 3);
+}
+
 bool BtStack::cmd(std::uint16_t opcode, const std::uint8_t* params, std::uint8_t length)
 {
     if (!m_transport.command(opcode, params, length))
@@ -109,34 +153,20 @@ bool BtStack::hciSync(std::uint16_t opcode, const std::uint8_t* params, std::uin
 
 void BtStack::dropStaleLinks()
 {
-    std::uint8_t scan = 0;
-    std::uint8_t disc[3];
-
-    cmd(hci::kWriteScanEnable, &scan, 1);
-    poll(50);
+    setScan(0);
 
     if (m_handle != 0 && !m_disconnected)
     {
-        putLe16(disc, m_handle);
-        disc[2] = 0x13;
-        cmd(hci::kDisconnect, disc, 3);
+        sendDisconnect(m_handle);
         wait([this] { return m_disconnected; }, 1500, false);
     }
 
     // the controller can hold links from a killed payload
-    for (int h = 1; h <= 8; h++)
-    {
-        disc[0] = static_cast<std::uint8_t>(h);
-        disc[1] = 0;
-        disc[2] = 0x13;
-        cmd(hci::kDisconnect, disc, 3);
-        poll(40);
-    }
+    dropAllLinks(40);
     poll(200);
 
     m_disconnected = false;
-    m_connDone = false;
-    m_connStatus = 0;
+    clearConnectResult();
     m_handle = 0;
     logLine("radio: leftover links cleared");
 }
@@ -227,25 +257,23 @@ bool BtStack::start()
         return false;
     }
 
-    if (!hciSync(hci::kReadBufferSize))
-    {
-        m_aclMtu = 0x3fd;
-        m_creditsMax = 7;
-        m_credits = 7;
-        logLine("controller: buffer size reply missed, using 7 x 1021");
-    }
-    else
+    if (hciSync(hci::kReadBufferSize))
     {
         m_credits = getLe16(m_cc + 9);
         m_aclMtu = getLe16(m_cc + 6);
-        m_creditsMax = m_credits;
+    }
+    else
+    {
+        logLine("controller: buffer size reply missed, using 7 x 1021");
+        m_credits = 0;
+        m_aclMtu = 0;
     }
     if (m_aclMtu < 0x40 || m_credits < 1)
     {
         m_aclMtu = 0x3fd;
-        m_creditsMax = 7;
         m_credits = 7;
     }
+    m_creditsMax = m_credits;
     logLine("controller: %d ACL buffers of %u bytes", m_credits, m_aclMtu);
 
     // identify the controller and a few of its settings
@@ -314,22 +342,17 @@ bool BtStack::start()
 
     scan = 0;
     hciSync(hci::kWriteScanEnable, &scan, 1);
-    scan = 2; // page scan (so we stay findable)
     dropStaleLinks();
-    cmd(hci::kWriteScanEnable, &scan, 1);
-    poll(50);
+    setScan(2); // page scan (so we stay findable)
     return true;
 }
 
 void BtStack::stop()
 {
-    std::uint8_t scan = 2;
-
     dropStaleLinks();
     // dropStaleLinks leaves scanning off; the system needs page scan on so
     // that paired controllers can reconnect to the console
-    cmd(hci::kWriteScanEnable, &scan, 1);
-    poll(100);
+    setScan(2);
     m_transport.close();
     m_localKnown = false;
 }
@@ -370,7 +393,7 @@ bool BtStack::wait(const std::function<bool()>& done, std::uint32_t timeoutMs, b
 // ------------------------------------------------------------------
 // bonds: the link key belongs to the pair (our adapter, the device)
 // ------------------------------------------------------------------
-bool BtStack::bondExists(const BdAddr& peer)
+bool BtStack::hasBond(const BdAddr& peer)
 {
     return m_localKnown && m_bondStore.hasKey(m_local, peer);
 }
@@ -382,11 +405,6 @@ void BtStack::setBond(const BdAddr& peer)
     m_key = BondKey{};
     m_bondStore.loadKey(m_local, peer, m_key);
     m_peerName = m_bondStore.loadName(peer);
-}
-
-bool BtStack::hasBond(const BdAddr& peer)
-{
-    return bondExists(peer);
 }
 
 std::vector<BondEntry> BtStack::bonds()

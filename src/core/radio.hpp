@@ -23,16 +23,6 @@
 namespace bluev
 {
 
-// a device seen by the last scan
-struct RadioDevice
-{
-    BdAddr address{};
-    std::string name;
-    int rssi = -128;
-    std::uint32_t classOfDevice = 0;
-    bool other = false; // probably not an audio device (a TV and the like)
-};
-
 class IRadio
 {
   public:
@@ -56,7 +46,7 @@ class IRadio
     // ---- devices ----
     // Inquiry; returns how many devices were found. devices() is the result.
     virtual int scan(std::uint32_t timeoutMs) = 0;
-    virtual std::vector<RadioDevice> devices() = 0;
+    virtual std::vector<BtDevice> devices() = 0;
     // Devices paired with the adapter in use, whether or not they were seen.
     virtual std::vector<BondEntry> bonds() = 0;
     virtual bool hasBond(const BdAddr& peer) = 0;
@@ -118,7 +108,10 @@ class Radio final : public IRadio
     {
         return m_bt.scan(timeoutMs);
     }
-    std::vector<RadioDevice> devices() override;
+    std::vector<BtDevice> devices() override
+    {
+        return m_bt.devices();
+    }
     std::vector<BondEntry> bonds() override
     {
         return m_bt.bonds();

@@ -5,6 +5,8 @@
 
 #include <cstdint>
 
+#include "core/bytes.hpp"
+
 namespace bluev
 {
 
@@ -16,12 +18,8 @@ inline void writeMediaHeader(std::uint8_t* pkt, std::uint32_t sequence, std::uin
 {
     pkt[0] = 0x80; // RTP v2
     pkt[1] = 0x60; // payload type 96
-    pkt[2] = static_cast<std::uint8_t>(sequence >> 8);
-    pkt[3] = static_cast<std::uint8_t>(sequence);
-    pkt[4] = static_cast<std::uint8_t>(timestamp >> 24);
-    pkt[5] = static_cast<std::uint8_t>(timestamp >> 16);
-    pkt[6] = static_cast<std::uint8_t>(timestamp >> 8);
-    pkt[7] = static_cast<std::uint8_t>(timestamp);
+    putBe16(pkt + 2, sequence);
+    putBe32(pkt + 4, timestamp);
     pkt[8] = 0;
     pkt[9] = 0;
     pkt[10] = 0;

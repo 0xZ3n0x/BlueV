@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core/bluetooth/device_filter.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <string_view>
 
 namespace bluev
 {
@@ -10,41 +13,16 @@ namespace
 {
 
 // names that mark TVs and the like (shown as "other" in the UI)
-const char* const kJunkWords[] = {"tv",         "webos",   "bravia", "roku",    "oled",  "qled", "soundbar",
-                                  "chromecast", "fire tv", "[lg]",   "hisense", "vizio", nullptr};
+constexpr std::string_view kJunkWords[] = {"tv",       "webos",      "bravia",  "roku", "oled",    "qled",
+                                           "soundbar", "chromecast", "fire tv", "[lg]", "hisense", "vizio"};
 
-// case-insensitive substring search (ASCII)
-bool containsNoCase(const char* hay, const char* needle)
+bool containsNoCase(std::string_view hay, std::string_view needle)
 {
-    for (; *hay; hay++)
-    {
-        const char *h = hay, *n = needle;
+    const auto same = [](char a, char b) {
+        return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+    };
 
-        while (*h && *n)
-        {
-            char a = *h, b = *n;
-
-            if (a >= 'A' && a <= 'Z')
-            {
-                a |= 0x20;
-            }
-            if (b >= 'A' && b <= 'Z')
-            {
-                b |= 0x20;
-            }
-            if (a != b)
-            {
-                break;
-            }
-            h++;
-            n++;
-        }
-        if (*n == 0)
-        {
-            return true;
-        }
-    }
-    return false;
+    return std::search(hay.begin(), hay.end(), needle.begin(), needle.end(), same) != hay.end();
 }
 
 } // namespace
@@ -99,9 +77,9 @@ bool isJunkDevice(std::uint32_t classOfDevice, const std::string& name)
     {
         return false;
     }
-    for (const char* const* w = kJunkWords; *w; w++)
+    for (const std::string_view word : kJunkWords)
     {
-        if (containsNoCase(name.c_str(), *w))
+        if (containsNoCase(name, word))
         {
             return true;
         }

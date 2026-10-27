@@ -73,14 +73,14 @@ void ServiceHarness::setUpDefaultRadio()
         return 2;
     }));
     ON_CALL(radio, devices()).WillByDefault(Invoke([] {
-        std::vector<RadioDevice> out;
+        std::vector<BtDevice> out;
         for (int i = 0; i < 2; i++)
         {
-            RadioDevice d;
+            BtDevice d;
             d.address = BdAddr{{static_cast<std::uint8_t>(i + 1), 0, 0, 0, 0, 0}};
             d.rssi = -50 - i;
-            d.name = "Device \"" + std::to_string(i) + "\"\n";
-            d.other = i == 1;
+            // the second one is called a TV, which the service marks as probably not audio
+            d.name = (i == 1 ? "TV \"" : "Device \"") + std::to_string(i) + "\"\n";
             out.push_back(d);
         }
         return out;

@@ -232,11 +232,7 @@ void BtStack::signaling(const std::uint8_t* cmd, int len)
 
             if (psm == 0x0001)
             { // SDP: always accept, cid 0x50
-                m_sdp.theirCid = scid;
-                m_sdp.connDone = true;
-                m_sdp.up = false;
-                m_sdp.configured = false;
-                m_sdp.closed = false;
+                m_sdp.accept(scid);
                 our = 0x50;
                 sdpIn = true;
             }
@@ -258,11 +254,7 @@ void BtStack::signaling(const std::uint8_t* cmd, int len)
             }
             else
             {
-                m_inChannel->theirCid = scid;
-                m_inChannel->connDone = true;
-                m_inChannel->up = false;
-                m_inChannel->configured = false;
-                m_inChannel->closed = false;
+                m_inChannel->accept(scid);
                 addChannel(*m_inChannel, m_inHandler);
                 our = static_cast<std::uint16_t>(m_inChannel->ourCid);
             }

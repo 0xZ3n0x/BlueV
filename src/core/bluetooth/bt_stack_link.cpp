@@ -18,15 +18,13 @@ namespace bluev
 bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t clock)
 {
     std::uint8_t req[13];
-    std::uint8_t disc[3];
     bool gotIt = false;
 
     m_target = peer;
     m_targetPsrm = static_cast<std::uint8_t>(psrm + (psrm == 0)); // R0 (0) is paged as R1
     m_targetClock = clock;
 
-    m_connDone = false;
-    m_connStatus = 0;
+    clearConnectResult();
 
     std::memcpy(req, peer.data(), 6);
     req[6] = 0x18;
@@ -64,16 +62,14 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
         logLine("connection: no answer (try %d)", attempt);
         cmd(hci::kCreateConnCancel, m_target.data(), 6);
         poll(400);
-        m_connDone = false;
-        m_connStatus = 0;
+        clearConnectResult();
         // stop paging for a moment: the headset may be paging us
         if (wait([this] { return m_connDone; }, 20000) && m_connStatus == 0)
         {
             gotIt = true;
             break;
         }
-        m_connDone = false;
-        m_connStatus = 0;
+        clearConnectResult();
     }
     if (!gotIt)
     {
@@ -89,8 +85,7 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
         // The controller says an ACL link to this device exists. It may be ours,
         // completing late: wait for its event. If not, drop every leftover link
         // and page again.
-        m_connDone = false;
-        m_connStatus = 0;
+        clearConnectResult();
         if (wait([this] { return m_connDone; }, 4000) && m_connStatus == 0)
         {
             logLine("connection: the earlier attempt completed");
@@ -98,17 +93,9 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
         }
         logLine("ACL already exists, dropping leftover links on this controller");
         cmd(hci::kCreateConnCancel, m_target.data(), 6);
-        for (int h = 1; h <= 8; h++)
-        {
-            disc[0] = static_cast<std::uint8_t>(h);
-            disc[1] = 0;
-            disc[2] = 0x13;
-            cmd(hci::kDisconnect, disc, 3);
-            poll(120);
-        }
+        dropAllLinks(120);
         poll(400);
-        m_connDone = false;
-        m_connStatus = 0;
+        clearConnectResult();
         m_handle = 0;
         m_disconnected = false;
         if (!cmd(hci::kCreateConn, req, 13))
@@ -197,18 +184,12 @@ bool BtStack::encryptLink()
 
 void BtStack::resetLinkState()
 {
-    m_connDone = false;
-    m_connStatus = 0;
+    clearConnectResult();
     m_handle = 0;
-    m_authDone = false;
-    m_authStatus = 0;
-    m_encOn = false;
-    m_encStatus = 0;
+    clearSecurity();
     m_disconnected = false;
     m_reassembler.reset();
-    m_credits = m_creditsMax;
-    m_ifHead = 0;
-    m_ifCount = 0;
+    resetCredits();
 }
 
 // forget the link state and the target
@@ -266,14 +247,11 @@ bool BtStack::adoptIncoming()
 
 void BtStack::disconnect()
 {
-    std::uint8_t disc[3];
     const unsigned oldGen = m_connGen;
 
     if (m_handle != 0 && !m_disconnected)
     {
-        putLe16(disc, m_handle);
-        disc[2] = 0x13;
-        cmd(hci::kDisconnect, disc, 3);
+        sendDisconnect(m_handle);
         wait([this] { return m_disconnected; }, 2000, false);
     }
     cmd(hci::kCreateConnCancel, m_target.data(), 6);

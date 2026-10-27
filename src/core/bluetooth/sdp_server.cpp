@@ -258,19 +258,25 @@ int buildAttributes(const std::uint8_t* ranges, std::uint32_t len, int* consumed
 constexpr std::uint8_t kInvalidRecordHandle = 0x02;
 constexpr std::uint8_t kInvalidContinuation = 0x03;
 
-int errorResponse(std::uint8_t* out, std::uint8_t tid1, std::uint8_t tid2, std::uint8_t code = kInvalidContinuation)
+// the PDU id and the transaction id (copied from the request) that start every response
+void beginResponse(std::uint8_t* out, std::uint8_t pdu, const std::uint8_t* req)
 {
-    out[0] = 0x01; // error response
-    out[1] = tid1;
-    out[2] = tid2;
-    putBe16(out + 3, 2); // parameter length
+    out[0] = pdu;
+    out[1] = req[1];
+    out[2] = req[2];
+}
+
+int errorResponse(std::uint8_t* out, const std::uint8_t* req, std::uint8_t code = kInvalidContinuation)
+{
+    beginResponse(out, 0x01, req); // error response
+    putBe16(out + 3, 2);           // parameter length
     putBe16(out + 5, code);
     return 7;
 }
 
 } // namespace
 
-int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_t* out, int outcap)
+int handleSdpRequest(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_t* out, int outcap)
 {
     if (static_cast<int>(reqlen) < 5)
     {
@@ -278,7 +284,6 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
     }
 
     const std::uint8_t pdu = req[0];
-    const std::uint8_t tid1 = req[1], tid2 = req[2];
     const std::uint32_t plen = getBe16(req + 3);
     int consumed = 0;
     int r;
@@ -289,7 +294,7 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
     }
     if (reqlen < plen + 5)
     {
-        return errorResponse(out, tid1, tid2);
+        return errorResponse(out, req);
     }
 
     switch (pdu)
@@ -298,12 +303,10 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
         r = patternMatches(req + 5, plen, &consumed);
         if (r < 0)
         {
-            return errorResponse(out, tid1, tid2);
+            return errorResponse(out, req);
         }
         logLine("sdp: service search -> %d record(s)", r);
-        out[0] = 0x03;
-        out[1] = tid1;
-        out[2] = tid2;
+        beginResponse(out, 0x03, req);
         putBe16(out + 5, r); // total record count
         putBe16(out + 7, r); // current record count
         if (r != 0)
@@ -325,23 +328,21 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
     case 0x04: { // service attribute
         if (plen < 6)
         {
-            return errorResponse(out, tid1, tid2);
+            return errorResponse(out, req);
         }
         const std::uint32_t handle = getBe32(req + 5);
 
         if (handle != 0x10001)
         {
-            return errorResponse(out, tid1, tid2, kInvalidRecordHandle);
+            return errorResponse(out, req, kInvalidRecordHandle);
         }
         r = buildAttributes(req + 11, plen - 6, &consumed, out + 7, outcap - 8);
         if (r < 0)
         {
-            return errorResponse(out, tid1, tid2);
+            return errorResponse(out, req);
         }
         logLine("sdp: attribute request -> %d bytes", r);
-        out[0] = 0x05;
-        out[1] = tid1;
-        out[2] = tid2;
+        beginResponse(out, 0x05, req);
         const std::uint32_t outlen = static_cast<std::uint32_t>(r);
 
         putBe16(out + 5, outlen);
@@ -353,7 +354,7 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
         r = patternMatches(req + 5, plen, &consumed);
         if (r < 0 || consumed + 2 > static_cast<int>(plen))
         {
-            return errorResponse(out, tid1, tid2);
+            return errorResponse(out, req);
         }
         if (r == 0)
         {
@@ -361,9 +362,7 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
             out[8] = 0;
             r = 2;
             logLine("sdp: search+attributes -> %d record(s), %d bytes", 0, r);
-            out[0] = 0x07;
-            out[1] = tid1;
-            out[2] = tid2;
+            beginResponse(out, 0x07, req);
             putBe16(out + 5, r);
             out[r + 7] = 0;
             putBe16(out + 3, r + 3);
@@ -375,14 +374,12 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
 
         if (outlen < 0)
         {
-            return errorResponse(out, tid1, tid2);
+            return errorResponse(out, req);
         }
         out[7] = 0x36;
         putBe16(out + 8, outlen);
         logLine("sdp: search+attributes -> %d record(s), %d bytes", r, outlen + 3);
-        out[0] = 0x07;
-        out[1] = tid1;
-        out[2] = tid2;
+        beginResponse(out, 0x07, req);
         putBe16(out + 5, outlen + 3);
         out[outlen + 3 + 7] = 0;
         putBe16(out + 3, outlen + 3 + 3);
@@ -392,7 +389,7 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
         logLine("sdp: unhandled PDU %#04x", pdu);
         break;
     }
-    return errorResponse(out, tid1, tid2);
+    return errorResponse(out, req);
 }
 
 } // namespace bluev

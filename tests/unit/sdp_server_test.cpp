@@ -28,7 +28,7 @@ std::vector<std::uint8_t> searchFor(std::uint16_t uuid)
 
 int ask(const std::vector<std::uint8_t>& req, std::uint8_t* out, int cap = 512)
 {
-    return SdpServer::handle(req.data(), static_cast<std::uint32_t>(req.size()), out, cap);
+    return handleSdpRequest(req.data(), static_cast<std::uint32_t>(req.size()), out, cap);
 }
 
 } // namespace
@@ -113,7 +113,7 @@ TEST(SdpServer, SearchAttributeAnswersOneRecordOrAnEmptyList)
 TEST(SdpServer, ShortAndMalformedRequests)
 {
     std::uint8_t out[512];
-    EXPECT_EQ(0, SdpServer::handle(reinterpret_cast<const std::uint8_t*>("\x02\x00"), 2, out, 512));
+    EXPECT_EQ(0, handleSdpRequest(reinterpret_cast<const std::uint8_t*>("\x02\x00"), 2, out, 512));
     EXPECT_EQ(0, ask(request(0x02, searchFor(0x110a)), out, 32)); // no room for an answer
 
     // the length field promises more than there is

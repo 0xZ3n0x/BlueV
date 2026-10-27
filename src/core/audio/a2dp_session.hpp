@@ -63,6 +63,8 @@ class A2dpSession
     int command(std::uint8_t signal, const std::uint8_t* params, int len); // the answer's type (2 = accept), or -1
     bool followPeer();                                                     // the device configured the stream itself
     bool driveSetup();                                                     // we configure it
+    bool findSbcSink(std::uint32_t& caps);
+    bool sendStart(std::uint8_t seidByte);
 
     BtStack& m_bt;
     IClock& m_clock;

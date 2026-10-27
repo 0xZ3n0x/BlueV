@@ -24,7 +24,7 @@ tried and dropped, is in sections 17 and 18.
 | `src/app/main.cpp` | composition root: lock file, builds the real objects, runs the service |
 | `src/core/ports/` | interfaces: `IClock`, `ILogSink`, `IHciTransport`, `IBondStore`, `IAudioSource`, `IUsbDirectory`, `IAppInstaller`. An interface exists only where a test needs a fake of something it cannot run (the controller, the console, time, files); the rest are plain classes or `std::function` |
 | `src/core/bluetooth/bt_stack*.cpp` | `BtStack`: controller start/stop, inquiry, paging/pairing/encryption, event and ACL loop, L2CAP, credit flow control, bonds |
-| `src/core/bluetooth/` (rest) | `SdpServer`, addresses, names, `device_filter` (TV classification, EIR names), `L2capReassembler`, HCI opcodes |
+| `src/core/bluetooth/` (rest) | `handleSdpRequest` (SDP), addresses, names, `device_filter` (TV classification, EIR names), `L2capReassembler`, HCI opcodes |
 | `src/core/audio/` | `A2dpSession` (AVDTP), `A2dpStreamer` (capture, resample, SBC, RTP), `avdtp`, `a2dp_params`, `PcmFifo`, `LinearResampler`, `rtp.hpp` |
 | `src/core/radio.*` | `IRadio` (what the service needs) and `Radio` (wires `BtStack` + `A2dpSession` + `A2dpStreamer`) |
 | `src/service/service.*` | `Service`: state machine driven by the web interface; depends on `IRadio`, `IUsbDirectory` and the concrete `HomeScreenShortcut` / `LogBuffer` |
@@ -206,7 +206,7 @@ switch alternate between rounds (all types / DM1 only). A late "ACL already
 exists" (`0x0b`) is first given time to complete as our own link before any
 cleanup. Then `encrypt_link`.
 
-**Inbound** (`BtStack::poll`, connection request): in service mode only devices that
+**Inbound** (`BtStack::poll`, connection request): only devices that
 have a bond file are accepted (as the **master** of the link, see below); others
 are logged and left to the console. A connection
 complete event from a bonded device is accepted even if the target changed
@@ -359,7 +359,7 @@ channel closes, or a stop is requested:
 ## 11. Notifications and logging
 
 - `AppLog::notify` calls `sendNotification` (`sceKernelSendNotificationRequest`)
-  directly on the calling thread. `notifyShow` also logs the text.
+  directly on the calling thread.
 - What appears on the screen is kept short: `BlueV ready: open http://<ip>:7733`
   once the web server is up (the address comes from the network interface, and
   is only shown, not logged; without one it points at the home screen entry),
@@ -709,7 +709,7 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | The radio is off at start; the user starts it from the page | Nothing opens a USB device until asked: the internal chip is shared with the gamepad (section 12) |
 | A USB adapter is the recommended path | The chip is ours alone: no gamepad problem, 11 s from selecting a speaker to audio against about 105 s on the internal chip (12b) |
 | Endpoint layout read from the USB descriptors (`libSceUsbd`), not guessed by behaviour | Behaviour detection armed reads on the wrong pipes and broke the gamepad's reconnection (12c) |
-| Service mode: a paired device that dials in is accepted; an unpaired one is refused and counted (`foreign_requests`) | The console is not pairable by whoever walks past; a speaker that reconnects by itself just works |
+| A paired device that dials in is accepted; an unpaired one is refused and counted (`foreign_requests`) | The console is not pairable by whoever walks past; a speaker that reconnects by itself just works |
 | Pairings are files, per adapter and device; names per device | The same speaker can be paired with the internal chip and with an adapter at once; plain files are easy to inspect and to test |
 | AVDTP: wait for the device to start the procedure (1 s if we made the connection, 20 s if it did), then drive it ourselves | Headsets differ: the Sony WH-CH720N hangs up after about 8 s if the host does nothing, the WH-1000XM5 after 2-3 s (was 3 s here, 2026-10-25), the Creative speaker opens its channel later; starting at once collided with a device that drives (link timeout, 2026-10-18) |
 | Flow control: at most 5 unconfirmed packets, a missing completion report counts as done after 31 ms | Limits of 3 packets and 100 ms cap the stream near 40 packets/s and dropped audio (`bt_stack.cpp`) |

@@ -8,13 +8,9 @@
 namespace bluev
 {
 
-class SdpServer
-{
-  public:
-    // Handles one SDP request; writes the response into `out` (at most
-    // `outcap` bytes) and returns its length, or 0 when there is nothing to
-    // answer. The server keeps no state.
-    static int handle(const std::uint8_t* request, std::uint32_t requestLength, std::uint8_t* out, int outcap);
-};
+// Handles one SDP request; writes the response into `out` (at most `outcap`
+// bytes) and returns its length, or 0 when there is nothing to answer. There is
+// no state: the one service record is built in.
+int handleSdpRequest(const std::uint8_t* request, std::uint32_t requestLength, std::uint8_t* out, int outcap);
 
 } // namespace bluev

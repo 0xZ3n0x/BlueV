@@ -295,9 +295,9 @@ TEST_F(WithRadioOn, DevicesAlsoShowPairedOnesThatWereNotSeen)
 TEST_F(WithRadioOn, ASeenDeviceWithoutANameGetsTheNameOfItsBond)
 {
     ON_CALL(radio, devices()).WillByDefault(::testing::Invoke([] {
-        RadioDevice d;
+        BtDevice d;
         d.address = BdAddr{{0xCC, 0xBB, 0xAA, 0x22, 0x11, 0x00}};
-        return std::vector<RadioDevice>{d};
+        return std::vector<BtDevice>{d};
     }));
     BondEntry b;
     b.peer = BdAddr{{0xCC, 0xBB, 0xAA, 0x22, 0x11, 0x00}};

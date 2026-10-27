@@ -6,6 +6,15 @@
 namespace bluev::avdtp
 {
 
+namespace
+{
+// first byte of a message: transaction label and message type
+std::uint8_t firstByte(std::uint8_t label, std::uint8_t type)
+{
+    return static_cast<std::uint8_t>(((label & 0xf) << 4) | type);
+}
+} // namespace
+
 bool parseHeader(const std::uint8_t* frame, int length, Header& out)
 {
     if (length < 2 || (frame[0] & 0x0c) != 0)
@@ -21,7 +30,7 @@ bool parseHeader(const std::uint8_t* frame, int length, Header& out)
 std::size_t buildCommand(std::uint8_t label, std::uint8_t signal, const std::uint8_t* params, int length,
                          std::uint8_t* out)
 {
-    out[0] = static_cast<std::uint8_t>((label & 0xf) << 4);
+    out[0] = firstByte(label, kCommand);
     out[1] = signal;
     if (length > 0)
     {
@@ -32,14 +41,14 @@ std::size_t buildCommand(std::uint8_t label, std::uint8_t signal, const std::uin
 
 std::size_t buildAccept(std::uint8_t label, std::uint8_t signal, std::uint8_t* out)
 {
-    out[0] = static_cast<std::uint8_t>(((label & 0xf) << 4) | kAccept);
+    out[0] = firstByte(label, kAccept);
     out[1] = signal;
     return 2;
 }
 
 std::size_t buildReject(std::uint8_t label, std::uint8_t signal, std::uint8_t error, std::uint8_t* out)
 {
-    out[0] = static_cast<std::uint8_t>(((label & 0xf) << 4) | kReject);
+    out[0] = firstByte(label, kReject);
     out[1] = signal;
     out[2] = error;
     return 3;
@@ -47,7 +56,7 @@ std::size_t buildReject(std::uint8_t label, std::uint8_t signal, std::uint8_t er
 
 std::size_t buildDiscoverAccept(std::uint8_t label, std::uint8_t* out)
 {
-    out[0] = static_cast<std::uint8_t>(((label & 0xf) << 4) | kAccept);
+    out[0] = firstByte(label, kAccept);
     out[1] = kDiscover;
     out[2] = 1 << 2; // seid 1, not in use
     out[3] = 0x00;   // audio, source
@@ -59,7 +68,7 @@ std::size_t buildCapabilitiesAccept(std::uint8_t label, std::uint8_t* out)
     static const std::uint8_t kCaps[10] = {0x01, 0x00,              // media transport
                                            0x07, 0x06, 0x00, 0x00,  // media codec: audio, SBC
                                            0xff, 0xff, 0x02, 0x35}; // all options, bitpool 2..53
-    out[0] = static_cast<std::uint8_t>(((label & 0xf) << 4) | kAccept);
+    out[0] = firstByte(label, kAccept);
     out[1] = kGetCapabilities;
     std::memcpy(out + 2, kCaps, sizeof kCaps);
     return 12;

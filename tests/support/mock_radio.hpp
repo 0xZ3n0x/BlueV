@@ -20,7 +20,7 @@ class MockRadio : public IRadio
     MOCK_METHOD(void, setStreamObserver, (StreamObserver observer), (override));
     MOCK_METHOD(void, poll, (std::uint32_t timeoutMs), (override));
     MOCK_METHOD(int, scan, (std::uint32_t timeoutMs), (override));
-    MOCK_METHOD(std::vector<RadioDevice>, devices, (), (override));
+    MOCK_METHOD(std::vector<BtDevice>, devices, (), (override));
     MOCK_METHOD(std::vector<BondEntry>, bonds, (), (override));
     MOCK_METHOD(bool, hasBond, (const BdAddr& peer), (override));
     MOCK_METHOD(void, forget, (const BdAddr& peer), (override));

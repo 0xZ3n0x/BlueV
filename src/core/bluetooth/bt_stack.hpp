@@ -54,6 +54,15 @@ struct L2Channel
     std::uint32_t theirMtu = 672; // 672 is the L2CAP default until they say otherwise
 
     // forget a previous session's state
+    // the device asked for this channel: remember its id, wait for the configuration
+    void accept(std::uint32_t theirCid_)
+    {
+        theirCid = theirCid_;
+        connDone = true;
+        up = false;
+        configured = false;
+        closed = false;
+    }
     void reset()
     {
         theirCid = 0;
@@ -101,13 +110,6 @@ class BtStack
     void setTick(std::function<void()> tick)
     {
         m_tick = std::move(tick);
-    }
-    // Service mode (a long-running program, not a one-off tool): a device that
-    // was paired before may dial in and is accepted, any other is counted in
-    // foreignRequests() and refused, and inquiry results are not announced.
-    void setServiceMode(bool on)
-    {
-        m_service = on;
     }
 
     // a command whose answer is waited for; true when it succeeded
@@ -236,7 +238,14 @@ class BtStack
     bool encryptLink();
     void resetLinkState(); // keeps the target
     void setBond(const BdAddr& peer);
-    bool bondExists(const BdAddr& peer);
+    bool isTarget(const std::uint8_t* address) const; // the six bytes are the device we deal with
+    // logs a reply to a command that was not ours (the console's own stack), up to 50 times
+    void noteForeignReply(std::uint16_t opcode, unsigned status);
+    void clearConnectResult();                 // m_connDone, m_connStatus
+    void clearSecurity();                      // authentication and encryption results
+    void resetCredits();                       // all ACL buffers free, nothing in flight
+    void sendDisconnect(std::uint16_t handle); // "remote user terminated"
+    void dropAllLinks(std::uint32_t pauseMs);  // Disconnect for every handle a controller could hold
 
     // L2CAP
     void signaling(const std::uint8_t* cmd, int length);
@@ -258,7 +267,6 @@ class BtStack
     std::string m_startError;
     BdAddr m_local{};
     bool m_localKnown = false;
-    bool m_service = false;
     std::function<void()> m_tick;
     std::uint64_t m_lastTick = 0;
 

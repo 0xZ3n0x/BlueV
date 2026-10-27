@@ -8,6 +8,7 @@
 #include <thread>
 
 #include "core/bluetooth/address.hpp"
+#include "core/bluetooth/device_filter.hpp"
 #include "core/ports/log.hpp"
 #include "platform/posix/quit_signal.hpp"
 #include "service/json.hpp"
@@ -295,7 +296,7 @@ void Service::publishDevices()
 {
     std::vector<DeviceInfo> devices;
 
-    for (const RadioDevice& found : m_radio.devices())
+    for (const BtDevice& found : m_radio.devices())
     {
         if (devices.size() >= kMaxDevices)
         {
@@ -306,7 +307,7 @@ void Service::publishDevices()
         info.name = found.name;
         info.rssi = found.rssi;
         info.cod = found.classOfDevice;
-        info.other = found.other;
+        info.other = isJunkDevice(found.classOfDevice, found.name);
         info.bonded = m_radio.hasBond(found.address);
         info.connected = m_current == found.address;
         devices.push_back(std::move(info));
