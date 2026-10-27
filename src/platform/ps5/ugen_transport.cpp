@@ -36,8 +36,8 @@ void UgenTransport::select(const char* node, const HciLayout& layout)
 }
 
 // A transfer that is still armed when the process ends would be written to by
-// the kernel after the memory is gone, so every pending one is stopped first
-// and every opened one closed.
+// the kernel after the memory is gone, so every pending one is stopped first,
+// then the transfer table is taken down.
 void UgenTransport::closeFd()
 {
     if (m_fd < 0)
@@ -53,11 +53,10 @@ void UgenTransport::closeFd()
         }
         m_pending[i] = 0;
     }
-    for (int i = 0; i < kTransfers; i++)
-    {
-        std::uint8_t t = static_cast<std::uint8_t>(i);
-        ioctl(m_fd, USB_FS_UNINIT, &t); // what the console's driver takes for this number; see the SDK's usb_ioctl.h
-    }
+    // One call takes the whole transfer table down (its argument is a dummy byte),
+    // as the console's own libusb does when it closes a device.
+    std::uint8_t dummy = 0;
+    ioctl(m_fd, USB_FS_UNINIT, &dummy);
     ::close(m_fd);
     m_fd = -1;
 }
