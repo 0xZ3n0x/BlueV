@@ -140,40 +140,6 @@ std::string queryValue(std::string_view query, std::string_view key)
     return {};
 }
 
-// One request to the server on this machine; the whole answer is read.
-bool localRequest(int port, const char* request, std::string& answer)
-{
-    timeval timeout{2, 0};
-    sockaddr_in address{};
-    bool ok = false;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-
-    if (fd < 0)
-    {
-        return false;
-    }
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = htons(static_cast<std::uint16_t>(port));
-    if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0)
-    {
-        char chunk[512];
-        ssize_t got;
-
-        send(fd, request, std::strlen(request), 0);
-        answer.clear();
-        while (answer.size() < 4096 && (got = recv(fd, chunk, sizeof chunk, 0)) > 0)
-        {
-            answer.append(chunk, static_cast<std::size_t>(got));
-        }
-        ok = !answer.empty();
-    }
-    close(fd);
-    return ok;
-}
-
 } // namespace
 
 HttpServer::HttpServer(Service& service, IUsbDirectory& usb, ILogReader& log, std::string_view page, Options options)
@@ -186,36 +152,30 @@ HttpServer::~HttpServer()
     stop();
 }
 
-// Binds the first free port of the range. Called again after a failure, which
-// is how the server comes up once the network does.
+// Binds the configured port. Called again after a failure, which is how the
+// server comes up once the network does (or once whatever was holding the
+// port lets go of it).
 bool HttpServer::start()
 {
-    for (int port = m_options.firstPort; port <= m_options.lastPort; port++)
-    {
-        sockaddr_in address{};
-        int one = 1;
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in address{};
+    int one = 1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
 
-        if (fd < 0)
-        {
-            return false;
-        }
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = htonl(INADDR_ANY);
-        address.sin_port = htons(static_cast<std::uint16_t>(port));
-        if (bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0 && listen(fd, kBacklog) == 0)
-        {
-            m_listenFd = fd;
-            m_port = port;
-            break;
-        }
-        close(fd);
-    }
-    if (m_listenFd < 0)
+    if (fd < 0)
     {
         return false;
     }
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(static_cast<std::uint16_t>(m_options.port));
+    if (bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0 || listen(fd, kBacklog) != 0)
+    {
+        close(fd);
+        return false;
+    }
+    m_listenFd = fd;
+    m_port = m_options.port;
     m_stopping.store(false);
     m_acceptThread = std::thread([this] { acceptLoop(); });
     logLine("web: listening on port %d", m_port.load());
@@ -474,37 +434,6 @@ HttpServer::Response HttpServer::route(std::string_view method, std::string_view
     response.code = 405;
     response.body = message(false, "method not allowed");
     return response;
-}
-
-bool HttpServer::quitRunningInstance(Options options)
-{
-    // The ports used before 7733 are still looked at, so that a copy of an
-    // older version is asked to quit by this one.
-    constexpr int kOldFirstPort = 8081;
-    constexpr int kOldLastPort = 8090;
-    const int current = options.lastPort - options.firstPort + 1;
-
-    for (int index = 0; index < current + (kOldLastPort - kOldFirstPort + 1); index++)
-    {
-        const int port = index < current ? options.firstPort + index : kOldFirstPort + index - current;
-        std::string answer;
-
-        if (!localRequest(port, "GET /api/status HTTP/1.0\r\n\r\n", answer))
-        {
-            continue;
-        }
-        if (answer.find("\"state\"") == std::string::npos || answer.find("\"stream\"") == std::string::npos)
-        {
-            continue;
-        }
-        logLine("web: found our server on port %d", port);
-        if (localRequest(port, "POST /api/quit HTTP/1.0\r\n\r\n", answer) &&
-            answer.find("\"ok\":true") != std::string::npos)
-        {
-            return true;
-        }
-    }
-    return false;
 }
 
 } // namespace bluev

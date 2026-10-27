@@ -58,10 +58,15 @@ log file -> lock (flock) -> notifications
 
 - `/data/bluev/bluev.lock` is taken with
   `flock(LOCK_EX|LOCK_NB)` so only one copy runs. If the lock is held, the new
-  copy looks for the web server of the running copy on `127.0.0.1:7733-7742`,
-  checks that it identifies itself (status JSON with `state` and `stream`),
-  sends `POST /api/quit`, and waits up to 100 s for the lock. Other programs
-  that happen to listen on nearby ports never receive a request.
+  copy looks for another process already named `bluev.elf` (elfldr names an
+  injected process after the uploaded ELF itself, `ki_comm`) through the
+  kernel's process list (`sysctl(KERN_PROC_PROC)`, `platform/ps5/process_identity.cpp`)
+  — not over HTTP, so this works even before the old copy's web server has
+  come up. It sends it `SIGTERM`, which the old copy treats exactly like
+  `POST /api/quit` (finish what is running, then stop), and waits up to 100 s
+  for the lock. Only once it has the lock (an older copy is gone or there
+  never was one) does this copy call `thr_set_name` on itself — a lookup
+  never has two processes to choose between while it is still running.
 - Files in `/data/bluev/` (`main.cpp`, `FileBondStore`): `bluev.log`,
   `bluev.lock`, and one `bond-<ours>-<theirs>.key` (23 bytes: address 6, link
   key 16, key type 1) plus `bond-<theirs>.name` per paired device (section 12b).
@@ -91,7 +96,8 @@ One accept thread (it polls every 200 ms so it notices a stop request); each
 connection is served by a short-lived thread (browsers keep idle sockets open
 and must not block the others), at most 8 at a time, reserved with a
 compare-and-swap. `stop()` stops accepting and then waits for the requests in
-flight. Port 7733, falling back to 7734-7742. No authentication: anyone on the local network can use it.
+flight. Port 7733, fixed; `start()` is retried every 2 s if it is taken (also how
+it comes up once the network does). No authentication: anyone on the local network can use it.
 
 | Endpoint | Purpose |
 |---|---|
@@ -687,8 +693,8 @@ in the console's browser. It is the mechanism the payload manager uses:
 
 The entry only works while the program runs, since its content is the web server:
 send the ELF first, then use the home screen entry. The title id is fixed;
-the port in the deeplink is the default one (7733), the server falls back to
-7734-7742 when that is taken and the entry would then miss it. The host test
+the port in the deeplink (7733) is also the only one the server ever binds,
+so the entry cannot fall out of sync with it. The host test
 checks the files and the calls to the installer with a fake that behaves like the
 console's (no `AppInstallTitleDir`). On the console the installer accepts the
 directory (logged as `shortcut: the home screen entry opens ...`).
@@ -717,7 +723,8 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | One control page, embedded in the ELF (`tools/embed.py`) | Nothing else to deploy; the launcher menu stays small (section 15) |
 | Notifications go through a worker thread | The radio thread never sleeps to let a message be read |
 | Log: a ring of 300 lines for the page and a file flushed once a second, turned over at 512 KB; nothing in the kernel log; time stamps in UTC | The page can show the log without reading a file; the file survives a crash and cannot grow without limit; the console's kernel log stays readable |
-| One copy at a time (`flock` on `/data/bluev/bluev.lock`); a newer copy asks the old one to quit | Sending the ELF again replaces the running program |
+| One copy at a time (`flock` on `/data/bluev/bluev.lock`); a newer copy finds the old one by process name (`thr_set_name`/`sysctl(KERN_PROC_PROC)`) and asks it to quit (`SIGTERM`) | Sending the ELF again replaces the running program; finding it by name works even before its web server is up, unlike probing it over HTTP |
+| A fixed web server port (7733), not a range with a fallback | The home screen entry always names 7733; a fallback port made it silently stop matching. `start()` already retries every 2 s, which also covers the port being briefly held by something else |
 | The home screen entry is registered through the system installer, with a marker file (section 16) | It is retried only when it was not accepted before |
 | Host build with CMake (plain, thread and address sanitizer), console build with the Makefile | The two builds have different compilers and flags; the host build is where the tests live |
 | `clang-format` (Microsoft style, pointers on the left, braces always) on everything but `third_party` | One style, no review noise |
@@ -746,7 +753,6 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 
 Product
 
-- The home screen entry always names port 7733; when the server has moved on (7734-7742) it no longer matches.
 - Remember settings: the last adapter, starting the radio at boot, reconnecting the last device.
 - Media keys and volume (AVRCP): the L2CAP channel for it (psm `0x17`) is refused and the SDP record only describes the audio source.
 - Choose the SBC quality and the sample rate; a better resampler than the linear one.

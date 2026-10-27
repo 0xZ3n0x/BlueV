@@ -18,11 +18,10 @@ namespace bluev
 
 class Service;
 
-// the range of ports the server tries
+// the port the server listens on
 struct ServerPorts
 {
-    int firstPort = 7733;
-    int lastPort = 7742;
+    int port = 7733;
 };
 
 class HttpServer
@@ -34,7 +33,8 @@ class HttpServer
     HttpServer(Service& service, IUsbDirectory& usb, ILogReader& log, std::string_view page, Options options);
     ~HttpServer();
 
-    // Listens on the first free port of the range. False if none is free.
+    // Listens on the configured port. False if it is in use (the caller
+    // keeps retrying; see Service::run()).
     bool start();
     // Stops accepting, then waits for the requests being served. Safe to
     // call more than once.
@@ -50,11 +50,6 @@ class HttpServer
     {
         return 7733;
     }
-
-    // Asks an older copy of this program, listening on this machine, to
-    // quit. True if one answered. Other programs on nearby ports are left
-    // alone: only a server that identifies itself as ours gets the request.
-    static bool quitRunningInstance(Options options = {});
 
   private:
     struct Response
