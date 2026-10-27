@@ -269,9 +269,14 @@ bool A2dpSession::driveSetup()
             return false;
         }
 
-        // the headset opens the media channel towards us
+        // We sent OPEN, so the transport channel is normally ours to open; no
+        // log has shown the XM5 opening it first. Give the sink five seconds:
+        // on the shared controller it can spend a few seconds on its AVRCP SDP
+        // searches after OPEN, and opening ours after 1.5 s ended one attempt
+        // with "media configuration did not finish". The fallback below opens
+        // it when the wait ends.
         m_bt.bindInbound(kAvdtpPsm, m_media, onMedia);
-        std::uint64_t deadline = m_clock.nowMs() + 1500;
+        std::uint64_t deadline = m_clock.nowMs() + 5000;
         if (m_clock.nowMs() < deadline && !m_media.up)
         {
             while (!m_bt.linkLost())

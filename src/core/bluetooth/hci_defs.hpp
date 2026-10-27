@@ -23,6 +23,7 @@ constexpr std::uint16_t kUserConfirmReply = 0x042c;
 constexpr std::uint16_t kRoleDiscovery = 0x0809;
 constexpr std::uint16_t kSetEventMask = 0x0c01;
 constexpr std::uint16_t kReset = 0x0c03;
+constexpr std::uint16_t kSetEventFilter = 0x0c05;
 constexpr std::uint16_t kWriteLocalName = 0x0c13;
 constexpr std::uint16_t kReadPageTimeout = 0x0c17;
 constexpr std::uint16_t kReadScanEnable = 0x0c19;

@@ -65,6 +65,10 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
 
     for (int attempt = 1; attempt <= 4 && !gotIt; attempt++)
     {
+        // The console's page scan for the gamepad takes almost all the radio
+        // time; pause it for our page, then put it back before listening for
+        // the headset's own call.
+        pauseSystemScan();
         // alternate the packet types / role switch between the tries: the odd
         // tries use DM1 only and no role switch, the even ones every packet type
         if (attempt % 2 == 0)
@@ -81,19 +85,43 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
         }
         if (!cmd(hci::kCreateConn, req, 13))
         {
+            restoreSystemScan();
             return false;
         }
-        if (waitConn(4000))
+        // The page timeout of the controller can be much longer than the 4 s
+        // the Slim and the adapters need. On the console's own chip the page
+        // was being cancelled before the controller had finished looking, so
+        // a headset without a stale bond (no dial-in) could never pair. Give
+        // the internal controller its full page timeout.
+        const std::uint32_t pageWait = m_external ? 4000u : (m_pageTimeoutMs > 0 ? m_pageTimeoutMs + 1000 : 16000u);
+        if (waitConn(pageWait))
         {
-            gotIt = true;
-            break;
+            if (m_connStatus == 0)
+            {
+                gotIt = true;
+                break;
+            }
+            logLine("connection: page failed: %s (status %#04x)", hciStatusName(m_connStatus), m_connStatus);
+            if (m_external)
+            {
+                // a completed failure is final for an adapter, as before
+                gotIt = true;
+                break;
+            }
+            m_connDone = false;
+            m_connStatus = 0;
         }
-        logLine("connection: no answer (try %d)", attempt);
-        cmd(hci::kCreateConnCancel, m_target.data(), 6);
-        poll(400);
-        m_connDone = false;
-        m_connStatus = 0;
-        // stop paging for a moment: the headset may be paging us
+        else
+        {
+            logLine("connection: no answer (try %d)", attempt);
+            cmd(hci::kCreateConnCancel, m_target.data(), 6);
+            poll(400);
+            m_connDone = false;
+            m_connStatus = 0;
+        }
+        // stop paging for a moment: the headset may be paging us. The system
+        // page scan has to be back on for that.
+        restoreSystemScan();
         if (waitConn(20000) && m_connStatus == 0)
         {
             gotIt = true;
@@ -102,6 +130,7 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
         m_connDone = false;
         m_connStatus = 0;
     }
+    restoreSystemScan();
     if (!gotIt)
     {
         return false;
@@ -319,8 +348,10 @@ bool BtStack::connectTo(const BdAddr& peer)
             m_key.have ? " (paired before)" : " (new device)");
     if (!pageDevice(peer, psrm, clock))
     {
+        restoreSystemScan();
         return false;
     }
+    restoreSystemScan();
     return encryptLink();
 }
 

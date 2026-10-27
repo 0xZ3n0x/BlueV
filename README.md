@@ -75,9 +75,11 @@ to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit
 - Devices that are probably not audio devices (TVs and the like) are marked in the list.
 - BlueV uses SBC, the codec every Bluetooth audio device supports. It does not send
   microphone audio.
-- Tested on a PS5 Slim only. With a USB adapter, a Creative Stage Air V2 and Sony WH-CH720N
-  headphones work. With the internal chip the Creative works, but the WH-CH720N could not be
-  made to work (see [Contributing](#contributing)).
+- Tested on a PS5 Slim and a PS5 Pro (13.00). With a USB adapter, a Creative Stage Air V2,
+  Sony WH-CH720N and Sony WH-1000XM5 work. On the Pro's internal chip the XM5 works too; after
+  a fresh pairing the first Connect can fail before A2DP, so press Connect again. On the Slim's
+  internal chip the Creative works, but the WH-CH720N could not be made to work (see
+  [Contributing](#contributing)).
 
 ## Troubleshooting
 

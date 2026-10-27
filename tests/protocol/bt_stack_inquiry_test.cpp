@@ -134,3 +134,27 @@ TEST_F(BtFixture, NoBondsAreVisibleBeforeTheAdapterIsKnown)
     EXPECT_FALSE(stack.hasBond(BdAddr{{1, 2, 3, 4, 5, 6}}));
     EXPECT_TRUE(stack.bonds().empty());
 }
+
+TEST_F(BtFixture, AnInquiryRefusedBecauseOneIsAlreadyRunningIsTriedAgain)
+{
+    controller.inquiryRefusals = 1;
+    controller.inquiryDevices = {device(0x41, "WH-1000XM5")};
+    startExternal();
+
+    EXPECT_EQ(1, stack.scan(10000));
+    EXPECT_TRUE(sink.has("the controller refused to start"));
+    EXPECT_TRUE(controller.sawCommand(kSetEventFilter)); // the console's filter is cleared
+    EXPECT_EQ(2, controller.countCommand(kInquiry));     // the refused one and the retry
+}
+
+TEST_F(BtFixture, AnInquiryStoppedByTheConsoleIsStartedAgain)
+{
+    controller.inquiryDevices = {device(0x41, "WH-1000XM5")};
+    startInternal();
+
+    // the console's own stack cancels the inquiry on the shared controller
+    controller.event(0x0e, {1, 0x02, 0x04, 0x00}, 500); // Command Complete: Inquiry Cancel, status 0
+    EXPECT_EQ(1, stack.scan(10000));
+    EXPECT_TRUE(sink.has("the console stopped it, starting it again"));
+    EXPECT_EQ("WH-1000XM5", stack.devices()[0].name);
+}

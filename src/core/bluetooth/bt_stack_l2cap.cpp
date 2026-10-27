@@ -149,15 +149,19 @@ bool BtStack::openChannel(L2Channel& ch, std::uint16_t psm, FrameHandler handler
         {
             return true;
         }
-        // some headsets never send their own configure request; go on anyway
-        // after a grace period
+        // Some headsets never send their own configure request (the Sony
+        // WH-1000XM5 does not): our direction is configured as soon as the
+        // peer accepted our request (ch.up), so the channel is usable for what
+        // we send. Waiting seconds for the other direction delayed the AVDTP
+        // setup past the headset's short patience; the peer's request, when it
+        // comes, arrives within milliseconds of ours.
         if (ch.up)
         {
             if (upSince == 0)
             {
                 upSince = m_clock.nowMs();
             }
-            else if (m_clock.nowMs() - upSince >= 8000)
+            else if (m_clock.nowMs() - upSince >= 100)
             {
                 logLine("l2cap: %s: no configure request from the peer, continuing anyway", ch.name);
                 return true;

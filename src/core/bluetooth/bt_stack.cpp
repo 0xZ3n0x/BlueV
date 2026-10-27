@@ -114,6 +114,33 @@ bool BtStack::hciSync(std::uint16_t opcode, const std::uint8_t* params, std::uin
     return m_cc[5] == 0 && m_ccLen > 5;
 }
 
+// Commands that answer with Command Status (Inquiry, Create Connection, ...)
+// do not produce a Command Complete, so hciSync cannot be used for them. A
+// shared controller that is already inquiring answers 0x0c; reading the status
+// lets the inquiry try again instead of waiting for results that cannot come.
+int BtStack::commandStatus(std::uint16_t opcode, const std::uint8_t* params, std::uint8_t length,
+                           std::uint32_t timeoutMs)
+{
+    m_statusOp = 0;
+    m_status = -1;
+    m_statusSeen = false;
+    if (!cmd(opcode, params, length))
+    {
+        return -1;
+    }
+    const std::uint64_t deadline = m_clock.nowMs() + timeoutMs;
+
+    while (m_clock.nowMs() < deadline)
+    {
+        if (m_statusSeen && m_statusOp == opcode)
+        {
+            return m_status;
+        }
+        poll(20);
+    }
+    return -1;
+}
+
 void BtStack::dropStaleLinks()
 {
     std::uint8_t scan = 0;
@@ -315,10 +342,12 @@ bool BtStack::start()
     }
     if (hciSync(hci::kReadPageTimeout) && m_ccLen >= 8)
     {
-        logLine("controller: page timeout %u ms", static_cast<unsigned>((m_cc[6] | m_cc[7] << 8) * 625 / 1000));
+        m_pageTimeoutMs = (m_cc[6] | m_cc[7] << 8) * 625 / 1000;
+        logLine("controller: page timeout %u ms", static_cast<unsigned>(m_pageTimeoutMs));
     }
     if (hciSync(hci::kReadScanEnable) && m_ccLen >= 7)
     {
+        m_scanSaved = m_cc[6];
         logLine("controller: scan setting at start %u (%s)", m_cc[6],
                 m_cc[6] == 0   ? "off"
                 : m_cc[6] == 1 ? "inquiry scan"
@@ -348,6 +377,7 @@ void BtStack::stop()
 {
     std::uint8_t scan = 2;
 
+    restoreSystemScan();
     dropStaleLinks();
     // dropStaleLinks leaves scanning off; the system needs page scan on so
     // that paired controllers can reconnect to the console
@@ -363,6 +393,39 @@ void BtStack::setScan(int mode)
 
     cmd(hci::kWriteScanEnable, &scan, 1);
     poll(50);
+}
+
+// The console's stack keeps an interlaced page scan for the gamepad running
+// at almost full duty on the MediaTek chip. It leaves our own page almost no
+// radio time (pages time out), so the page is done with the system scan off.
+// The value read at start is put back as soon as the page ends (and before
+// the listen window, where the headset may dial in).
+void BtStack::pauseSystemScan()
+{
+    if (m_external || m_scanPaused)
+    {
+        return;
+    }
+    const std::uint8_t off = 0;
+
+    cmd(hci::kWriteScanEnable, &off, 1);
+    poll(20);
+    m_scanPaused = true;
+    logLine("scan: system page scan paused for our page (was %d)", m_scanSaved);
+}
+
+void BtStack::restoreSystemScan()
+{
+    if (!m_scanPaused)
+    {
+        return;
+    }
+    const std::uint8_t scan = static_cast<std::uint8_t>(m_scanSaved > 0 ? m_scanSaved : 2);
+
+    cmd(hci::kWriteScanEnable, &scan, 1);
+    poll(20);
+    m_scanPaused = false;
+    logLine("scan: system page scan restored (%d)", scan);
 }
 
 bool BtStack::wait(const std::function<bool()>& done, std::uint32_t timeoutMs, bool stopOnLinkLoss)

@@ -111,6 +111,10 @@ class BtStack
 
     // a command whose answer is waited for; true when it succeeded
     bool hciSync(std::uint16_t opcode, const std::uint8_t* params = nullptr, std::uint8_t length = 0);
+    // Sends a command that is answered with Command Status (Inquiry and the
+    // like) and returns that status, or -1 when no status came back.
+    int commandStatus(std::uint16_t opcode, const std::uint8_t* params = nullptr, std::uint8_t length = 0,
+                      std::uint32_t timeoutMs = 1000);
 
     // ---- inquiry and the list of devices (bt_stack_inquiry.cpp) ----
     // Inquiry for up to `timeoutMs`; replaces devices() and returns how many
@@ -213,6 +217,9 @@ class BtStack
     bool replyIsOurs(std::uint16_t opcode);
     // Turns scanning off and disconnects the link we hold, if any.
     void dropStaleLinks();
+    // Off while our own page runs on a shared chip (see bt_stack.cpp).
+    void pauseSystemScan();
+    void restoreSystemScan();
 
     // events (bt_stack_events.cpp)
     void handleEvent(const std::uint8_t* evt, int n);
@@ -231,6 +238,7 @@ class BtStack
     // inquiry
     void onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const std::uint8_t* eir, int eirLength);
     void runInquiry(std::uint32_t timeoutMs);
+    int startInquiry(std::uint64_t until);
 
     // link
     bool waitConn(std::uint32_t timeoutMs);
@@ -276,6 +284,9 @@ class BtStack
     std::uint16_t m_ccOp = 0;
     std::uint32_t m_ccLen = 0;
     std::uint8_t m_cc[0x44c] = {};
+    std::uint16_t m_statusOp = 0; // the opcode of the last Command Status
+    int m_status = -1;            // and its status
+    bool m_statusSeen = false;
     long m_systemReplies = 0; // replies that were not ours, logged up to 50
     int m_vendorDumps = 0;    // vendor events dumped raw, up to 5
     int m_otherAclLogged = 0; // data of other links logged before ours is up, up to 20
@@ -301,11 +312,16 @@ class BtStack
     // inquiry
     std::vector<BtDevice> m_devices;
     bool m_inqDone = false;
+    bool m_inquiryActive = false;  // our inquiry is the one the controller runs
+    bool m_inquiryStopped = false; // the console's stack cancelled it
     int m_skippedLogged = 0;
 
     // flow control: `m_credits` ACL buffers free of `m_creditsMax`; `m_inflight`
     // is a ring of send times of packets not yet reported completed
     std::uint32_t m_aclMtu = 0;
+    std::uint32_t m_pageTimeoutMs = 0; // from Read Page Timeout
+    int m_scanSaved = 2;               // the system's Scan_Enable, read at start
+    bool m_scanPaused = false;
     int m_credits = 0;
     int m_creditsMax = 0;
     long m_sent = 0, m_reported = 0, m_assumed = 0;

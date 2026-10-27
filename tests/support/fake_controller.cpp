@@ -166,6 +166,12 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
         complete(opcode, {0, 0x02});
         break;
     case kInquiry: {
+        if (inquiryRefusals > 0)
+        {
+            inquiryRefusals--;
+            status(opcode, 0x0c); // command disallowed: an inquiry is running
+            break;
+        }
         status(opcode, 0);
         std::uint32_t at = 200;
         for (const InquiryDevice& d : inquiryDevices)

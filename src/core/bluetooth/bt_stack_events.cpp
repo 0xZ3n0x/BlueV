@@ -329,11 +329,18 @@ void BtStack::onCommandComplete(const std::uint8_t* evt, int n)
 {
     const std::uint8_t* e = evt + 2;
     const std::uint16_t op = static_cast<std::uint16_t>(e[1] | e[2] << 8);
+    const bool ours = replyIsOurs(op);
 
-    if (!replyIsOurs(op) && m_systemReplies < 50)
+    if (!ours && m_systemReplies < 50)
     {
         m_systemReplies++;
         logLine("the console's own command answered: %s (%#06x), status %#04x", hciOpcodeName(op), op, e[3]);
+    }
+    // The console shares the controller and its own Inquiry Cancel stops any
+    // inquiry on it, including ours (seen on the PS5 Pro, 2026-10-25).
+    if (!ours && op == hci::kInquiryCancel && m_inquiryActive)
+    {
+        m_inquiryStopped = true;
     }
     if (op == hci::kRoleDiscovery && e[3] == 0)
     {
@@ -349,6 +356,10 @@ void BtStack::onCommandStatus(const std::uint8_t* e)
     const std::uint16_t op = static_cast<std::uint16_t>(e[2] | e[3] << 8);
     const std::uint32_t status = e[0];
 
+    // remembered for commandStatus() (Inquiry and the like)
+    m_statusOp = op;
+    m_status = e[0];
+    m_statusSeen = true;
     if (!replyIsOurs(op) && m_systemReplies < 50)
     {
         m_systemReplies++;

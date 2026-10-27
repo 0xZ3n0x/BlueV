@@ -193,12 +193,36 @@ keeps Audio/Video class devices and takes the name from EIR data when present.
 `is_junk` marks TVs and soundbars (minor class, name list); this is only an
 "other device" hint in the UI and never influences a choice.
 
+On a controller shared with the console the scan has to deal with the
+console's own stack. Before starting, the event filter is cleared (`Set Event
+Filter`, clear all): a filter the system may have left behind would hide the
+results. The *Command Status* of `Inquiry` is read as well, because a
+controller that is already inquiring answers 0x0c and the old code waited the
+whole window for results that could not come. If the status
+reply itself goes to the console's read, the inquiry is assumed to have
+started. Finally, the console's `Inquiry Cancel` stops whatever inquiry is
+running on the controller, ours included (seen on the PS5 Pro); a cancel that
+is not ours is noticed in `onCommandComplete` and the scan starts a new
+inquiry, keeping the devices already found.
+
 **Outbound** (`BtStack::connectTo`): selects the device's bond (`setBond`), then
-`page_device`: up to 4 rounds of a 4 s Create Connection followed by a 20 s
-window in which the device may connect to us instead. Packet types and role
-switch alternate between rounds (all types / DM1 only). A late "ACL already
-exists" (`0x0b`) is first given time to complete as our own link before any
-cleanup. Then `encrypt_link`.
+`page_device`: up to 4 rounds of Create Connection followed by a 20 s window in
+which the device may connect to us instead. Packet types and role switch
+alternate between rounds (all types / DM1 only). A late "ACL already exists"
+(`0x0b`) is first given time to complete as our own link before any cleanup.
+Then `encrypt_link`.
+
+On the console's chip the system keeps its own interlaced **page scan** for the
+gamepad running at almost full duty, and it leaves our page almost no radio
+time: the controller pages for its whole 15 s timeout and then fails. BlueV
+therefore turns the system page scan off for the page (`pauseSystemScan`, the
+value read at start), waits up to the controller's page timeout (16 s; an
+adapter keeps 4 s), and puts the scan back before the 20 s listen window and
+on every exit and on Stop. With the scan out of the way the page completes in
+one to four seconds. The scan is off only that page: a gamepad cannot
+reconnect during it, so a killed copy is repaired by the next radio start
+(which sets page scan 2). This is the same mechanism HearBridge uses on the
+MediaTek controllers.
 
 **Inbound** (`BtStack::poll`, connection request): in service mode only devices that
 have a bond file are accepted (as the **master** of the link, see below); others
@@ -260,7 +284,10 @@ connection generation number) that new link is kept for the next session.
 
 Channel API: `openChannel` (connection request, then configure requests
 every 6 s until the channel is `up` and `configured`; a "no resources" answer is
-retried; gives up after 14 s), `closeChannel`, `bindInbound`.
+retried; gives up after 14 s), `closeChannel`, `bindInbound`. The channel is
+usable as soon as our own Configure Request was accepted (`up`); waiting for
+the peer's own request is now limited to 100 ms instead of 8 s, because some
+devices (the XM5) never send one and the 8 s delayed the A2DP setup.
 
 ## 8. SDP (`core/bluetooth/sdp_server.cpp`)
 
@@ -312,8 +339,12 @@ and sends `START` itself if none came.
 **Source-driven** (used when the headset starts nothing
 within 4 s): open the signaling channel, `DISCOVER`, `GET_CAPABILITIES` for the
 sinks, `chooseA2dpParams`, `SET_CONFIGURATION`, `OPEN`, media channel (the
-headset opens it within 1.5 s, otherwise we do), 300 ms, `START` (an
-unfavourable answer still lets streaming be attempted).
+sink gets up to 5 s to open it, otherwise we do), 300 ms, `START` (an
+unfavourable answer still lets streaming be attempted). The XM5 never opened
+the channel in the 2026-10-26 runs: every attempt logged `no inbound media
+channel after 5000 ms, opening it ourselves`. The five seconds give a sink
+that does open it after its AVRCP service searches time to do so; the fallback
+opens it otherwise.
 
 `choose_params(caps)`: 48 kHz preferred, else 44.1 kHz; Joint Stereo
 preferred, else Stereo; blocks 16 > 12 > 8 > 4; 8 sub-bands when supported;
@@ -497,8 +528,18 @@ commands Read BD_ADDR, Read Local Version and Read Buffer Size with
 nothing came on `0x8c`. The gamepad was connected over Bluetooth during that
 run and kept working afterwards (one run, one read). Interface 3 does not take HCI commands as class control
 requests, so it is not a second controller that can be used this way. What it
-carries is unknown; writing to its bulk endpoints (`0x0b`, `0x0d`) was not tried,
-the console's driver is attached to it.
+is used for is not known. On the **PS5 Pro** (`0e8d:3605`, MediaTek) the
+first interface does have the radio: with the inquiry handling of section 6
+the scan found the headset, paired it and streamed (2026-10-25). The console's
+gamepad is on the same controller there — its connection request appears in
+the log as `inbound connection from ... (gamepad) ... ignored` — so the
+shared-controller caveat of section 12 applies. With the system page scan
+paused during the page (section 6) a factory-reset headset pairs in one to four
+seconds (2026-10-26 logs). The first connection after a fresh pairing can fail
+before A2DP; pressing Connect again streams (2026-10-26 log: 469 capture
+records, 48 kHz SBC). One 2026-10-26 run streamed on the first Connect, an
+earlier one did not. The headset can also refuse AVDTP `OPEN` once; pressing
+Connect again works.
 
 HCI through libusb on the USB adapter (a throw-away probe, not kept; 2026-10-24, CSR
 `0a12:0001`, BlueV's radio off): `sceUsbdOpen` and `ClaimInterface(0)` succeed;
