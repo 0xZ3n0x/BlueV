@@ -21,6 +21,14 @@ class Service;
 // the port the server listens on, and what the console's home screen entry opens
 constexpr int kDefaultPort = 7733;
 
+// what a route answers
+struct HttpResponse
+{
+    int code = 200;
+    const char* contentType = "application/json";
+    std::string body;
+};
+
 class HttpServer
 {
   public:
@@ -42,13 +50,6 @@ class HttpServer
     }
 
   private:
-    struct Response
-    {
-        int code = 200;
-        const char* contentType = "application/json";
-        std::string body;
-    };
-
     void acceptLoop();
     // Serves one connection on its own thread and closes it.
     void serve(int socketFd);
@@ -57,7 +58,10 @@ class HttpServer
     // Takes a slot; false when kMaxConnections are in use (the caller answers 503).
     bool reserveConnection();
     // The answer to one request.
-    Response route(std::string_view method, std::string_view path, std::string_view query);
+    HttpResponse route(std::string_view method, std::string_view path, std::string_view query);
+    HttpResponse routeGet(std::string_view path, std::string_view query);
+    std::string adaptersJson();
+    std::string logJson(std::string_view query);
 
     static constexpr int kMaxConnections = 8;
 

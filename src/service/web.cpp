@@ -140,6 +140,40 @@ std::string queryValue(std::string_view query, std::string_view key)
     return {};
 }
 
+// The answer to a command posted to the service.
+HttpResponse postResponse(Service::PostResult result)
+{
+    HttpResponse response;
+
+    switch (result)
+    {
+    case Service::PostResult::Ok:
+        response.body = message(true, "ok");
+        break;
+    case Service::PostResult::Busy:
+        response.code = 409;
+        response.body = message(false, "busy");
+        break;
+    case Service::PostResult::BadAddress:
+        response.code = 400;
+        response.body = message(false, "bad address");
+        break;
+    case Service::PostResult::BadAdapter:
+        response.code = 400;
+        response.body = message(false, "adapter: internal, or external with dev=ugenX.Y");
+        break;
+    case Service::PostResult::NotAllowed:
+        response.code = 409;
+        response.body = message(false, "not allowed now");
+        break;
+    case Service::PostResult::RadioOff:
+        response.code = 409;
+        response.body = message(false, "the radio is off: start it first");
+        break;
+    }
+    return response;
+}
+
 } // namespace
 
 HttpServer::HttpServer(Service& service, IUsbDirectory& usb, LogBuffer& log, std::string_view page, int port)
@@ -298,7 +332,7 @@ void HttpServer::serve(int fd)
             query = target.substr(question + 1);
             target = target.substr(0, question);
         }
-        const Response response = route(method, target, query);
+        const HttpResponse response = route(method, target, query);
 
         reply(fd, response.code, response.contentType, response.body);
     }
@@ -309,130 +343,119 @@ void HttpServer::serve(int fd)
     close(fd);
 }
 
-// GET: the page, /api/status, /api/devices, /api/adapters, /api/log. POST:
-// /api/radio/on and /off, then every other /api/<command> goes to Service::post().
-HttpServer::Response HttpServer::route(std::string_view method, std::string_view path, std::string_view query)
+// the console's own chip is not looked at, only listed
+std::string HttpServer::adaptersJson()
 {
-    Response response;
+    const std::vector<UsbDevice> found = m_usb.adapters();
+    Json json;
 
-    const auto postResponse = [](Service::PostResult result) {
-        Response response;
+    json.beginObject().key("internal").value(true).key("external").beginArray();
+    for (const UsbDevice& device : found)
+    {
+        json.beginObject()
+            .key("device")
+            .value(device.node)
+            .key("vid")
+            .value(static_cast<int>(device.vid))
+            .key("pid")
+            .value(static_cast<int>(device.pid))
+            .key("class")
+            .value(static_cast<int>(device.deviceClass))
+            .key("subclass")
+            .value(static_cast<int>(device.subClass))
+            .key("protocol")
+            .value(static_cast<int>(device.protocol))
+            .key("product")
+            .value(device.product)
+            .key("vendor")
+            .value(device.vendor)
+            .endObject();
+    }
+    json.endArray().endObject();
+    return json.take();
+}
 
-        switch (result)
+// the log from line `since` on, as {"next": ..., "text": ...}
+std::string HttpServer::logJson(std::string_view query)
+{
+    const std::string since = queryValue(query, "since");
+    unsigned from = since.empty() ? 0 : static_cast<unsigned>(std::strtoul(since.c_str(), nullptr, 10));
+    unsigned next = 0;
+    const std::string text = m_log.since(from, next, kMaxLogBytes);
+    Json json;
+
+    json.beginObject().key("next").value(next).key("text").value(text).endObject();
+    return json.take();
+}
+
+// the page, /api/status, /api/devices, /api/adapters, /api/log
+HttpResponse HttpServer::routeGet(std::string_view path, std::string_view query)
+{
+    HttpResponse response;
+
+    if (path == "/" || path == "/index.html")
+    {
+        response.contentType = "text/html; charset=utf-8";
+        response.body.assign(m_page);
+    }
+    else if (path == "/api/status")
+    {
+        response.body = m_service.statusJson();
+    }
+    else if (path == "/api/devices")
+    {
+        response.body = m_service.devicesJson();
+    }
+    else if (path == "/api/adapters")
+    {
+        response.body = adaptersJson();
+    }
+    else if (path == "/api/log")
+    {
+        response.body = logJson(query);
+    }
+    else
+    {
+        response.code = 404;
+        response.body = message(false, "not found");
+    }
+    return response;
+}
+
+HttpResponse HttpServer::route(std::string_view method, std::string_view path, std::string_view query)
+{
+    if (method == "GET")
+    {
+        return routeGet(path, query);
+    }
+    if (method == "POST")
+    {
+        // /api/radio/on and /off, then every other /api/<command> goes to Service::post()
+        if (path == "/api/radio/on")
         {
-        case Service::PostResult::Ok:
-            response.body = message(true, "ok");
-            break;
-        case Service::PostResult::Busy:
-            response.code = 409;
-            response.body = message(false, "busy");
-            break;
-        case Service::PostResult::BadAddress:
-            response.code = 400;
-            response.body = message(false, "bad address");
-            break;
-        case Service::PostResult::BadAdapter:
-            response.code = 400;
-            response.body = message(false, "adapter: internal, or external with dev=ugenX.Y");
-            break;
-        case Service::PostResult::NotAllowed:
-            response.code = 409;
-            response.body = message(false, "not allowed now");
-            break;
-        case Service::PostResult::RadioOff:
-            response.code = 409;
-            response.body = message(false, "the radio is off: start it first");
-            break;
+            return postResponse(m_service.startRadio(queryValue(query, "adapter"), queryValue(query, "dev")));
         }
-        return response;
-    };
+        if (path == "/api/radio/off")
+        {
+            return postResponse(m_service.stopRadio());
+        }
+        if (path.size() > 5 && path.substr(0, 5) == "/api/")
+        {
+            return postResponse(m_service.post(path.substr(5), queryValue(query, "addr")));
+        }
+    }
+
+    HttpResponse response;
 
     if (method == "OPTIONS")
     { // CORS preflight
         response.code = 204;
-        return response;
     }
-    if (method == "GET")
+    else
     {
-        if (path == "/" || path == "/index.html")
-        {
-            response.contentType = "text/html; charset=utf-8";
-            response.body.assign(m_page);
-        }
-        else if (path == "/api/status")
-        {
-            response.body = m_service.statusJson();
-        }
-        else if (path == "/api/devices")
-        {
-            response.body = m_service.devicesJson();
-        }
-        else if (path == "/api/adapters")
-        {
-            // the console's own chip is not looked at, only listed
-            const std::vector<UsbDevice> found = m_usb.adapters();
-            Json json;
-
-            json.beginObject().key("internal").value(true).key("external").beginArray();
-            for (const UsbDevice& device : found)
-            {
-                json.beginObject()
-                    .key("device")
-                    .value(device.node)
-                    .key("vid")
-                    .value(static_cast<int>(device.vid))
-                    .key("pid")
-                    .value(static_cast<int>(device.pid))
-                    .key("class")
-                    .value(static_cast<int>(device.deviceClass))
-                    .key("subclass")
-                    .value(static_cast<int>(device.subClass))
-                    .key("protocol")
-                    .value(static_cast<int>(device.protocol))
-                    .key("product")
-                    .value(device.product)
-                    .key("vendor")
-                    .value(device.vendor)
-                    .endObject();
-            }
-            json.endArray().endObject();
-            response.body = json.take();
-        }
-        else if (path == "/api/log")
-        {
-            const std::string since = queryValue(query, "since");
-            unsigned from = since.empty() ? 0 : static_cast<unsigned>(std::strtoul(since.c_str(), nullptr, 10));
-            unsigned next = 0;
-            const std::string text = m_log.since(from, next, kMaxLogBytes);
-            Json json;
-
-            json.beginObject().key("next").value(next).key("text").value(text).endObject();
-            response.body = json.take();
-        }
-        else
-        {
-            response.code = 404;
-            response.body = message(false, "not found");
-        }
-        return response;
+        response.code = 405;
+        response.body = message(false, "method not allowed");
     }
-
-    if (method == "POST" && (path == "/api/radio/on" || path == "/api/radio/off"))
-    {
-        const Service::PostResult result =
-            path == "/api/radio/on" ? m_service.startRadio(queryValue(query, "adapter"), queryValue(query, "dev"))
-                                    : m_service.stopRadio();
-
-        return postResponse(result);
-    }
-    if (method == "POST" && path.size() > 5 && path.substr(0, 5) == "/api/")
-    {
-        const std::string address = queryValue(query, "addr");
-
-        return postResponse(m_service.post(path.substr(5), address));
-    }
-    response.code = 405;
-    response.body = message(false, "method not allowed");
     return response;
 }
 

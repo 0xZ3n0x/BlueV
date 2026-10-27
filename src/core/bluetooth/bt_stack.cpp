@@ -216,22 +216,18 @@ void BtStack::useAdapter(const std::string& node)
     m_transport.select(node.empty() ? nullptr : node.c_str(), m_layout);
 }
 
-bool BtStack::start()
+// Opens the transport. The console's controller exposes the event and ACL
+// pipes on different endpoints depending on the hardware revision; when they
+// are not known from the descriptors, find out where the events come from and
+// reopen with the right roles.
+bool BtStack::openTransport()
 {
-    std::uint8_t name[248];
-    std::uint8_t scan;
-
-    m_startError.clear();
     if (!m_transport.open())
     {
         m_startError =
             m_external ? "the adapter could not be opened" : "the console's Bluetooth chip could not be opened";
         return false;
     }
-
-    // The console's controller exposes the event and ACL pipes on different
-    // endpoints depending on the hardware revision; find out where the events
-    // come from and reopen with the right roles.
     if (!m_layoutKnown && m_transport.detectRoles(10000) == 2)
     {
         logLine("hci: events arrive on the second IN pipe, "
@@ -247,16 +243,13 @@ bool BtStack::start()
             return false;
         }
     }
+    return true;
+}
 
-    // An adapter that is ours alone starts from a clean state; the console's
-    // chip is never reset, the console's stack is using it.
-    if (m_external && !hciSync(hci::kReset))
-    {
-        m_startError = "the adapter did not answer (HCI Reset)";
-        m_transport.close();
-        return false;
-    }
-
+// the number and size of the controller's ACL buffers, with a safe default when
+// it does not say
+void BtStack::readBufferSize()
+{
     if (hciSync(hci::kReadBufferSize))
     {
         m_credits = getLe16(m_cc + 9);
@@ -275,8 +268,12 @@ bool BtStack::start()
     }
     m_creditsMax = m_credits;
     logLine("controller: %d ACL buffers of %u bytes", m_credits, m_aclMtu);
+}
 
-    // identify the controller and a few of its settings
+// Who the controller is: version, features, address. False (with the error
+// set and the transport closed) for an adapter that cannot do Classic audio.
+bool BtStack::identifyController()
+{
     if (hciSync(hci::kReadLocalVersion) && m_ccLen >= 14)
     {
         const unsigned hv = m_cc[6], lmp = m_cc[9];
@@ -290,20 +287,17 @@ bool BtStack::start()
     {
         logLine("controller: local version not answered");
     }
-    if (hciSync(hci::kReadLocalFeatures) && m_ccLen >= 14)
+    // byte 4 bit 5 of the features: BR/EDR not supported (a Low Energy only adapter)
+    if (hciSync(hci::kReadLocalFeatures) && m_ccLen >= 14 && (m_cc[6 + 4] & 0x20))
     {
-        // byte 4 bit 5: BR/EDR not supported (a Low Energy only adapter)
-        if (m_cc[6 + 4] & 0x20)
+        logLine("controller: no BR/EDR support (features %02x %02x %02x "
+                "%02x %02x)",
+                m_cc[6], m_cc[7], m_cc[8], m_cc[9], m_cc[10]);
+        if (m_external)
         {
-            logLine("controller: no BR/EDR support (features %02x %02x %02x "
-                    "%02x %02x)",
-                    m_cc[6], m_cc[7], m_cc[8], m_cc[9], m_cc[10]);
-            if (m_external)
-            {
-                m_startError = "this adapter has no Bluetooth Classic (BR/EDR); audio needs it";
-                m_transport.close();
-                return false;
-            }
+            m_startError = "this adapter has no Bluetooth Classic (BR/EDR); audio needs it";
+            m_transport.close();
+            return false;
         }
     }
     if (hciSync(hci::kReadBdAddr) && m_ccLen >= 12)
@@ -318,6 +312,12 @@ bool BtStack::start()
         m_localKnown = true; // pairings go under a zero address
         logLine("controller address unknown");
     }
+    return true;
+}
+
+// settings the controller already has, for the log
+void BtStack::logControllerSettings()
+{
     if (hciSync(hci::kReadPageTimeout) && m_ccLen >= 8)
     {
         logLine("controller: page timeout %u ms", static_cast<unsigned>(getLe16(m_cc + 6) * 625 / 1000));
@@ -330,6 +330,14 @@ bool BtStack::start()
                 : m_cc[6] == 2 ? "page scan"
                                : "inquiry and page scan");
     }
+}
+
+// what we need from the controller: all events, simple pairing, extended
+// inquiry results, an audio device class, our name, and no scanning yet
+void BtStack::configureController()
+{
+    std::uint8_t name[248];
+    const std::uint8_t scanOff = 0;
 
     hciSync(hci::kSetEventMask, kEventMask, 8);
     hciSync(hci::kWriteSimplePairing, &kSimplePairingOn, 1);
@@ -339,9 +347,31 @@ bool BtStack::start()
     std::memset(name, 0, sizeof name);
     std::strcpy(reinterpret_cast<char*>(name), "BlueV");
     hciSync(hci::kWriteLocalName, name, 248);
+    hciSync(hci::kWriteScanEnable, &scanOff, 1);
+}
 
-    scan = 0;
-    hciSync(hci::kWriteScanEnable, &scan, 1);
+bool BtStack::start()
+{
+    m_startError.clear();
+    if (!openTransport())
+    {
+        return false;
+    }
+    // An adapter that is ours alone starts from a clean state; the console's
+    // chip is never reset, the console's stack is using it.
+    if (m_external && !hciSync(hci::kReset))
+    {
+        m_startError = "the adapter did not answer (HCI Reset)";
+        m_transport.close();
+        return false;
+    }
+    readBufferSize();
+    if (!identifyController())
+    {
+        return false;
+    }
+    logControllerSettings();
+    configureController();
     dropStaleLinks();
     setScan(2); // page scan (so we stay findable)
     return true;

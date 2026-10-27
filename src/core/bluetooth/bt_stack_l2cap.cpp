@@ -196,7 +196,176 @@ void BtStack::bindInbound(std::uint16_t psm, L2Channel& ch, FrameHandler handler
     m_inHandler = std::move(handler);
 }
 
-// L2CAP signaling command handler (cid 1)
+// The device wants a channel to one of our PSMs: SDP is always accepted, the
+// PSM bound with bindInbound() when it matches, anything else is refused.
+void BtStack::onChannelRequest(std::uint8_t id, const std::uint8_t* d)
+{
+    const std::uint16_t psm = getLe16(d);
+    const std::uint16_t scid = getLe16(d + 2);
+    std::uint16_t our;
+    bool sdpIn = false;
+
+    if (psm == 0x0001)
+    { // SDP: always accept, cid 0x50
+        m_sdp.accept(scid);
+        our = 0x50;
+        sdpIn = true;
+    }
+    else if (m_inChannel == nullptr || m_inPsm != psm)
+    {
+        // a device keeps asking for the remote control channel every few
+        // seconds; say it twice per link, not every time
+        if (m_rejectedGen != m_connGen)
+        {
+            m_rejectedGen = m_connGen;
+            m_rejectedCount = 0;
+        }
+        if (m_rejectedCount++ < 2)
+        {
+            logLine("l2cap: rejected psm %#x%s", psm, psm == 0x17 ? " (remote control, not offered)" : "");
+        }
+        sendSignal(0x03, id, {0, scid, 2, 0}); // connection response: no channel, PSM denied
+        return;
+    }
+    else
+    {
+        m_inChannel->accept(scid);
+        addChannel(*m_inChannel, m_inHandler);
+        our = static_cast<std::uint16_t>(m_inChannel->ourCid);
+    }
+    sendSignal(0x03, id, {our, scid, 0, 0}); // connection response: successful
+    sendSignal(0x04, m_sigId++, {scid, 0});  // configure request, no flags
+    if (!sdpIn)
+    {
+        logLine("l2cap: accepted inbound psm %#x", m_inPsm);
+    }
+}
+
+// the answer to a channel we asked for
+void BtStack::onChannelResponse(const std::uint8_t* d)
+{
+    L2Channel* ch = channelByTheirs(getLe16(d + 2));
+
+    if (ch != nullptr && getLe16(d + 4) != 1)
+    { // not pending
+        ch->theirCid = getLe16(d);
+        ch->result = getLe16(d + 4);
+        ch->connDone = true;
+    }
+}
+
+void BtStack::onConfigureRequest(std::uint8_t id, const std::uint8_t* d, std::uint16_t clen)
+{
+    L2Channel* ch = channelByTheirs(getLe16(d));
+
+    if (ch == nullptr)
+    {
+        return;
+    }
+    // pick up the MTU option (type 1, len 2)
+    if (clen > 5)
+    {
+        std::uint32_t o = 4;
+
+        do
+        {
+            if ((d[o] & 0x7f) == 1 && d[o + 1] == 2 && o + 4 <= clen)
+            {
+                ch->theirMtu = getLe16(d + o + 2);
+            }
+            o += 2 + d[o + 1];
+        } while (o + 2 <= clen);
+    }
+    sendSignal(0x05, id, {ch->theirCid, 0, 0}); // configure response: successful
+    ch->configured = true;
+}
+
+void BtStack::onConfigureResponse(const std::uint8_t* d)
+{
+    L2Channel* ch = channelByTheirs(getLe16(d));
+
+    if (ch == nullptr)
+    {
+        // response for a channel opened from our side: take the newest one
+        // that is connecting but not up yet
+        for (int i = m_channelCount; i >= 1; i--)
+        {
+            L2Channel* c = m_channels[i - 1];
+
+            if (!c->connDone || c->up)
+            {
+                continue;
+            }
+            ch = c;
+            break;
+        }
+        if (ch == nullptr && m_channelCount > 0)
+        {
+            ch = m_channels[0];
+        }
+    }
+    if (ch != nullptr && getLe16(d + 4) == 0)
+    {
+        ch->up = true;
+    }
+}
+
+void BtStack::onChannelClose(std::uint8_t id, const std::uint8_t* d)
+{
+    L2Channel* ch = channelByTheirs(getLe16(d));
+
+    sendSignal(0x07, id, {getLe16(d), getLe16(d + 2)}); // disconnection response
+    if (ch != nullptr)
+    {
+        ch->closed = true;
+        if (ch == &m_sdp)
+        {
+            m_sdp.theirCid = 0;
+        }
+    }
+}
+
+void BtStack::onEchoRequest(std::uint8_t id, const std::uint8_t* d, std::uint16_t clen)
+{
+    std::uint8_t rsp[280];
+
+    if (clen > sizeof rsp - 4) // more than the answer can carry
+    {
+        return;
+    }
+    rsp[0] = 0x09;
+    rsp[1] = id;
+    putLe16(rsp + 2, clen);
+    if (clen != 0)
+    {
+        std::memcpy(rsp + 4, d, clen);
+    }
+    send(1, rsp, clen + 4);
+}
+
+void BtStack::onInformationRequest(std::uint8_t id, const std::uint8_t* d)
+{
+    const std::uint16_t type = getLe16(d);
+
+    if (type == 3)
+    {
+        // fixed channels: connectionless; the 12 bytes of the answer are the
+        // type, the result (success) and an 8-byte mask padded with zeros
+        std::uint8_t rsp[16] = {0x0b, id, 0x0c, 0, d[0], d[1], 0, 0, 2};
+
+        send(1, rsp, sizeof rsp);
+    }
+    else if (type == 2)
+    {
+        sendSignal(0x0b, id, {type, 0, 0, 0}); // success, empty feature mask
+    }
+    else
+    {
+        sendSignal(0x0b, id, {type, 1}); // not supported
+    }
+}
+
+// L2CAP signaling command handler (cid 1): one or more commands in a frame
 void BtStack::signaling(const std::uint8_t* cmd, int len)
 {
     int off = 0;
@@ -207,191 +376,46 @@ void BtStack::signaling(const std::uint8_t* cmd, int len)
         const std::uint8_t id = cmd[off + 1];
         const std::uint16_t clen = getLe16(cmd + off + 2);
         const std::uint8_t* d = cmd + off + 4;
-        std::uint8_t rsp[280];
-        L2Channel* ch = nullptr;
 
         if (off + 4 + clen > len)
         {
             break;
         }
         // the fixed part of each command the code below reads, or answers with
-        if (clen < minimumLength(code))
+        if (clen >= minimumLength(code))
         {
-            off += 4 + clen;
-            continue;
-        }
-
-        std::memset(rsp, 0, sizeof rsp);
-        switch (code)
-        {
-        case 0x02: { // connection request
-            const std::uint16_t psm = getLe16(d);
-            const std::uint16_t scid = getLe16(d + 2);
-            std::uint16_t our;
-            bool sdpIn = false;
-
-            if (psm == 0x0001)
-            { // SDP: always accept, cid 0x50
-                m_sdp.accept(scid);
-                our = 0x50;
-                sdpIn = true;
-            }
-            else if (m_inChannel == nullptr || m_inPsm != psm)
+            switch (code)
             {
-                // a device keeps asking for the remote control channel every
-                // few seconds; say it twice per link, not every time
-                if (m_rejectedGen != m_connGen)
+            case 0x02:
+                onChannelRequest(id, d);
+                break;
+            case 0x03:
+                onChannelResponse(d);
+                break;
+            case 0x04:
+                onConfigureRequest(id, d, clen);
+                break;
+            case 0x05:
+                onConfigureResponse(d);
+                break;
+            case 0x06:
+                onChannelClose(id, d);
+                break;
+            case 0x07: // disconnection response
+                if (L2Channel* ch = channelByTheirs(getLe16(d + 2)))
                 {
-                    m_rejectedGen = m_connGen;
-                    m_rejectedCount = 0;
+                    ch->closed = true;
                 }
-                if (m_rejectedCount++ < 2)
-                {
-                    logLine("l2cap: rejected psm %#x%s", psm, psm == 0x17 ? " (remote control, not offered)" : "");
-                }
-                sendSignal(0x03, id, {0, scid, 2, 0}); // connection response: no channel, PSM denied
+                break;
+            case 0x08:
+                onEchoRequest(id, d, clen);
+                break;
+            case 0x0a:
+                onInformationRequest(id, d);
+                break;
+            default:
                 break;
             }
-            else
-            {
-                m_inChannel->accept(scid);
-                addChannel(*m_inChannel, m_inHandler);
-                our = static_cast<std::uint16_t>(m_inChannel->ourCid);
-            }
-            sendSignal(0x03, id, {our, scid, 0, 0}); // connection response: successful
-            sendSignal(0x04, m_sigId++, {scid, 0});  // configure request, no flags
-            if (!sdpIn)
-            {
-                logLine("l2cap: accepted inbound psm %#x", m_inPsm);
-            }
-            break;
-        }
-        case 0x03: // connection response
-            ch = channelByTheirs(getLe16(d + 2));
-            if (ch != nullptr && getLe16(d + 4) != 1)
-            { // not pending
-                ch->theirCid = getLe16(d);
-                ch->result = getLe16(d + 4);
-                ch->connDone = true;
-            }
-            break;
-        case 0x04: // configure request
-            ch = channelByTheirs(getLe16(d));
-            if (ch != nullptr)
-            {
-                // pick up the MTU option (type 1, len 2)
-                if (clen > 5)
-                {
-                    std::uint32_t o = 4;
-
-                    do
-                    {
-                        if ((d[o] & 0x7f) == 1 && d[o + 1] == 2 && o + 4 <= clen)
-                        {
-                            ch->theirMtu = getLe16(d + o + 2);
-                        }
-                        o += 2 + d[o + 1];
-                    } while (o + 2 <= clen);
-                }
-                sendSignal(0x05, id, {ch->theirCid, 0, 0}); // configure response: successful
-                ch->configured = true;
-            }
-            break;
-        case 0x05: // configure response
-            ch = channelByTheirs(getLe16(d));
-            if (ch == nullptr)
-            {
-                // response for a channel opened from our side: take the
-                // newest one that is connecting but not up yet
-                for (int i = m_channelCount; i >= 1; i--)
-                {
-                    L2Channel* c = m_channels[i - 1];
-
-                    if (!c->connDone || c->up)
-                    {
-                        continue;
-                    }
-                    ch = c;
-                    break;
-                }
-                if (ch == nullptr && m_channelCount > 0)
-                {
-                    ch = m_channels[0];
-                }
-            }
-            if (ch != nullptr && getLe16(d + 4) == 0)
-            {
-                ch->up = true;
-            }
-            break;
-        case 0x06: // disconnection request
-            ch = channelByTheirs(getLe16(d));
-            sendSignal(0x07, id, {getLe16(d), getLe16(d + 2)}); // disconnection response
-            if (ch != nullptr)
-            {
-                ch->closed = true;
-                if (ch == &m_sdp)
-                {
-                    m_sdp.theirCid = 0;
-                }
-            }
-            break;
-        case 0x07: // disconnection response
-            ch = channelByTheirs(getLe16(d + 2));
-            if (ch != nullptr)
-            {
-                ch->closed = true;
-            }
-            break;
-        case 0x08:                     // echo request
-            if (clen > sizeof rsp - 4) // more than the answer can carry
-            {
-                break;
-            }
-            rsp[0] = 0x09;
-            rsp[1] = id;
-            putLe16(rsp + 2, clen);
-            if (clen != 0)
-            {
-                std::memcpy(rsp + 4, d, clen);
-            }
-            send(1, rsp, clen + 4);
-            break;
-        case 0x0a: { // information request
-            const std::uint16_t type = getLe16(d);
-
-            rsp[0] = 0x0b;
-            rsp[1] = id;
-            rsp[4] = d[0];
-            rsp[5] = d[1];
-            if (type == 3)
-            {
-                rsp[2] = 0x0c;
-                rsp[3] = 0;
-                rsp[6] = 0;
-                rsp[7] = 0; // result: successful
-                rsp[8] = 2;
-                rsp[9] = 0; // features: connectionless
-                send(1, rsp, 16);
-            }
-            else if (type == 2)
-            {
-                rsp[2] = 8;
-                rsp[3] = 0; // success, empty feature mask
-                send(1, rsp, 12);
-            }
-            else
-            {
-                rsp[2] = 4;
-                rsp[3] = 0;
-                rsp[6] = 1;
-                rsp[7] = 0; // not supported
-                send(1, rsp, 8);
-            }
-            break;
-        }
-        default:
-            break;
         }
         off += 4 + clen;
     }

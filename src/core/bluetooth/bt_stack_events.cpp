@@ -56,6 +56,100 @@ bool BtStack::isOurLink(const std::uint8_t* e) const
     return m_connDone && m_connStatus == 0 && m_handle == (getLe16(e + 1) & 0xfff);
 }
 
+// Inquiry results: up to e[0] records of 14 bytes; the RSSI variant carries the
+// signal strength in the last byte of each.
+void BtStack::onInquiryResults(const std::uint8_t* e, bool withRssi)
+{
+    for (int i = 0; i < e[0]; i++)
+    {
+        onInquiryRecord(e + 1 + i * 14, withRssi ? static_cast<std::int8_t>(e[14 + i * 14]) : -128, nullptr, 0);
+    }
+}
+
+// The next four answer the pairing procedure of the device we deal with.
+void BtStack::onPinCodeRequest(const std::uint8_t* e)
+{
+    std::uint8_t rep[23];
+
+    if (!isTarget(e))
+    {
+        return;
+    }
+    logLine("PIN code requested, replying 0000");
+    std::memset(rep, 0, sizeof rep);
+    std::memcpy(rep, e, 6);
+    rep[6] = 4;
+    rep[7] = rep[8] = rep[9] = rep[10] = '0';
+    cmd(hci::kPinCodeReply, rep, 23);
+}
+
+void BtStack::onLinkKeyRequest(const std::uint8_t* e)
+{
+    std::uint8_t rep[22];
+
+    if (!isTarget(e))
+    {
+        return;
+    }
+    if (!m_key.have || std::memcmp(m_key.peer.data(), e, 6) != 0)
+    {
+        logLine("no stored key: pairing");
+        cmd(hci::kLinkKeyNegReply, e, 6);
+    }
+    else
+    {
+        std::memcpy(rep, e, 6);
+        std::memcpy(rep + 6, m_key.key.data(), 16);
+        cmd(hci::kLinkKeyReply, rep, 22);
+    }
+}
+
+void BtStack::onIoCapabilityRequest(const std::uint8_t* e)
+{
+    std::uint8_t rep[9];
+
+    if (!isTarget(e))
+    {
+        return;
+    }
+    std::memcpy(rep, e, 6);
+    rep[6] = 3; // NoInputNoOutput
+    rep[7] = 0; // no OOB
+    rep[8] = 4; // MITM not required
+    cmd(hci::kIoCapabilityReply, rep, 9);
+}
+
+void BtStack::onUserConfirmRequest(const std::uint8_t* e)
+{
+    if (isTarget(e))
+    {
+        cmd(hci::kUserConfirmReply, e, 6);
+    }
+}
+
+// the first few vendor events of the chip, raw, to see what it sends
+void BtStack::onVendorEvent(const std::uint8_t* evt, int n)
+{
+    char dump[128];
+    int off = 0;
+    int m = n - 1;
+
+    if (m_vendorDumps >= 5)
+    {
+        return;
+    }
+    m_vendorDumps++;
+    if (m > 0x1f)
+    {
+        m = 0x1f;
+    }
+    for (int k = 0; k < m + 1; k++)
+    {
+        off += std::snprintf(dump + off, 0x61 - off, "%02x ", evt[k]);
+    }
+    logLine("chip vendor event, raw (%d bytes): %s", n, dump);
+}
+
 void BtStack::handleEvent(const std::uint8_t* evt, int n)
 {
     const std::uint8_t* e = evt + 2; // skip code+len
@@ -65,11 +159,8 @@ void BtStack::handleEvent(const std::uint8_t* evt, int n)
     case 0x01: // inquiry complete
         m_inqDone = true;
         break;
-    case 0x02: // inquiry result
-        for (int i = 0; i < e[0]; i++)
-        {
-            onInquiryRecord(e + 1 + i * 14, -128, nullptr, 0);
-        }
+    case 0x02:
+        onInquiryResults(e, false);
         break;
     case 0x03:
         onConnectionComplete(e);
@@ -95,85 +186,31 @@ void BtStack::handleEvent(const std::uint8_t* evt, int n)
     case 0x13:
         onCompletedPackets(e, n);
         break;
-    case 0x16: // PIN code request
-        if (isTarget(e))
-        {
-            std::uint8_t rep[23];
-
-            logLine("PIN code requested, replying 0000");
-            std::memset(rep, 0, sizeof rep);
-            std::memcpy(rep, e, 6);
-            rep[6] = 4;
-            rep[7] = rep[8] = rep[9] = rep[10] = '0';
-            cmd(hci::kPinCodeReply, rep, 23);
-        }
+    case 0x16:
+        onPinCodeRequest(e);
         break;
-    case 0x17: // link key request
-        if (isTarget(e))
-        {
-            std::uint8_t rep[22];
-
-            if (!m_key.have || std::memcmp(m_key.peer.data(), e, 6) != 0)
-            {
-                logLine("no stored key: pairing");
-                cmd(hci::kLinkKeyNegReply, e, 6);
-            }
-            else
-            {
-                std::memcpy(rep, e, 6);
-                std::memcpy(rep + 6, m_key.key.data(), 16);
-                cmd(hci::kLinkKeyReply, rep, 22);
-            }
-        }
+    case 0x17:
+        onLinkKeyRequest(e);
         break;
     case 0x18:
         onLinkKeyNotification(e);
         break;
     case 0x22: // inquiry result with RSSI
-        for (int i = 0; i < e[0]; i++)
-        {
-            onInquiryRecord(e + 1 + i * 14, static_cast<std::int8_t>(e[14 + i * 14]), nullptr, 0);
-        }
+        onInquiryResults(e, true);
         break;
     case 0x2f: // extended inquiry result
         onInquiryRecord(e + 1, static_cast<std::int8_t>(e[14]), e + 15, n - 0x11);
         break;
-    case 0x31: // IO capability request
-        if (isTarget(e))
-        {
-            std::uint8_t rep[9];
-
-            std::memcpy(rep, e, 6);
-            rep[6] = 3; // NoInputNoOutput
-            rep[7] = 0; // no OOB
-            rep[8] = 4; // MITM not required
-            cmd(hci::kIoCapabilityReply, rep, 9);
-        }
+    case 0x31:
+        onIoCapabilityRequest(e);
         break;
-    case 0x33: // user confirmation request
-        if (isTarget(e))
-        {
-            cmd(hci::kUserConfirmReply, e, 6);
-        }
+    case 0x33:
+        onUserConfirmRequest(e);
+        break;
+    case 0xff:
+        onVendorEvent(evt, n);
         break;
     default:
-        if (evt[0] == 0xff && m_vendorDumps < 5)
-        { // vendor event: raw
-            char dump[128];
-            int off = 0;
-            int m = n - 1;
-
-            m_vendorDumps++;
-            if (m > 0x1f)
-            {
-                m = 0x1f;
-            }
-            for (int k = 0; k < m + 1; k++)
-            {
-                off += std::snprintf(dump + off, 0x61 - off, "%02x ", evt[k]);
-            }
-            logLine("chip vendor event, raw (%d bytes): %s", n, dump);
-        }
         break;
     }
 }

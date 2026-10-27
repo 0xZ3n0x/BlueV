@@ -213,10 +213,21 @@ class BtStack
     // stack shares the chip and its replies arrive here too).
     bool replyIsOurs(std::uint16_t opcode);
     // Turns scanning off and disconnects the link we hold, if any.
+    bool openTransport();
+    void readBufferSize();
+    bool identifyController();
+    void logControllerSettings();
+    void configureController();
     void dropStaleLinks();
 
     // events (bt_stack_events.cpp)
     void handleEvent(const std::uint8_t* evt, int n);
+    void onInquiryResults(const std::uint8_t* e, bool withRssi);
+    void onPinCodeRequest(const std::uint8_t* e);
+    void onLinkKeyRequest(const std::uint8_t* e);
+    void onIoCapabilityRequest(const std::uint8_t* e);
+    void onUserConfirmRequest(const std::uint8_t* e);
+    void onVendorEvent(const std::uint8_t* evt, int n);
     void onConnectionComplete(const std::uint8_t* e);
     void onConnectionRequest(const std::uint8_t* e);
     void onDisconnectionComplete(const std::uint8_t* e);
@@ -249,6 +260,13 @@ class BtStack
 
     // L2CAP
     void signaling(const std::uint8_t* cmd, int length);
+    void onChannelRequest(std::uint8_t id, const std::uint8_t* params);
+    void onChannelResponse(const std::uint8_t* params);
+    void onConfigureRequest(std::uint8_t id, const std::uint8_t* params, std::uint16_t length);
+    void onConfigureResponse(const std::uint8_t* params);
+    void onChannelClose(std::uint8_t id, const std::uint8_t* params);
+    void onEchoRequest(std::uint8_t id, const std::uint8_t* params, std::uint16_t length);
+    void onInformationRequest(std::uint8_t id, const std::uint8_t* params);
     void dispatch(std::uint32_t cid, const std::uint8_t* data, int length);
     void addChannel(L2Channel& channel, FrameHandler handler);
     L2Channel* channelByTheirs(std::uint16_t cid);
