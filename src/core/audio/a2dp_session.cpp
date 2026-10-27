@@ -95,11 +95,7 @@ bool A2dpSession::start(bool initiatedByUs)
     // only open the channel after that. If our own attempt fails the headset
     // still gets the rest of the twenty seconds.
     m_bt.bindInbound(kAvdtpPsm, m_sig, onFrame);
-    std::uint64_t deadline = m_clock.nowMs() + (initiatedByUs ? 1000 : 20000);
-    while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !signalingUp())
-    {
-        m_bt.poll(50);
-    }
+    m_bt.wait(signalingUp, initiatedByUs ? 1000 : 20000);
     if (m_sig.connDone && signalingUp())
     {
         logLine("avdtp: the device opened the signaling channel");
@@ -111,11 +107,7 @@ bool A2dpSession::start(bool initiatedByUs)
     }
     else if (initiatedByUs && !m_bt.linkLost())
     {
-        deadline = m_clock.nowMs() + 17000;
-        while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !signalingUp())
-        {
-            m_bt.poll(50);
-        }
+        m_bt.wait(signalingUp, 17000);
         if (!(m_sig.connDone && signalingUp()))
         {
             return false;
@@ -158,27 +150,15 @@ bool A2dpSession::followPeer()
     {
         return false;
     }
-    std::uint64_t deadline = m_clock.nowMs() + 6000;
-    while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !m_peerOpened)
-    {
-        m_bt.poll(50);
-    }
+    m_bt.wait([this] { return m_peerOpened; }, 6000);
     m_bt.bindInbound(kAvdtpPsm, m_media, onMedia);
-    deadline = m_clock.nowMs() + 6000;
-    while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !(m_media.up && m_media.configured))
-    {
-        m_bt.poll(50);
-    }
+    m_bt.wait([this] { return m_media.up && m_media.configured; }, 6000);
     if (!(m_media.up && m_media.configured))
     {
         logLine("avdtp: the media channel did not open");
         return false;
     }
-    deadline = m_clock.nowMs() + 300;
-    while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !m_peerStarted)
-    {
-        m_bt.poll(50);
-    }
+    m_bt.wait([this] { return m_peerStarted; }, 300);
     if (!m_peerStarted)
     {
         const int st = command(avdtp::kStart, &m_peerSeid, 1);
@@ -271,18 +251,7 @@ bool A2dpSession::driveSetup()
 
         // the headset opens the media channel towards us
         m_bt.bindInbound(kAvdtpPsm, m_media, onMedia);
-        std::uint64_t deadline = m_clock.nowMs() + 1500;
-        if (m_clock.nowMs() < deadline && !m_media.up)
-        {
-            while (!m_bt.linkLost())
-            {
-                m_bt.poll(50);
-                if (m_clock.nowMs() >= deadline || m_media.up)
-                {
-                    break;
-                }
-            }
-        }
+        m_bt.wait([this] { return m_media.up; }, 1500);
 
         if (!(m_media.connDone && m_media.up && m_media.configured))
         {
@@ -291,11 +260,7 @@ bool A2dpSession::driveSetup()
                 return false;
             }
         }
-        deadline = m_clock.nowMs() + 300;
-        while (!m_bt.linkLost() && m_clock.nowMs() < deadline)
-        {
-            m_bt.poll(50);
-        }
+        m_bt.wait([] { return false; }, 300); // let the channel settle
 
         sep[0] = static_cast<std::uint8_t>(m_sinkSeid << 2);
         const int st = command(avdtp::kStart, sep, 1);

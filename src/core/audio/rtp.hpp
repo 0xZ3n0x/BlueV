@@ -8,7 +8,6 @@
 namespace bluev
 {
 
-constexpr int kRtpHeaderBytes = 12;
 constexpr int kMediaHeaderBytes = 13; // RTP header + the SBC frame count
 
 // Writes the 13 bytes in front of the SBC frames. `pkt` must hold at least

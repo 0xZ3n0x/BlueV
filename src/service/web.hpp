@@ -5,32 +5,27 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
 
-#include "core/ports/log_reader.hpp"
 #include "core/ports/usb_directory.hpp"
-#include "service/sync.hpp"
+#include "service/log_buffer.hpp"
 
 namespace bluev
 {
 
 class Service;
 
-// the port the server listens on
-struct ServerPorts
-{
-    int port = 7733;
-};
+// the port the server listens on, and what the console's home screen entry opens
+constexpr int kDefaultPort = 7733;
 
 class HttpServer
 {
   public:
-    using Options = ServerPorts;
-
     // `page`: the control page served at "/"
-    HttpServer(Service& service, IUsbDirectory& usb, ILogReader& log, std::string_view page, Options options);
+    HttpServer(Service& service, IUsbDirectory& usb, LogBuffer& log, std::string_view page, int port);
     ~HttpServer();
 
     // Listens on the configured port. False if it is in use (the caller
@@ -38,17 +33,12 @@ class HttpServer
     bool start();
     // Stops accepting, then waits for the requests being served. Safe to
     // call more than once.
-    void stop() BLUEV_EXCLUDES(m_idleMutex);
+    void stop();
 
     // The port in use; 0 while not listening.
     int port() const
     {
         return m_port.load();
-    }
-    // the port tried first (and what the console's home screen entry opens)
-    static constexpr int defaultPort()
-    {
-        return 7733;
     }
 
   private:
@@ -61,9 +51,9 @@ class HttpServer
 
     void acceptLoop();
     // Serves one connection on its own thread and closes it.
-    void serve(int socketFd) BLUEV_EXCLUDES(m_idleMutex);
+    void serve(int socketFd);
     // Gives the connection's slot back and wakes stop() when none is left.
-    void finishConnection() BLUEV_EXCLUDES(m_idleMutex);
+    void finishConnection();
     // Takes a slot; false when kMaxConnections are in use (the caller answers 503).
     bool reserveConnection();
     // The answer to one request.
@@ -73,9 +63,9 @@ class HttpServer
 
     Service& m_service;
     IUsbDirectory& m_usb;
-    ILogReader& m_log;
+    LogBuffer& m_log;
     std::string_view m_page;
-    Options m_options;
+    int m_wantedPort;
     int m_listenFd = -1;
     std::atomic<int> m_port{0};
     std::thread m_acceptThread;
@@ -83,7 +73,7 @@ class HttpServer
 
     // number of connections being served
     std::atomic<int> m_active{0};
-    Mutex m_idleMutex;
+    std::mutex m_idleMutex;
     std::condition_variable m_idle;
 };
 

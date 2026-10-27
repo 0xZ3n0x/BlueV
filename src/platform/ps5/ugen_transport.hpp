@@ -29,7 +29,7 @@
 
 #include "core/ports/clock.hpp"
 #include "core/ports/hci_transport.hpp"
-#include "platform/ps5/console.hpp"
+#include "platform/ps5/ps5_usb_directory.hpp"
 
 namespace bluev
 {
@@ -75,6 +75,7 @@ class UgenTransport final : public IHciTransport
     void closeFd();
     static int ringPop(Ring& ring, std::uint8_t* out, int max);
     bool startTransfer(int t);
+    void armReads(int first, int count, std::uint32_t length);
 
     IClock& m_clock;
     int m_fd = -1;

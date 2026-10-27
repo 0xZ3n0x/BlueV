@@ -226,55 +226,42 @@ bool UgenTransport::startTransfer(int t)
     m_eps[t].nFrames = 1;
     m_eps[t].aFrames = 0;
     m_eps[t].status = 0;
-    if (ioctl(m_fd, USB_FS_START, &id) == 0)
-    {
-        return true;
-    }
-    return false;
+    return ioctl(m_fd, USB_FS_START, &id) == 0;
 }
 
 // submit any idle async reads, then wait for something to land in a ring
 // (true) or the timeout to expire (false)
+// Starts every one of the `count` read transfers from `first` on that is not
+// running.
+void UgenTransport::armReads(int first, int count, std::uint32_t length)
+{
+    for (int i = first; i < first + count; i++)
+    {
+        if (m_pending[i])
+        {
+            continue;
+        }
+        m_bufLen[i] = length;
+        if (startTransfer(i))
+        {
+            m_pending[i] = 1;
+        }
+        else
+        {
+            m_dgStartError++;
+            logLine("hci: USB_FS_START %d errno=%d", i, errno);
+        }
+    }
+}
+
 bool UgenTransport::pump(std::uint32_t timeoutMs)
 {
     const std::uint64_t deadline = m_clock.nowMs() + timeoutMs;
 
     for (;;)
     {
-        for (int i = kEventFirst; i < kEventFirst + m_eventReads; i++)
-        {
-            if (m_pending[i])
-            {
-                continue;
-            }
-            m_bufLen[i] = m_eventLength;
-            if (startTransfer(i))
-            {
-                m_pending[i] = 1;
-            }
-            else
-            {
-                m_dgStartError++;
-                logLine("hci: USB_FS_START %d errno=%d", i, errno);
-            }
-        }
-        for (int i = kAclFirst; i < kAclFirst + m_aclReads; i++)
-        {
-            if (m_pending[i])
-            {
-                continue;
-            }
-            m_bufLen[i] = kXferBuf;
-            if (startTransfer(i))
-            {
-                m_pending[i] = 1;
-            }
-            else
-            {
-                m_dgStartError++;
-                logLine("hci: USB_FS_START %d errno=%d", i, errno);
-            }
-        }
+        armReads(kEventFirst, m_eventReads, m_eventLength);
+        armReads(kAclFirst, m_aclReads, kXferBuf);
 
         const std::uint32_t r = reap();
 

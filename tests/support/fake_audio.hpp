@@ -7,7 +7,7 @@
 #include <functional>
 
 #include "core/ports/audio_source.hpp"
-#include "core/ports/stream_observer.hpp"
+#include "core/audio/a2dp_streamer.hpp"
 #include "fake_clock.hpp"
 
 namespace bluev::testing
@@ -93,16 +93,18 @@ class FakeAudio final : public IAudioSource
     float m_phase = 0.0f;
 };
 
-class RecordingObserver final : public IStreamObserver
+class RecordingObserver
 {
   public:
-    void onStream(int r, int q, int p, long n) override
+    StreamObserver hook()
     {
-        count++;
-        rate = r;
-        queueMs = q;
-        pps = p;
-        packets = n;
+        return [this](int r, int q, int p, long n) {
+            count++;
+            rate = r;
+            queueMs = q;
+            pps = p;
+            packets = n;
+        };
     }
     int count = 0, rate = 0, queueMs = 0, pps = 0;
     long packets = 0;

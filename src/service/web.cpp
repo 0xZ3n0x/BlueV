@@ -142,8 +142,8 @@ std::string queryValue(std::string_view query, std::string_view key)
 
 } // namespace
 
-HttpServer::HttpServer(Service& service, IUsbDirectory& usb, ILogReader& log, std::string_view page, Options options)
-    : m_service(service), m_usb(usb), m_log(log), m_page(page), m_options(options)
+HttpServer::HttpServer(Service& service, IUsbDirectory& usb, LogBuffer& log, std::string_view page, int port)
+    : m_service(service), m_usb(usb), m_log(log), m_page(page), m_wantedPort(port)
 {
 }
 
@@ -168,14 +168,14 @@ bool HttpServer::start()
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_ANY);
-    address.sin_port = htons(static_cast<std::uint16_t>(m_options.port));
+    address.sin_port = htons(static_cast<std::uint16_t>(m_wantedPort));
     if (bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0 || listen(fd, kBacklog) != 0)
     {
         close(fd);
         return false;
     }
     m_listenFd = fd;
-    m_port = m_options.port;
+    m_port = m_wantedPort;
     m_stopping.store(false);
     m_acceptThread = std::thread([this] { acceptLoop(); });
     logLine("web: listening on port %d", m_port.load());
@@ -198,8 +198,8 @@ void HttpServer::stop()
     m_port = 0;
 
     // wait for the requests still being served (each has a 3 s timeout)
-    ScopedLock lock(m_idleMutex);
-    waitFor(m_idle, m_idleMutex, std::chrono::seconds(5), [this] { return m_active.load() == 0; });
+    std::unique_lock<std::mutex> lock(m_idleMutex);
+    m_idle.wait_for(lock, std::chrono::seconds(5), [this] { return m_active.load() == 0; });
 }
 
 // Take a slot for a new connection; false when all are in use. A single
@@ -222,7 +222,7 @@ void HttpServer::finishConnection()
 {
     // Notify with the lock held: stop() may destroy this object as soon as
     // it sees the count reach zero, so nothing may touch it afterwards.
-    ScopedLock lock(m_idleMutex);
+    std::lock_guard<std::mutex> lock(m_idleMutex);
     m_active.fetch_sub(1);
     m_idle.notify_all();
 }

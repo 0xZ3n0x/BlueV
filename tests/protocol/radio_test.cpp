@@ -105,7 +105,7 @@ TEST_F(RadioTest, ASessionFromConnectToTheEnd)
     ASSERT_TRUE(radio.startAudio(true)) << sink.all();
 
     RecordingObserver observer;
-    radio.setStreamObserver(&observer);
+    radio.setStreamObserver(observer.hook());
     controller.remoteDisconnect(0x13, 3000);
     EXPECT_TRUE(radio.stream(true));
     EXPECT_GT(speaker.media.size(), 100u);

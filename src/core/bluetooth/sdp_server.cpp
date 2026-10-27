@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstring>
 
+#include "core/bytes.hpp"
 #include "core/ports/log.hpp"
 
 namespace bluev
@@ -81,15 +82,14 @@ int deHeader(const std::uint8_t* p, std::uint32_t avail, std::uint32_t* elen)
         {
             return 0;
         }
-        *elen = static_cast<std::uint32_t>(p[1] << 8 | p[2]);
+        *elen = getBe16(p + 1);
         return (*elen + 3 <= avail) ? 3 : 0;
     default:
         if (avail < 5)
         {
             return 0;
         }
-        *elen = static_cast<std::uint32_t>(p[1]) << 24 | static_cast<std::uint32_t>(p[2]) << 16 |
-                static_cast<std::uint32_t>(p[3]) << 8 | p[4];
+        *elen = getBe32(p + 1);
         return (static_cast<int>(*elen + 5) <= static_cast<int>(avail)) ? 5 : 0;
     }
 }
@@ -139,12 +139,11 @@ int patternMatches(const std::uint8_t* pat, std::uint32_t len, int* consumed)
         // UUID value, big endian in 2 or 4 bytes
         if (elen == 0x10 || elen == 4)
         {
-            uuid = static_cast<std::uint32_t>(e[ehdr]) << 24 | static_cast<std::uint32_t>(e[ehdr + 1]) << 16 |
-                   static_cast<std::uint32_t>(e[ehdr + 2]) << 8 | e[ehdr + 3];
+            uuid = getBe32(e + ehdr);
         }
         else if (elen == 2)
         {
-            uuid = static_cast<std::uint32_t>(e[ehdr]) << 8 | e[ehdr + 1];
+            uuid = getBe16(e + ehdr);
         }
 
         bool ours = uuid == kPublicBrowseRoot;
@@ -220,8 +219,8 @@ int buildAttributes(const std::uint8_t* ranges, std::uint32_t len, int* consumed
 
             if (elen == 4)
             { // lo..hi range
-                lo = static_cast<std::uint32_t>(r[ehdr] << 8 | r[ehdr + 1]);
-                hi = static_cast<std::uint32_t>(r[ehdr + 2] << 8 | r[ehdr + 3]);
+                lo = getBe16(r + ehdr);
+                hi = getBe16(r + ehdr + 2);
                 if (lo <= attr.id && attr.id <= hi)
                 {
                     match = true;
@@ -229,7 +228,7 @@ int buildAttributes(const std::uint8_t* ranges, std::uint32_t len, int* consumed
             }
             else if (elen == 2)
             { // single attribute
-                lo = static_cast<std::uint32_t>(r[ehdr] << 8 | r[ehdr + 1]);
+                lo = getBe16(r + ehdr);
                 if (lo == attr.id)
                 {
                     match = true;
@@ -246,27 +245,26 @@ int buildAttributes(const std::uint8_t* ranges, std::uint32_t len, int* consumed
                 return -1;
             }
             out[pos] = 0x09; // uint32 attribute id
-            out[pos + 1] = static_cast<std::uint8_t>(attr.id >> 8);
-            out[pos + 2] = static_cast<std::uint8_t>(attr.id & 0xff);
+            putBe16(out + pos + 1, attr.id);
             std::memcpy(out + pos + 3, attr.blob, attr.length);
             pos = need;
         }
     }
     out[0] = 0x36; // data element sequence, 16-bit
-    out[1] = static_cast<std::uint8_t>((pos - 3) >> 8);
-    out[2] = static_cast<std::uint8_t>((pos - 3) & 0xff);
+    putBe16(out + 1, pos - 3);
     return pos;
 }
 
-int errorResponse(std::uint8_t* out, std::uint8_t tid1, std::uint8_t tid2)
+constexpr std::uint8_t kInvalidRecordHandle = 0x02;
+constexpr std::uint8_t kInvalidContinuation = 0x03;
+
+int errorResponse(std::uint8_t* out, std::uint8_t tid1, std::uint8_t tid2, std::uint8_t code = kInvalidContinuation)
 {
     out[0] = 0x01; // error response
     out[1] = tid1;
     out[2] = tid2;
-    out[3] = 0x00;
-    out[4] = 0x02;
-    out[5] = 0x00;
-    out[6] = 0x03; // invalid continuation state
+    putBe16(out + 3, 2); // parameter length
+    putBe16(out + 5, code);
     return 7;
 }
 
@@ -281,7 +279,7 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
 
     const std::uint8_t pdu = req[0];
     const std::uint8_t tid1 = req[1], tid2 = req[2];
-    const std::uint32_t plen = static_cast<std::uint32_t>(req[3]) << 8 | req[4];
+    const std::uint32_t plen = getBe16(req + 3);
     int consumed = 0;
     int r;
 
@@ -306,10 +304,8 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
         out[0] = 0x03;
         out[1] = tid1;
         out[2] = tid2;
-        out[5] = static_cast<std::uint8_t>(r >> 8);
-        out[6] = static_cast<std::uint8_t>(r);
-        out[7] = static_cast<std::uint8_t>(r >> 8); // current record count
-        out[8] = static_cast<std::uint8_t>(r);
+        putBe16(out + 5, r); // total record count
+        putBe16(out + 7, r); // current record count
         if (r != 0)
         {
             out[9] = 0x00;
@@ -331,20 +327,11 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
         {
             return errorResponse(out, tid1, tid2);
         }
-        const std::uint32_t handle = static_cast<std::uint32_t>(req[5]) << 24 |
-                                     static_cast<std::uint32_t>(req[6]) << 16 |
-                                     static_cast<std::uint32_t>(req[7]) << 8 | req[8];
+        const std::uint32_t handle = getBe32(req + 5);
 
         if (handle != 0x10001)
         {
-            out[0] = 0x01;
-            out[1] = tid1;
-            out[2] = tid2;
-            out[3] = 0x00;
-            out[4] = 0x02;
-            out[5] = 0x00;
-            out[6] = 0x02; // invalid service record handle
-            return 7;
+            return errorResponse(out, tid1, tid2, kInvalidRecordHandle);
         }
         r = buildAttributes(req + 11, plen - 6, &consumed, out + 7, outcap - 8);
         if (r < 0)
@@ -357,11 +344,9 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
         out[2] = tid2;
         const std::uint32_t outlen = static_cast<std::uint32_t>(r);
 
-        out[5] = static_cast<std::uint8_t>(outlen >> 8);
-        out[6] = static_cast<std::uint8_t>(outlen);
+        putBe16(out + 5, outlen);
         out[outlen + 7] = 0; // no continuation state
-        out[3] = static_cast<std::uint8_t>((outlen + 3) >> 8);
-        out[4] = static_cast<std::uint8_t>((outlen + 3) & 0xff);
+        putBe16(out + 3, outlen + 3);
         return static_cast<int>(outlen + 8);
     }
     case 0x06: { // service search attribute
@@ -379,11 +364,9 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
             out[0] = 0x07;
             out[1] = tid1;
             out[2] = tid2;
-            out[5] = static_cast<std::uint8_t>(r >> 8);
-            out[6] = static_cast<std::uint8_t>(r);
+            putBe16(out + 5, r);
             out[r + 7] = 0;
-            out[3] = static_cast<std::uint8_t>((r + 3) >> 8);
-            out[4] = static_cast<std::uint8_t>((r + 3) & 0xff);
+            putBe16(out + 3, r + 3);
             return r + 8;
         }
         int dummy = 0;
@@ -395,17 +378,14 @@ int SdpServer::handle(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_
             return errorResponse(out, tid1, tid2);
         }
         out[7] = 0x36;
-        out[8] = static_cast<std::uint8_t>(outlen >> 8);
-        out[9] = static_cast<std::uint8_t>(outlen);
+        putBe16(out + 8, outlen);
         logLine("sdp: search+attributes -> %d record(s), %d bytes", r, outlen + 3);
         out[0] = 0x07;
         out[1] = tid1;
         out[2] = tid2;
-        out[5] = static_cast<std::uint8_t>((outlen + 3) >> 8);
-        out[6] = static_cast<std::uint8_t>((outlen + 3) & 0xff);
+        putBe16(out + 5, outlen + 3);
         out[outlen + 3 + 7] = 0;
-        out[3] = static_cast<std::uint8_t>((outlen + 3 + 3) >> 8);
-        out[4] = static_cast<std::uint8_t>((outlen + 3 + 3) & 0xff);
+        putBe16(out + 3, outlen + 3 + 3);
         return outlen + 3 + 8;
     }
     default:

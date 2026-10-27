@@ -45,11 +45,13 @@ bool validNode(std::string_view node)
 
 } // namespace
 
-Service::Service(const Ports& ports, ServerPorts server)
-    : m_radio(ports.radio), m_usb(ports.usb), m_system(ports.system), m_shortcut(ports.shortcut),
-      m_address(ports.address), m_server(*this, ports.usb, ports.log, ports.page, server)
+Service::Service(IRadio& radio, IUsbDirectory& usb, HomeScreenShortcut& shortcut, LogBuffer& log, std::string_view page,
+                 std::string model, std::string address, int port)
+    : m_radio(radio), m_usb(usb), m_shortcut(shortcut), m_model(std::move(model)), m_address(std::move(address)),
+      m_server(*this, usb, log, page, port)
 {
-    m_radio.setStreamObserver(this);
+    m_radio.setStreamObserver(
+        [this](int rate, int queueMs, int pps, long packets) { publishStream(rate, queueMs, pps, packets); });
 }
 
 const char* Service::stateName(State state)
@@ -102,7 +104,6 @@ Service::PostResult Service::post(std::string_view command, std::string_view add
     else if (command == "quit")
     {
         m_quit.store(true);
-        m_disconnectRequested.store(true);
         return PostResult::Ok;
     }
     else
@@ -118,7 +119,7 @@ Service::PostResult Service::post(std::string_view command, std::string_view add
         }
     }
 
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (m_pending.command != Command::None)
     {
         return PostResult::Busy;
@@ -153,7 +154,7 @@ Service::PostResult Service::startRadio(std::string_view adapter, std::string_vi
         return PostResult::BadAdapter;
     }
 
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (m_pending.command != Command::None)
     {
         return PostResult::Busy;
@@ -169,7 +170,7 @@ Service::PostResult Service::startRadio(std::string_view adapter, std::string_vi
 
 Service::PostResult Service::stopRadio()
 {
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (m_pending.command != Command::None)
     {
         return PostResult::Busy;
@@ -186,7 +187,7 @@ std::string Service::statusJson()
 {
     Json json;
 
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     const bool idle = m_state == State::Idle;
 
     json.beginObject()
@@ -231,7 +232,7 @@ std::string Service::devicesJson()
 {
     Json json;
 
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     json.beginArray();
     for (const DeviceInfo& device : m_devices)
     {
@@ -258,7 +259,7 @@ std::string Service::devicesJson()
 
 void Service::publishStream(int rate, int queueMs, int packetsPerSecond, long packets)
 {
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_stream = StreamInfo{rate, queueMs, packetsPerSecond, packets};
 }
 
@@ -274,15 +275,14 @@ void Service::setState(State state, const char* fmt, ...)
     std::vsnprintf(text, sizeof text, fmt, args);
     va_end(args);
 
-    m_radioState = state;
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_state = state;
     m_message = text;
 }
 
 Service::Pending Service::takePending()
 {
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     Pending taken = m_pending;
     m_pending = Pending{};
     return taken;
@@ -308,7 +308,7 @@ void Service::publishDevices()
         info.cod = found.classOfDevice;
         info.other = found.other;
         info.bonded = m_radio.hasBond(found.address);
-        info.connected = m_hasCurrent && m_currentAddress == found.address;
+        info.connected = m_current == found.address;
         devices.push_back(std::move(info));
     }
 
@@ -348,47 +348,53 @@ void Service::publishDevices()
         info.address = address;
         info.name = bond.name;
         info.bonded = true;
-        info.connected = m_hasCurrent && m_currentAddress == bond.peer;
+        info.connected = m_current == bond.peer;
         devices.push_back(std::move(info));
     }
 
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_devices = std::move(devices);
+}
+
+// A newer copy found us by name and asked us (SIGTERM) to step aside; take
+// exactly the same, peaceful path "quit" from the web interface does: finish
+// what is running, then stop. Checked in tick() and in run()'s loop: a session
+// blocks the loop for as long as it runs, but tick() keeps being called from
+// inside BtStack::poll(), which a stream calls too; and tick() is never
+// called while idle with the radio off, which the loop iterates through.
+bool Service::checkQuitSignal()
+{
+    if (!takeQuitRequestedFlag())
+    {
+        return false;
+    }
+    logLine("service: asked by a newer copy to quit");
+    m_quit.store(true);
+    return true;
 }
 
 // called by the radio's poll about once a second
 void Service::tick()
 {
-    // A newer copy found us by name and asked us (SIGUSR1) to step aside;
-    // take exactly the same, peaceful path "quit" from the web interface
-    // does: finish what is running, then stop. Checked here rather than at
-    // the top of run()'s loop: a session (runSession(), called from there)
-    // is a synchronous call that blocks that loop for as long as it runs,
-    // but tick() keeps running regardless — it is called once a second
-    // from inside BtStack::poll(), which a stream keeps calling too.
-    if (takeQuitRequestedFlag())
-    {
-        logLine("service: asked by a newer copy to quit");
-        m_quit.store(true);
-        m_disconnectRequested.store(true);
-    }
+    checkQuitSignal();
     flushLog();
     {
         const std::string name = m_radio.peerName();
         const std::string address = m_radio.peerAddress();
-        ScopedLock lock(m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
 
         m_peerName = name;
         m_peerAddress = address;
     }
-    if (m_radioState == State::Scanning || m_radioState == State::Idle)
+    const State state = currentState();
+
+    if (state == State::Scanning || state == State::Idle)
     {
         publishDevices();
     }
     // a disconnect or quit during a session ends it; when no session is
     // running the request has nothing to stop and must not linger
-    if (m_radioState != State::Idle && m_radioState != State::Scanning &&
-        (m_disconnectRequested.load() || m_quit.load()))
+    if (state != State::Idle && state != State::Scanning && (m_disconnectRequested.load() || m_quit.load()))
     {
         m_radio.requestStop();
     }
@@ -400,12 +406,11 @@ void Service::runSession(bool capturing, const BdAddr* address)
 {
     const char* failure = nullptr;
 
-    m_disconnectRequested.store(false);
+    m_disconnectRequested.store(false); // an old request does not end this session
     if (address != nullptr)
     {
         m_radio.resetAudio();
-        m_currentAddress = *address;
-        m_hasCurrent = true;
+        m_current = *address;
         setState(State::Connecting, "connecting to %s", addressText(*address).c_str());
         if (!m_radio.connectTo(*address))
         {
@@ -439,24 +444,34 @@ void Service::runSession(bool capturing, const BdAddr* address)
     m_radio.disconnect();
     m_radio.resetAudio();
     m_radio.listenAudio();
-    // the request is spent; clear it here, not on the next idle round
-    m_disconnectRequested.store(false);
     // a device we failed to pair with leaves no name file behind
     if (failure != nullptr && address != nullptr && !m_radio.hasBond(*address))
     {
         m_radio.forget(*address);
     }
-    m_hasCurrent = false;
+    m_current.reset();
     publishStream(0, 0, 0, 0);
     setState(State::Idle, "%s", failure != nullptr ? failure : "stream ended");
     publishDevices();
+}
+
+Service::State Service::currentState()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_state;
+}
+
+bool Service::radioIsOn()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_radioOn;
 }
 
 bool Service::openRadio(const std::string& node)
 {
     UsbDevice usb;
     const char* which = node.empty() ? m_usb.internalNode() : node.c_str();
-    const std::string model = m_system.modelName();
+    const std::string& model = m_model;
 
     // what this is running on, for the log: a console of another model may
     // have another chip
@@ -486,9 +501,8 @@ bool Service::openRadio(const std::string& node)
         return false;
     }
     m_radio.setTick([this] { tick(); });
-    m_radioOpen = true;
     {
-        ScopedLock lock(m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         m_radioOn = true;
         m_adapterNode = node;
     }
@@ -498,14 +512,13 @@ bool Service::openRadio(const std::string& node)
 
 void Service::closeRadio()
 {
-    if (!m_radioOpen)
+    if (!radioIsOn())
     {
         return;
     }
     m_radio.close();
-    m_radioOpen = false;
     {
-        ScopedLock lock(m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         m_radioOn = false;
     }
     setState(State::Idle, "radio off");
@@ -533,16 +546,8 @@ bool Service::run(bool capturing)
 
     while (!m_quit.load())
     {
-        // Also checked in tick(), which a session keeps calling (that loop
-        // does not reach back here until the session ends) but which is
-        // itself never called while idle with the radio off (the Command::
-        // None case below just sleeps, it never reaches m_radio.poll()) —
-        // the one state this loop iterates through regardless.
-        if (takeQuitRequestedFlag())
+        if (checkQuitSignal())
         {
-            logLine("service: asked by a newer copy to quit");
-            m_quit.store(true);
-            m_disconnectRequested.store(true);
             continue;
         }
         // started at boot, the network may not be up yet
@@ -577,7 +582,7 @@ bool Service::run(bool capturing)
             publishDevices();
             break;
         case Command::None:
-            if (!m_radioOpen)
+            if (!radioIsOn())
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 break;
@@ -587,8 +592,6 @@ bool Service::run(bool capturing)
             {
                 runSession(capturing, nullptr);
             }
-            // a disconnect that arrived with nothing to disconnect
-            m_disconnectRequested.store(false);
             break;
         }
     }

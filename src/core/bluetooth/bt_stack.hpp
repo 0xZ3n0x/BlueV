@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -147,11 +148,6 @@ class BtStack
     {
         return m_handle;
     }
-    // How many links have come up since start(); a change means a new link.
-    unsigned connectionCount() const
-    {
-        return m_connGen;
-    }
     std::string peerName() const
     {
         return m_peerName.empty() ? "the device" : m_peerName;
@@ -176,6 +172,9 @@ class BtStack
     // One L2CAP frame on channel `cid`, unfragmented; false when it does not fit
     // the controller's ACL buffer or the transport refused it. Takes a credit.
     bool send(std::uint32_t cid, const std::uint8_t* data, int length);
+    // An L2CAP signalling command on channel 1: `code`, `id`, then up to four
+    // 16-bit fields (the command's parameters, little-endian).
+    bool sendSignal(std::uint8_t code, std::uint8_t id, std::initializer_list<unsigned> fields);
     // True when a credit is free and not too much is in flight (see send()).
     bool canSend();
     // The largest `length` send() takes: the controller's ACL size minus the headers.
@@ -233,7 +232,6 @@ class BtStack
     void runInquiry(std::uint32_t timeoutMs);
 
     // link
-    bool waitConn(std::uint32_t timeoutMs);
     bool pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t clock);
     bool encryptLink();
     void resetLinkState(); // keeps the target

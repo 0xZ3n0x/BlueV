@@ -18,7 +18,6 @@
 #include "core/ports/bond_store.hpp"
 #include "core/ports/clock.hpp"
 #include "core/ports/hci_transport.hpp"
-#include "core/ports/stream_observer.hpp"
 #include "core/ports/usb_directory.hpp"
 
 namespace bluev
@@ -49,8 +48,8 @@ class IRadio
     virtual void close() = 0;
     // `tick` is called about once a second, from inside poll().
     virtual void setTick(std::function<void()> tick) = 0;
-    // Where the stream's live numbers go; null for nobody.
-    virtual void setStreamObserver(IStreamObserver* observer) = 0;
+    // Where the stream's live numbers go; empty for nobody.
+    virtual void setStreamObserver(StreamObserver observer) = 0;
     // Lets the controller work for up to `timeoutMs` and handles what arrived.
     virtual void poll(std::uint32_t timeoutMs) = 0;
 
@@ -106,9 +105,9 @@ class Radio final : public IRadio
     {
         m_bt.setTick(std::move(tick));
     }
-    void setStreamObserver(IStreamObserver* observer) override
+    void setStreamObserver(StreamObserver observer) override
     {
-        m_streamer.setObserver(observer);
+        m_streamer.setObserver(std::move(observer));
     }
     void poll(std::uint32_t timeoutMs) override
     {
@@ -184,16 +183,6 @@ class Radio final : public IRadio
     void requestStop() override
     {
         m_session.requestStop();
-    }
-
-    // The parts, for tests that look inside.
-    BtStack& stack()
-    {
-        return m_bt;
-    }
-    A2dpSession& session()
-    {
-        return m_session;
     }
 
   private:

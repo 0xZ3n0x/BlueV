@@ -49,9 +49,6 @@ target_link_libraries(bluev_core PUBLIC sbc_host)
 file(GLOB_RECURSE SERVICE_SOURCES CONFIGURE_DEPENDS src/service/*.cpp)
 add_library(bluev_service STATIC ${SERVICE_SOURCES})
 target_compile_options(bluev_service PRIVATE -fno-exceptions -fno-rtti)
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  target_compile_options(bluev_service PRIVATE -Wthread-safety)
-endif()
 target_link_libraries(bluev_service PUBLIC bluev_core)
 
 # ---- tests -------------------------------------------------------------------

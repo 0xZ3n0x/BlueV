@@ -22,17 +22,17 @@ tried and dropped, is in sections 17 and 18.
 | Path | Role |
 |---|---|
 | `src/app/main.cpp` | composition root: lock file, builds the real objects, runs the service |
-| `src/core/ports/` | interfaces: `IClock`, `ILogSink`, `ILogReader`, `IHciTransport`, `IBondStore`, `IAudioSource`, `IUsbDirectory`, `IStreamObserver`, `ISystemInfo`, `IShortcut`, `IAppInstaller` |
+| `src/core/ports/` | interfaces: `IClock`, `ILogSink`, `IHciTransport`, `IBondStore`, `IAudioSource`, `IUsbDirectory`, `IAppInstaller`. An interface exists only where a test needs a fake of something it cannot run (the controller, the console, time, files); the rest are plain classes or `std::function` |
 | `src/core/bluetooth/bt_stack*.cpp` | `BtStack`: controller start/stop, inquiry, paging/pairing/encryption, event and ACL loop, L2CAP, credit flow control, bonds |
 | `src/core/bluetooth/` (rest) | `SdpServer`, addresses, names, `device_filter` (TV classification, EIR names), `L2capReassembler`, HCI opcodes |
 | `src/core/audio/` | `A2dpSession` (AVDTP), `A2dpStreamer` (capture, resample, SBC, RTP), `avdtp`, `a2dp_params`, `PcmFifo`, `LinearResampler`, `rtp.hpp` |
 | `src/core/radio.*` | `IRadio` (what the service needs) and `Radio` (wires `BtStack` + `A2dpSession` + `A2dpStreamer`) |
-| `src/service/service.*` | `Service`: state machine driven by the web interface; depends on `IRadio` and ports only |
+| `src/service/service.*` | `Service`: state machine driven by the web interface; depends on `IRadio`, `IUsbDirectory` and the concrete `HomeScreenShortcut` / `LogBuffer` |
 | `src/service/web.*` | `HttpServer`: control page and JSON API |
-| `src/service/log_buffer.*`, `app_log.*`, `notification_queue.*` | log ring + file buffer, the program's `ILogSink`, on-screen notifications from a worker thread |
+| `src/service/log_buffer.*`, `app_log.*` | log ring + file buffer, the program's `ILogSink` (also sends the on-screen notifications) |
 | `src/service/home_screen_shortcut.*` | the home screen entry (files + `IAppInstaller`) |
-| `src/service/sync.hpp`, `json.hpp` | thread-safety annotated mutex, JSON writer |
-| `src/platform/ps5/` | the only code that knows the console: `UgenTransport` (raw HCI over ugen), `Ps5UsbDirectory` (the USB device list + libSceUsbd descriptors), `AvcapSource` (libSceAvcap2), `Ps5SystemInfo`, `Ps5AppInstaller`, kernel log and notification senders |
+| `src/service/json.hpp` | JSON writer |
+| `src/platform/ps5/` | the only code that knows the console: `UgenTransport` (raw HCI over ugen), `Ps5UsbDirectory` (the USB device list + libSceUsbd descriptors), `AvcapSource` (libSceAvcap2), `Ps5AppInstaller`, `askOtherInstanceToQuit` (process list lookup), `consoleModelName()`, `sendNotification()` |
 | `src/platform/posix/` | `FileBondStore`, `LogFile` (plain files; also used by the tests) |
 | `web/index.html` | the control page, embedded at build time (`tools/embed.py`) |
 | `third_party/sbc/` | BlueZ libsbc 2.2, git submodule, built unmodified (not tested) |
@@ -46,7 +46,7 @@ build settings.
 ## 1. Top level (`app/main.cpp`, `service/service.cpp`)
 
 ```
-log file -> lock (flock) -> notifications
+log file -> lock (flock)
   -> AvcapSource::open   prepare audio capture
   -> Service::run
        HttpServer::start HTTP server thread
@@ -70,7 +70,7 @@ log file -> lock (flock) -> notifications
 - Files in `/data/bluev/` (`main.cpp`, `FileBondStore`): `bluev.log`,
   `bluev.lock`, and one `bond-<ours>-<theirs>.key` (23 bytes: address 6, link
   key 16, key type 1) plus `bond-<theirs>.name` per paired device (section 12b).
-- Start-up order is the log, the notification worker, the lock, the capture,
+- Start-up order is the log, the lock, the capture,
   `Service::run`; shutdown is the reverse (the HTTP server stops and waits for
   requests in flight before the radio is closed). Each of these owns its state
   in a class; the only global is the pointer to the log sink
@@ -358,10 +358,8 @@ channel closes, or a stop is requested:
 
 ## 11. Notifications and logging
 
-- `NotificationQueue` sends on-screen notifications (`sceKernelSendNotificationRequest`)
-  from its own thread. Posting never blocks, so the radio thread never sleeps:
-  a notification meant to be read is held on screen by the worker (400 ms)
-  before the next one goes out. `notifyShow` also logs the text.
+- `AppLog::notify` calls `sendNotification` (`sceKernelSendNotificationRequest`)
+  directly on the calling thread. `notifyShow` also logs the text.
 - What appears on the screen is kept short: `BlueV ready: open http://<ip>:7733`
   once the web server is up (the address comes from the network interface, and
   is only shown, not logged; without one it points at the home screen entry),
@@ -618,18 +616,17 @@ controller and starts it:
 |---|---|
 | radio (main) | everything in `radio/` and `audio/`, the service state machine |
 | web accept + one per request | HTTP only; touches the radio never |
-| notifier | sends notifications |
 
 Rules that keep this race-free:
 
 - Radio state is owned by the radio thread. Other threads reach it through
   three boundary objects only: the pending command and status snapshot in
-  `Service` (one mutex, `GT_GUARDED_BY`), the log ring (`Logger`, its own
+  `Service` (one mutex), the log ring (`Logger`, its own
   mutex), and two atomic flags (`m_quit`, `m_disconnect_requested`). The
   streaming loop publishes its numbers with `service_publish_stream` (a few
   times a second, under the service mutex) and polls an atomic stop flag.
-- `-Wthread-safety` is on for the C++ code: a guarded member touched without
-  its lock is a compile warning.
+- ThreadSanitizer (`tests/run.sh thread`) runs the service tests, including 8
+  clients firing random requests, to catch races.
 - Nothing on the radio thread sleeps or waits for I/O other than the
   controller itself.
 
@@ -708,7 +705,7 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | Ports and adapters: `app -> service -> core`, `platform -> core/ports` | Every layer runs on a PC under gtest/gmock; everything that touches the console is in `src/platform/ps5/`, and `core` has no console header |
 | C++20, no exceptions, no RTTI (`-fno-exceptions -fno-rtti` on the console) | Small payload, no surprises from the console's runtime; the interfaces are header only, so tests may use RTTI |
 | The stack does not sleep or read the clock itself: time comes from `IClock`, passes only inside `poll()` | Tests move a fake clock, so timeouts of 20 s run in milliseconds; the code still uses the same waits as on the console |
-| One radio thread; web threads only post one pending command and read snapshots under a mutex (annotated for clang `-Wthread-safety`) | The HCI side is never touched from two threads; a second command gets `Busy` instead of a race |
+| One radio thread; web threads only post one pending command and read snapshots under a mutex | The HCI side is never touched from two threads; a second command gets `Busy` instead of a race |
 | The radio is off at start; the user starts it from the page | Nothing opens a USB device until asked: the internal chip is shared with the gamepad (section 12) |
 | A USB adapter is the recommended path | The chip is ours alone: no gamepad problem, 11 s from selecting a speaker to audio against about 105 s on the internal chip (12b) |
 | Endpoint layout read from the USB descriptors (`libSceUsbd`), not guessed by behaviour | Behaviour detection armed reads on the wrong pipes and broke the gamepad's reconnection (12c) |
@@ -721,7 +718,7 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | libsbc is an unmodified submodule; `src/compat/config.h` supplies its build settings | Upstream code stays upstream; it is not tested here |
 | A small HTTP/1.0 server of our own, with a JSON writer; a thread per connection, at most 8, `503` when full; `Access-Control-Allow-Origin: *` | The API is a handful of routes; the launcher frame has the origin `null` and needs CORS; the connection slot is given back before the socket is closed so a client never meets a full server |
 | One control page, embedded in the ELF (`tools/embed.py`) | Nothing else to deploy; the launcher menu stays small (section 15) |
-| Notifications go through a worker thread | The radio thread never sleeps to let a message be read |
+| Notifications are sent straight from the calling thread (`sceKernelSendNotificationRequest`) | There are only a few per session (start-up, "Streaming to ...", failures); a queue and a worker thread with a 400 ms hold were not worth it. If the console is found to drop messages sent close together, a queue can come back (git history) |
 | Log: a ring of 300 lines for the page and a file flushed once a second, turned over at 512 KB; nothing in the kernel log; time stamps in UTC | The page can show the log without reading a file; the file survives a crash and cannot grow without limit; the console's kernel log stays readable |
 | One copy at a time (`flock` on `/data/bluev/bluev.lock`); a newer copy finds the old one by process name (`thr_set_name`/`sysctl(KERN_PROC_PROC)`) and asks it to quit (`SIGTERM`) | Sending the ELF again replaces the running program; finding it by name works even before its web server is up, unlike probing it over HTTP |
 | A fixed web server port (7733), not a range with a fallback | The home screen entry always names 7733; a fallback port made it silently stop matching. `start()` already retries every 2 s, which also covers the port being briefly held by something else |

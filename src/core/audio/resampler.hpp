@@ -18,12 +18,6 @@ class LinearResampler
     }
 
     // forget the position and the last frame (start of a stream)
-    void reset()
-    {
-        m_pos = 0.0;
-        m_prev[0] = m_prev[1] = 0.0f;
-    }
-
     // `frames` stereo frames of 48 kHz float, interleaved; the converted
     // frames are pushed to `out` as 16 bit.
     void process(const float* interleaved, int frames, PcmFifo& out);

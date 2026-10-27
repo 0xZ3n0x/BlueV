@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "platform/ps5/process_identity.hpp"
 
+#include <csignal>
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
 #include <ps5/kernel.h>
 #include <sys/sysctl.h>
-#include <sys/thr.h>
 #include <sys/user.h>
 #include <unistd.h>
 
@@ -20,25 +20,6 @@ namespace
 // unlock sysctl(KERN_PROC_PROC) visibility and kill() across processes for
 // an elfldr-injected, otherwise unprivileged process.
 constexpr std::uint64_t kAuthId = 0x4801000000000013ULL;
-} // namespace
-
-void setProcessName(const char* name)
-{
-    thr_set_name(-1, name); // -1: the calling thread
-}
-
-std::uint64_t allowFindingOtherInstances()
-{
-    const std::uint64_t original = kernel_get_ucred_authid(getpid());
-
-    kernel_set_ucred_authid(getpid(), kAuthId);
-    return original;
-}
-
-void restoreCredentials(std::uint64_t original)
-{
-    kernel_set_ucred_authid(getpid(), original);
-}
 
 pid_t findOtherInstance(const char* name)
 {
@@ -84,6 +65,23 @@ pid_t findOtherInstance(const char* name)
         offset += static_cast<std::size_t>(entrySize);
     }
     return -1;
+}
+
+} // namespace
+
+pid_t askOtherInstanceToQuit(const char* name)
+{
+    const std::uint64_t original = kernel_get_ucred_authid(getpid());
+
+    kernel_set_ucred_authid(getpid(), kAuthId);
+    const pid_t other = findOtherInstance(name);
+
+    if (other >= 0)
+    {
+        kill(other, SIGTERM);
+    }
+    kernel_set_ucred_authid(getpid(), original);
+    return other;
 }
 
 } // namespace bluev

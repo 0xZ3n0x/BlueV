@@ -25,8 +25,8 @@ constexpr int kMaxFramesPerPacket = 8; // SBC frames in one media packet
 } // namespace
 
 A2dpStreamer::A2dpStreamer(BtStack& bt, A2dpSession& session, IAudioSource& audio, IClock& clock,
-                           IStreamObserver* observer)
-    : m_bt(bt), m_session(session), m_audio(audio), m_clock(clock), m_observer(observer)
+                           StreamObserver observer)
+    : m_bt(bt), m_session(session), m_audio(audio), m_clock(clock), m_observer(std::move(observer))
 {
 }
 
@@ -230,12 +230,11 @@ bool A2dpStreamer::run(bool capturing)
                     ratePackets = packets;
                     rateT = tn;
                 }
-                if (m_observer != nullptr)
+                if (m_observer)
                 {
-                    m_observer->onStream(
-                        static_cast<int>(sc.rate),
-                        static_cast<int>(static_cast<long>(fifo.size()) * 1000 / static_cast<long>(sc.rate)), pps,
-                        packets);
+                    m_observer(static_cast<int>(sc.rate),
+                               static_cast<int>(static_cast<long>(fifo.size()) * 1000 / static_cast<long>(sc.rate)),
+                               pps, packets);
                 }
                 lastPublish = tn;
             }

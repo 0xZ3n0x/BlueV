@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include "core/bytes.hpp"
+
 namespace bluev
 {
 
@@ -18,7 +20,7 @@ class L2capReassembler
 
     std::uint16_t cid() const
     {
-        return static_cast<std::uint16_t>(m_buf[2] | m_buf[3] << 8);
+        return getLe16(m_buf + 2);
     }
     const std::uint8_t* payload() const
     {

@@ -5,37 +5,11 @@
 #include "core/bluetooth/bt_stack.hpp"
 #include "core/bluetooth/hci_defs.hpp"
 #include "core/bluetooth/names.hpp"
+#include "core/bytes.hpp"
 #include "core/ports/log.hpp"
 
 namespace bluev
 {
-
-// Polls until the connection complete event of the target has come (the result
-// is in m_connStatus); false on timeout or when the link is lost first.
-bool BtStack::waitConn(std::uint32_t timeoutMs)
-{
-    const std::uint64_t deadline = m_clock.nowMs() + timeoutMs;
-
-    while (!m_connDone)
-    {
-        std::int64_t left = static_cast<std::int64_t>(deadline - m_clock.nowMs());
-
-        if (left < 1)
-        {
-            return false;
-        }
-        if (left > 100)
-        {
-            left = 100;
-        }
-        poll(static_cast<std::uint32_t>(left));
-        if (m_disconnected)
-        {
-            return false;
-        }
-    }
-    return true;
-}
 
 // Creates the ACL connection to `peer`, trying up to four times and then
 // listening for a while, because a headset may be paging us at the same time.
@@ -59,8 +33,7 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
     req[7] = 0xcc; // packet types DM1..DH5
     req[8] = m_targetPsrm;
     req[9] = 0; // reserved
-    req[10] = clock & 0xff;
-    req[11] = static_cast<std::uint8_t>(clock >> 8);
+    putLe16(req + 10, clock);
     req[12] = 1; // allow role switch
 
     for (int attempt = 1; attempt <= 4 && !gotIt; attempt++)
@@ -83,7 +56,7 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
         {
             return false;
         }
-        if (waitConn(4000))
+        if (wait([this] { return m_connDone; }, 4000))
         {
             gotIt = true;
             break;
@@ -94,7 +67,7 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
         m_connDone = false;
         m_connStatus = 0;
         // stop paging for a moment: the headset may be paging us
-        if (waitConn(20000) && m_connStatus == 0)
+        if (wait([this] { return m_connDone; }, 20000) && m_connStatus == 0)
         {
             gotIt = true;
             break;
@@ -118,7 +91,7 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
         // and page again.
         m_connDone = false;
         m_connStatus = 0;
-        if (waitConn(4000) && m_connStatus == 0)
+        if (wait([this] { return m_connDone; }, 4000) && m_connStatus == 0)
         {
             logLine("connection: the earlier attempt completed");
             return true;
@@ -142,7 +115,7 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
         {
             return false;
         }
-        if (waitConn(8000) && m_connStatus == 0)
+        if (wait([this] { return m_connDone; }, 8000) && m_connStatus == 0)
         {
             return true;
         }
@@ -168,33 +141,14 @@ bool BtStack::encryptLink()
 {
     std::uint8_t req[3];
 
-    req[0] = m_handle & 0xff;
-    req[1] = static_cast<std::uint8_t>(m_handle >> 8);
+    putLe16(req, m_handle);
     m_authDone = false;
     if (!cmd(hci::kAuthRequested, req, 2))
     {
         return false;
     }
 
-    std::uint64_t deadline = m_clock.nowMs() + 30000;
-    while (!m_authDone)
-    {
-        std::int64_t left = static_cast<std::int64_t>(deadline - m_clock.nowMs());
-
-        if (left < 1)
-        {
-            break;
-        }
-        if (left > 100)
-        {
-            left = 100;
-        }
-        poll(static_cast<std::uint32_t>(left));
-        if (m_disconnected)
-        {
-            break;
-        }
-    }
+    wait([this] { return m_authDone; }, 30000);
     if (!m_authDone)
     {
         logLine("authentication: no answer");
@@ -215,39 +169,16 @@ bool BtStack::encryptLink()
     }
 
     // wait for the link to encrypt itself; force it if needed
-    deadline = m_clock.nowMs() + 2000;
-    while (!m_encOn && !m_disconnected)
-    {
-        std::int64_t left = static_cast<std::int64_t>(deadline - m_clock.nowMs());
-
-        if (left < 1)
-        {
-            break;
-        }
-        if (left > 100)
-        {
-            left = 100;
-        }
-        poll(static_cast<std::uint32_t>(left));
-    }
+    wait([this] { return m_encOn || m_disconnected; }, 2000, false);
     if (!m_encOn && !m_disconnected)
     {
-        req[0] = m_handle & 0xff;
-        req[1] = static_cast<std::uint8_t>(m_handle >> 8);
+        putLe16(req, m_handle);
         req[2] = 1;
         if (!cmd(hci::kSetConnEncryption, req, 3))
         {
             return false;
         }
-        deadline = m_clock.nowMs() + 20000;
-        while (!m_encOn && !m_disconnected)
-        {
-            if (m_clock.nowMs() >= deadline)
-            {
-                break;
-            }
-            poll(100);
-        }
+        wait([this] { return m_encOn || m_disconnected; }, 20000, false);
     }
     if (!m_encOn)
     {
@@ -255,8 +186,9 @@ bool BtStack::encryptLink()
         return false;
     }
     logLine("link encrypted");
-    const std::uint8_t handle[2] = {static_cast<std::uint8_t>(m_handle & 0xff),
-                                    static_cast<std::uint8_t>(m_handle >> 8)};
+    std::uint8_t handle[2];
+
+    putLe16(handle, m_handle);
 
     cmd(hci::kRoleDiscovery, handle, 2);
     poll(100);
@@ -339,15 +271,10 @@ void BtStack::disconnect()
 
     if (m_handle != 0 && !m_disconnected)
     {
-        disc[0] = m_handle & 0xff;
-        disc[1] = static_cast<std::uint8_t>(m_handle >> 8);
+        putLe16(disc, m_handle);
         disc[2] = 0x13;
         cmd(hci::kDisconnect, disc, 3);
-        const std::uint64_t deadline = m_clock.nowMs() + 2000;
-        while (!m_disconnected && m_clock.nowMs() < deadline)
-        {
-            poll(100);
-        }
+        wait([this] { return m_disconnected; }, 2000, false);
     }
     cmd(hci::kCreateConnCancel, m_target.data(), 6);
     poll(200);

@@ -114,13 +114,13 @@ TEST_F(HttpApi, ForgetAcceptsAPercentEncodedAddress)
     EXPECT_TRUE(waitFor([&] { return forgotten.load() == 1; }, 2000));
 }
 
-TEST_F(HttpApi, UninstallShortcutReachesTheShortcut)
+TEST_F(HttpApi, UninstallShortcutAsksTheInstaller)
 {
     ASSERT_TRUE(startService());
     std::string body;
-    EXPECT_CALL(shortcut, remove()).WillOnce(Return(true));
+    EXPECT_CALL(installer, unregisterTitle(_)).WillOnce(Return(true));
     EXPECT_EQ(200, request("POST", "/api/uninstall-shortcut", body));
-    EXPECT_CALL(shortcut, remove()).WillOnce(Return(false));
+    EXPECT_CALL(installer, unregisterTitle(_)).WillOnce(Return(false));
     EXPECT_EQ(409, request("POST", "/api/uninstall-shortcut", body));
 }
 

@@ -8,6 +8,7 @@
 #include "core/bluetooth/hci_defs.hpp"
 #include "core/bluetooth/names.hpp"
 #include "core/bluetooth/sdp_server.hpp"
+#include "core/bytes.hpp"
 #include "core/ports/log.hpp"
 
 namespace bluev
@@ -52,7 +53,7 @@ void BtStack::poll(std::uint32_t timeoutMs)
 
 bool BtStack::isOurLink(const std::uint8_t* e) const
 {
-    return m_connDone && m_connStatus == 0 && m_handle == ((e[1] | e[2] << 8) & 0xfff);
+    return m_connDone && m_connStatus == 0 && m_handle == (getLe16(e + 1) & 0xfff);
 }
 
 void BtStack::handleEvent(const std::uint8_t* evt, int n)
@@ -191,7 +192,7 @@ void BtStack::onConnectionComplete(const std::uint8_t* e)
     if (peer == m_target && (e[0] != 0x0b || !m_connDone))
     {
         m_connDone = true;
-        m_handle = (e[1] | e[2] << 8) & 0xfff;
+        m_handle = getLe16(e + 1) & 0xfff;
         m_connStatus = e[0];
         if (e[0] == 0)
         { // a fresh link: clean slate
@@ -233,7 +234,7 @@ void BtStack::onConnectionRequest(const std::uint8_t* e)
     else if (m_service)
     {
         // service mode: only devices paired before dial in
-        const std::uint32_t cls = static_cast<std::uint32_t>(e[6]) | e[7] << 8 | e[8] << 16;
+        const std::uint32_t cls = getLe24(e + 6);
 
         if (bondExists(peer))
         {
@@ -253,7 +254,7 @@ void BtStack::onConnectionRequest(const std::uint8_t* e)
     }
     else
     {
-        const std::uint32_t cls = static_cast<std::uint32_t>(e[6]) | e[7] << 8 | e[8] << 16;
+        const std::uint32_t cls = getLe24(e + 6);
 
         if (!m_key.have && (e[7] & 0x1f) == 4 && !isJunkDevice(cls, std::string()))
         {
@@ -288,7 +289,7 @@ void BtStack::onDisconnectionComplete(const std::uint8_t* e)
     }
     else
     {
-        logLine("another link closed: handle %#05x, %s (reason %#04x)", (e[1] | e[2] << 8) & 0xfff, hciStatusName(e[3]),
+        logLine("another link closed: handle %#05x, %s (reason %#04x)", getLe16(e + 1) & 0xfff, hciStatusName(e[3]),
                 e[3]);
     }
 }
@@ -328,7 +329,7 @@ void BtStack::onEncryptionChange(const std::uint8_t* e)
 void BtStack::onCommandComplete(const std::uint8_t* evt, int n)
 {
     const std::uint8_t* e = evt + 2;
-    const std::uint16_t op = static_cast<std::uint16_t>(e[1] | e[2] << 8);
+    const std::uint16_t op = getLe16(e + 1);
 
     if (!replyIsOurs(op) && m_systemReplies < 50)
     {
@@ -337,7 +338,7 @@ void BtStack::onCommandComplete(const std::uint8_t* evt, int n)
     }
     if (op == hci::kRoleDiscovery && e[3] == 0)
     {
-        logLine("link role: handle %#05x, we are the %s", (e[4] | e[5] << 8) & 0xfff, e[6] == 0 ? "master" : "slave");
+        logLine("link role: handle %#05x, we are the %s", getLe16(e + 4) & 0xfff, e[6] == 0 ? "master" : "slave");
     }
     m_ccOp = op;
     m_ccLen = n > 1099 ? 1100 : static_cast<std::uint32_t>(n);
@@ -346,7 +347,7 @@ void BtStack::onCommandComplete(const std::uint8_t* evt, int n)
 
 void BtStack::onCommandStatus(const std::uint8_t* e)
 {
-    const std::uint16_t op = static_cast<std::uint16_t>(e[2] | e[3] << 8);
+    const std::uint16_t op = getLe16(e + 2);
     const std::uint32_t status = e[0];
 
     if (!replyIsOurs(op) && m_systemReplies < 50)
@@ -379,8 +380,8 @@ void BtStack::onCompletedPackets(const std::uint8_t* e, int n)
         {
             break;
         }
-        const std::uint16_t h = static_cast<std::uint16_t>(r[0] | r[1] << 8);
-        const std::uint16_t cnt = static_cast<std::uint16_t>(r[2] | r[3] << 8);
+        const std::uint16_t h = getLe16(r);
+        const std::uint16_t cnt = getLe16(r + 2);
 
         if (m_connStatus == 0 && m_connDone && m_handle == (h & 0xfff))
         {
@@ -445,8 +446,8 @@ void BtStack::onLinkKeyNotification(const std::uint8_t* e)
 
 void BtStack::handleAcl(const std::uint8_t* acl, int n)
 {
-    const std::uint16_t hf = static_cast<std::uint16_t>(acl[0] | acl[1] << 8);
-    const std::uint16_t dlen = static_cast<std::uint16_t>(acl[2] | acl[3] << 8);
+    const std::uint16_t hf = getLe16(acl);
+    const std::uint16_t dlen = getLe16(acl + 2);
     const std::uint8_t* pl = acl + 4;
 
     // The event and ACL pipes are separate, so an ACL packet can arrive before

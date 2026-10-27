@@ -7,6 +7,7 @@
 
 #include "core/bluetooth/hci_defs.hpp"
 #include "core/bluetooth/names.hpp"
+#include "core/bytes.hpp"
 #include "core/ports/log.hpp"
 
 namespace bluev
@@ -83,20 +84,12 @@ bool BtStack::hciSync(std::uint16_t opcode, const std::uint8_t* params, std::uin
 {
     for (int attempt = 1;; attempt++)
     {
-        const std::uint64_t deadline = m_clock.nowMs() + (attempt < 4 ? 1500 : 2500);
-
         m_ccOp = 0;
         if (!cmd(opcode, params, length))
         {
             return false;
         }
-        bool replied = m_ccOp == opcode;
-        while (!replied && m_clock.nowMs() < deadline)
-        {
-            poll(30);
-            replied = m_ccOp == opcode;
-        }
-        if (replied)
+        if (wait([this, opcode] { return m_ccOp == opcode; }, attempt < 4 ? 1500 : 2500, false))
         {
             break;
         }
@@ -124,25 +117,10 @@ void BtStack::dropStaleLinks()
 
     if (m_handle != 0 && !m_disconnected)
     {
-        disc[0] = m_handle & 0xff;
-        disc[1] = m_handle >> 8;
+        putLe16(disc, m_handle);
         disc[2] = 0x13;
         cmd(hci::kDisconnect, disc, 3);
-        const std::uint64_t deadline = m_clock.nowMs() + 1500;
-        while (!m_disconnected)
-        {
-            std::int64_t left = static_cast<std::int64_t>(deadline - m_clock.nowMs());
-
-            if (left < 1)
-            {
-                break;
-            }
-            if (left > 100)
-            {
-                left = 100;
-            }
-            poll(static_cast<std::uint32_t>(left));
-        }
+        wait([this] { return m_disconnected; }, 1500, false);
     }
 
     // the controller can hold links from a killed payload
@@ -258,8 +236,8 @@ bool BtStack::start()
     }
     else
     {
-        m_credits = m_cc[9] | m_cc[10] << 8;
-        m_aclMtu = static_cast<std::uint32_t>(m_cc[6] | m_cc[7] << 8);
+        m_credits = getLe16(m_cc + 9);
+        m_aclMtu = getLe16(m_cc + 6);
         m_creditsMax = m_credits;
     }
     if (m_aclMtu < 0x40 || m_credits < 1)
@@ -274,12 +252,11 @@ bool BtStack::start()
     if (hciSync(hci::kReadLocalVersion) && m_ccLen >= 14)
     {
         const unsigned hv = m_cc[6], lmp = m_cc[9];
-        const unsigned man = m_cc[10] | m_cc[11] << 8;
+        const unsigned man = getLe16(m_cc + 10);
 
         logLine("controller: HCI %s (%#x), LMP %#x, manufacturer %#06x (%s), "
                 "revision %#x/%#x",
-                hciVersionName(hv), hv, lmp, man, manufacturerName(man), m_cc[7] | m_cc[8] << 8,
-                m_cc[12] | m_cc[13] << 8);
+                hciVersionName(hv), hv, lmp, man, manufacturerName(man), getLe16(m_cc + 7), getLe16(m_cc + 12));
     }
     else
     {
@@ -315,7 +292,7 @@ bool BtStack::start()
     }
     if (hciSync(hci::kReadPageTimeout) && m_ccLen >= 8)
     {
-        logLine("controller: page timeout %u ms", static_cast<unsigned>((m_cc[6] | m_cc[7] << 8) * 625 / 1000));
+        logLine("controller: page timeout %u ms", static_cast<unsigned>(getLe16(m_cc + 6) * 625 / 1000));
     }
     if (hciSync(hci::kReadScanEnable) && m_ccLen >= 7)
     {
@@ -446,14 +423,10 @@ bool BtStack::send(std::uint32_t cid, const std::uint8_t* data, int len)
         return false;
     }
 
-    pkt[0] = m_handle & 0xff;
-    pkt[1] = ((m_handle >> 8) & 0x0f) | 0x20; // PB: start, no flush
-    pkt[2] = total & 0xff;
-    pkt[3] = static_cast<std::uint8_t>(total >> 8);
-    pkt[4] = len & 0xff;
-    pkt[5] = static_cast<std::uint8_t>(len >> 8);
-    pkt[6] = cid & 0xff;
-    pkt[7] = static_cast<std::uint8_t>(cid >> 8);
+    putLe16(pkt, (m_handle & 0x0fff) | 0x2000); // PB: start, no flush
+    putLe16(pkt + 2, total);
+    putLe16(pkt + 4, len);
+    putLe16(pkt + 6, cid);
     std::memcpy(pkt + 8, data, len);
 
     if (!m_transport.sendAcl(pkt, len + 8))

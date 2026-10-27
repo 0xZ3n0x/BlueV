@@ -31,11 +31,6 @@ class CaptureSink final : public ILogSink
     {
         add(m_notes, text);
     }
-    void notifyShow(const char* text) override
-    {
-        add(m_notes, text);
-        add(m_lines, text);
-    }
 
     std::vector<std::string> lines() const
     {
