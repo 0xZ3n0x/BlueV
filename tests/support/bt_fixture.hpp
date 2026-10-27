@@ -16,7 +16,7 @@ namespace bluev::testing
 class BtFixture : public ::testing::Test
 {
   protected:
-    BtFixture() : controller(clock), stack(controller, bonds, usb, clock)
+    BtFixture() : controller(clock), stack(controller, bonds, usb, firmware, clock)
     {
         usb.layouts["ugen0.2"] = HciLayout{0, 0x81, 0x82, 0x02};
         usb.layouts["ugen1.2"] = HciLayout{0, 0x81, 0x82, 0x02};
@@ -46,6 +46,7 @@ class BtFixture : public ::testing::Test
     CaptureSink sink;
     FakeBondStore bonds;
     FakeUsbDirectory usb;
+    FakeFirmwareStore firmware;
     FakeController controller;
     BtStack stack;
 };

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/ports/bond_store.hpp"
+#include "core/ports/firmware_store.hpp"
 #include "core/ports/usb_directory.hpp"
 
 namespace bluev::testing
@@ -135,6 +136,25 @@ class FakeUsbDirectory final : public IUsbDirectory
 
     std::vector<UsbDevice> devices;
     std::map<std::string, HciLayout> layouts;
+};
+
+class FakeFirmwareStore final : public IFirmwareStore
+{
+  public:
+    bool read(const std::string& name, std::vector<std::uint8_t>& out) override
+    {
+        auto it = files.find(name);
+
+        if (it == files.end())
+        {
+            out.clear();
+            return false;
+        }
+        out = it->second;
+        return true;
+    }
+
+    std::map<std::string, std::vector<std::uint8_t>> files;
 };
 
 } // namespace bluev::testing

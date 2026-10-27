@@ -24,6 +24,12 @@ inline std::uint32_t getLe24(const std::uint8_t* p)
     return static_cast<std::uint32_t>(p[0] | p[1] << 8 | p[2] << 16);
 }
 
+inline std::uint32_t getLe32(const std::uint8_t* p)
+{
+    return static_cast<std::uint32_t>(p[0]) | static_cast<std::uint32_t>(p[1]) << 8 |
+           static_cast<std::uint32_t>(p[2]) << 16 | static_cast<std::uint32_t>(p[3]) << 24;
+}
+
 inline void putBe16(std::uint8_t* p, unsigned value)
 {
     p[0] = static_cast<std::uint8_t>((value >> 8) & 0xff);

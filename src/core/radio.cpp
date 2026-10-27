@@ -4,8 +4,10 @@
 namespace bluev
 {
 
-Radio::Radio(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IAudioSource& audio, IClock& clock)
-    : m_bt(transport, bonds, usb, clock), m_session(m_bt, clock), m_streamer(m_bt, m_session, audio, clock, {})
+Radio::Radio(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IFirmwareStore& firmware,
+             IAudioSource& audio, IClock& clock)
+    : m_bt(transport, bonds, usb, firmware, clock), m_session(m_bt, clock),
+      m_streamer(m_bt, m_session, audio, clock, {})
 {
 }
 

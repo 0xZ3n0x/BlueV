@@ -18,7 +18,8 @@ class RadioTest : public ::testing::Test
 {
   protected:
     RadioTest()
-        : controller(clock), speaker(controller, clock), audio(clock), radio(controller, bonds, usb, audio, clock)
+        : controller(clock), speaker(controller, clock), audio(clock),
+          radio(controller, bonds, usb, firmware, audio, clock)
     {
         usb.layouts["ugen1.2"] = HciLayout{0, 0x81, 0x82, 0x02};
         bonds.put(controller.localAddress, controller.remote.address, 0x5a, "Creative");
@@ -32,6 +33,7 @@ class RadioTest : public ::testing::Test
     FakeAudio audio;
     FakeBondStore bonds;
     FakeUsbDirectory usb;
+    FakeFirmwareStore firmware;
     Radio radio;
 };
 

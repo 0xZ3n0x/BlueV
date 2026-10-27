@@ -12,8 +12,9 @@
 namespace bluev
 {
 
-BtStack::BtStack(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IClock& clock)
-    : m_transport(transport), m_bondStore(bonds), m_usb(usb), m_clock(clock)
+BtStack::BtStack(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IFirmwareStore& firmware,
+                 IClock& clock)
+    : m_transport(transport), m_bondStore(bonds), m_usb(usb), m_firmware(firmware), m_clock(clock)
 {
 }
 
@@ -110,9 +111,9 @@ bool BtStack::replyIsOurs(std::uint16_t opcode)
     return false;
 }
 
-bool BtStack::hciSync(std::uint16_t opcode, const std::uint8_t* params, std::uint8_t length)
+bool BtStack::hciSync(std::uint16_t opcode, const std::uint8_t* params, std::uint8_t length, int attempts)
 {
-    constexpr int kAttempts = 5;
+    const int tries = attempts < 1 ? 1 : attempts;
 
     for (int attempt = 1;; attempt++)
     {
@@ -121,11 +122,12 @@ bool BtStack::hciSync(std::uint16_t opcode, const std::uint8_t* params, std::uin
         {
             return false;
         }
-        if (wait([this, opcode] { return m_ccOp == opcode; }, attempt < 4 ? 1500 : 2500, false))
+        // later tries wait longer: a controller that just woke up can be slow
+        if (wait([this, opcode] { return m_ccOp == opcode; }, attempt < tries - 1 ? 1500 : 2500, false))
         {
             break;
         }
-        if (attempt == kAttempts)
+        if (attempt >= tries)
         {
             logLine("no reply to %s (%#06x)", hciOpcodeName(opcode), opcode);
             const std::string why = m_transport.describe("no-reply");

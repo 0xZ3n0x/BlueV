@@ -85,6 +85,9 @@ class FakeController final : public IHciTransport
     std::uint16_t aclMtu = 1021;
     std::uint16_t aclBuffers = 8;
     std::uint8_t hciVersion = 6;
+    std::uint16_t hciRevision = 0x1234;
+    std::uint16_t lmpSubversion = 0x5678;
+    std::uint8_t romVersion = 1;         // answer to the Realtek 0xfc6d command
     std::uint16_t manufacturer = 0x000a; // CSR
     bool bredr = true;
     bool openOk = true;
