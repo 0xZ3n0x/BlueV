@@ -11,23 +11,22 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "core/ports/log_reader.hpp"
-#include "core/ports/shortcut.hpp"
-#include "core/ports/stream_observer.hpp"
-#include "core/ports/system_info.hpp"
 #include "core/ports/usb_directory.hpp"
 #include "core/radio.hpp"
-#include "service/sync.hpp"
+#include "service/home_screen_shortcut.hpp"
+#include "service/log_buffer.hpp"
 #include "service/web.hpp"
 
 namespace bluev
 {
 
-class Service final : public IStreamObserver
+class Service final
 {
   public:
     enum class State
@@ -50,43 +49,31 @@ class Service final : public IStreamObserver
         BadAdapter
     };
 
-    // What the service works with; the caller owns all of it and keeps it alive.
-    struct Ports
-    {
-        IRadio& radio;
-        IUsbDirectory& usb;
-        ISystemInfo& system;
-        IShortcut& shortcut;
-        ILogReader& log;
-        std::string_view page; // the control page
-        std::string
-            address{}; // where the console can be reached on the network, for the "ready" notification; may be empty
-    };
-
-    // `server`: the range of ports the web interface may listen on.
-    explicit Service(const Ports& ports, ServerPorts server = {});
+    // The caller owns `radio`, `usb`, `shortcut` and `log` and keeps them alive.
+    // `page`: the control page. `model`: the console's model name for the log;
+    // may be empty. `address`: where the console can be reached on the network,
+    // for the "ready" notification; may be empty. `port`: where the web
+    // interface listens.
+    Service(IRadio& radio, IUsbDirectory& usb, HomeScreenShortcut& shortcut, LogBuffer& log, std::string_view page,
+            std::string model, std::string address, int port = kDefaultPort);
 
     // ---- any thread -------------------------------------------------
     // A command from the web interface: scan, connect, forget (the last two with
     // an address), disconnect, uninstall-shortcut or quit. Scan, connect and
     // forget only run while idle and are done later by the radio thread, one at
     // a time; disconnect and quit are always accepted.
-    PostResult post(std::string_view command, std::string_view address) BLUEV_EXCLUDES(m_mutex);
+    PostResult post(std::string_view command, std::string_view address);
     // Switch the radio on with the chosen controller ("internal", or
     // "external" with the name of its node under /dev) or off again. Until
     // it is on, nothing touches the USB side.
-    PostResult startRadio(std::string_view adapter, std::string_view node) BLUEV_EXCLUDES(m_mutex);
-    PostResult stopRadio() BLUEV_EXCLUDES(m_mutex);
+    PostResult startRadio(std::string_view adapter, std::string_view node);
+    PostResult stopRadio();
     // The state, the peer, the stream numbers and the radio, as JSON for /api/status.
-    std::string statusJson() BLUEV_EXCLUDES(m_mutex);
+    std::string statusJson();
     // The last scan plus the paired devices, as JSON for /api/devices.
-    std::string devicesJson() BLUEV_EXCLUDES(m_mutex);
-    // The live numbers from the streaming loop; the same as onStream().
-    void publishStream(int rate, int queueMs, int packetsPerSecond, long packets) BLUEV_EXCLUDES(m_mutex);
-    void onStream(int rate, int queueMs, int packetsPerSecond, long packets) override
-    {
-        publishStream(rate, queueMs, packetsPerSecond, packets);
-    }
+    std::string devicesJson();
+    // The live numbers from the streaming loop (the radio's stream observer).
+    void publishStream(int rate, int queueMs, int packetsPerSecond, long packets);
 
     // ---- radio thread only ------------------------------------------
     // Starts the web server and serves commands until "quit" is posted, then
@@ -95,7 +82,7 @@ class Service final : public IStreamObserver
     bool run(bool capturing);
     // Called about once a second from inside the radio's poll: flushes the log,
     // refreshes the peer and the device list, and ends a session that was asked to stop.
-    void tick() BLUEV_EXCLUDES(m_mutex);
+    void tick();
 
     // the port the web interface listens on (0 until it is up)
     int port() const
@@ -143,45 +130,50 @@ class Service final : public IStreamObserver
     };
 
     // Changes the state and the message the page shows.
-    void setState(State state, const char* fmt, ...) BLUEV_EXCLUDES(m_mutex) __attribute__((format(printf, 3, 4)));
-    Pending takePending() BLUEV_EXCLUDES(m_mutex);
-    void publishDevices() BLUEV_EXCLUDES(m_mutex);
+    void setState(State state, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
+    Pending takePending();
+    void publishDevices();
+    void addBondedDevices(std::vector<DeviceInfo>& devices);
     // One connection from start to end; `address` null = a device dialled in.
     void runSession(bool capturing, const BdAddr* address);
     // Opens the controller (empty node = the console's chip); false, with the
     // reason shown, when it does not start.
-    bool openRadio(const std::string& node) BLUEV_EXCLUDES(m_mutex);
-    void closeRadio() BLUEV_EXCLUDES(m_mutex);
+    bool openRadio(const std::string& node);
+    void closeRadio();
+
+    // the state and the radio flag, for the radio thread
+    State currentState();
+    bool radioIsOn();
+
+    // true when a newer copy asked us to quit (and now "quit" is posted)
+    bool checkQuitSignal();
 
     static const char* stateName(State state);
 
     IRadio& m_radio;
     IUsbDirectory& m_usb;
-    ISystemInfo& m_system;
-    IShortcut& m_shortcut;
-    std::string m_address; // see Ports::address
+    HomeScreenShortcut& m_shortcut;
+    std::string m_model;
+    std::string m_address;
 
-    Mutex m_mutex;
-    State m_state BLUEV_GUARDED_BY(m_mutex) = State::Idle;
-    std::string m_message BLUEV_GUARDED_BY(m_mutex);
-    std::string m_peerName BLUEV_GUARDED_BY(m_mutex);
-    std::string m_peerAddress BLUEV_GUARDED_BY(m_mutex);
-    std::vector<DeviceInfo> m_devices BLUEV_GUARDED_BY(m_mutex);
-    StreamInfo m_stream BLUEV_GUARDED_BY(m_mutex);
-    Pending m_pending BLUEV_GUARDED_BY(m_mutex);
-    bool m_radioOn BLUEV_GUARDED_BY(m_mutex) = false;
-    std::string m_adapterNode BLUEV_GUARDED_BY(m_mutex); // empty = internal
+    std::mutex m_mutex;
+    State m_state = State::Idle;
+    std::string m_message;
+    std::string m_peerName;
+    std::string m_peerAddress;
+    std::vector<DeviceInfo> m_devices;
+    StreamInfo m_stream;
+    Pending m_pending;
+    bool m_radioOn = false;
+    std::string m_adapterNode; // empty = internal
 
     std::atomic<bool> m_quit{false}; // "quit" was posted
     // set by the web threads, honoured by the radio thread
     std::atomic<bool> m_disconnectRequested{false};
 
     // radio thread only
-    State m_radioState = State::Idle; // m_state without the lock
-    BdAddr m_currentAddress{};        // the device of the session in progress
-    bool m_hasCurrent = false;
-    bool m_radioOpen = false; // m_radioOn without the lock
-    bool m_serverUp = false;  // the HTTP server is listening
+    std::optional<BdAddr> m_current; // the device of the session in progress
+    bool m_serverUp = false;         // the HTTP server is listening
 
     HttpServer m_server;
 };

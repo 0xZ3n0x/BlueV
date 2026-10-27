@@ -5,25 +5,24 @@
 
 #include <array>
 #include <cstddef>
+#include <mutex>
 #include <string>
 
-#include "core/ports/log_reader.hpp"
-#include "service/sync.hpp"
 
 namespace bluev
 {
 
-class LogBuffer final : public ILogReader
+class LogBuffer
 {
   public:
     // a finished line, with its time stamp, without the newline
-    void add(const std::string& line) BLUEV_EXCLUDES(m_mutex);
+    void add(const std::string& line);
     // what was added since the last call, newline terminated
-    std::string takePending() BLUEV_EXCLUDES(m_mutex);
+    std::string takePending();
     // Lines numbered from `from` on (the first line is number 0), at most `maxBytes`
     // of text; `next` is what to ask for the next time. Only the last kRingLines
     // lines exist.
-    std::string since(unsigned from, unsigned& next, std::size_t maxBytes) override BLUEV_EXCLUDES(m_mutex);
+    std::string since(unsigned from, unsigned& next, std::size_t maxBytes);
 
     static constexpr std::size_t kRingLines = 300;
     static constexpr std::size_t kLineLength = 200;
@@ -32,10 +31,10 @@ class LogBuffer final : public ILogReader
   private:
     using Line = std::array<char, kLineLength>;
 
-    Mutex m_mutex;
-    std::array<Line, kRingLines> m_ring BLUEV_GUARDED_BY(m_mutex){};
-    unsigned m_sequence BLUEV_GUARDED_BY(m_mutex) = 0; // lines logged so far
-    std::string m_pending BLUEV_GUARDED_BY(m_mutex);   // not yet in the file
+    std::mutex m_mutex;
+    std::array<Line, kRingLines> m_ring{};
+    unsigned m_sequence = 0; // lines logged so far
+    std::string m_pending;   // not yet in the file
 };
 
 } // namespace bluev

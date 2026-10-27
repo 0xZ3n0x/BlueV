@@ -8,6 +8,7 @@
 #include "core/bluetooth/hci_defs.hpp"
 #include "core/bluetooth/names.hpp"
 #include "core/bluetooth/sdp_server.hpp"
+#include "core/bytes.hpp"
 #include "core/ports/log.hpp"
 
 namespace bluev
@@ -52,7 +53,101 @@ void BtStack::poll(std::uint32_t timeoutMs)
 
 bool BtStack::isOurLink(const std::uint8_t* e) const
 {
-    return m_connDone && m_connStatus == 0 && m_handle == ((e[1] | e[2] << 8) & 0xfff);
+    return m_connDone && m_connStatus == 0 && m_handle == (getLe16(e + 1) & 0xfff);
+}
+
+// Inquiry results: up to e[0] records of 14 bytes; the RSSI variant carries the
+// signal strength in the last byte of each.
+void BtStack::onInquiryResults(const std::uint8_t* e, bool withRssi)
+{
+    for (int i = 0; i < e[0]; i++)
+    {
+        onInquiryRecord(e + 1 + i * 14, withRssi ? static_cast<std::int8_t>(e[14 + i * 14]) : -128, nullptr, 0);
+    }
+}
+
+// The next four answer the pairing procedure of the device we deal with.
+void BtStack::onPinCodeRequest(const std::uint8_t* e)
+{
+    std::uint8_t rep[23];
+
+    if (!isTarget(e))
+    {
+        return;
+    }
+    logLine("PIN code requested, replying 0000");
+    std::memset(rep, 0, sizeof rep);
+    std::memcpy(rep, e, 6);
+    rep[6] = 4;
+    rep[7] = rep[8] = rep[9] = rep[10] = '0';
+    cmd(hci::kPinCodeReply, rep, 23);
+}
+
+void BtStack::onLinkKeyRequest(const std::uint8_t* e)
+{
+    std::uint8_t rep[22];
+
+    if (!isTarget(e))
+    {
+        return;
+    }
+    if (!m_key.have || std::memcmp(m_key.peer.data(), e, 6) != 0)
+    {
+        logLine("no stored key: pairing");
+        cmd(hci::kLinkKeyNegReply, e, 6);
+    }
+    else
+    {
+        std::memcpy(rep, e, 6);
+        std::memcpy(rep + 6, m_key.key.data(), 16);
+        cmd(hci::kLinkKeyReply, rep, 22);
+    }
+}
+
+void BtStack::onIoCapabilityRequest(const std::uint8_t* e)
+{
+    std::uint8_t rep[9];
+
+    if (!isTarget(e))
+    {
+        return;
+    }
+    std::memcpy(rep, e, 6);
+    rep[6] = 3; // NoInputNoOutput
+    rep[7] = 0; // no OOB
+    rep[8] = 4; // MITM not required
+    cmd(hci::kIoCapabilityReply, rep, 9);
+}
+
+void BtStack::onUserConfirmRequest(const std::uint8_t* e)
+{
+    if (isTarget(e))
+    {
+        cmd(hci::kUserConfirmReply, e, 6);
+    }
+}
+
+// the first few vendor events of the chip, raw, to see what it sends
+void BtStack::onVendorEvent(const std::uint8_t* evt, int n)
+{
+    char dump[128];
+    int off = 0;
+    int m = n - 1;
+
+    if (m_vendorDumps >= 5)
+    {
+        return;
+    }
+    m_vendorDumps++;
+    if (m > 0x1f)
+    {
+        m = 0x1f;
+    }
+    for (int k = 0; k < m + 1; k++)
+    {
+        off += std::snprintf(dump + off, 0x61 - off, "%02x ", evt[k]);
+    }
+    logLine("chip vendor event, raw (%d bytes): %s", n, dump);
 }
 
 void BtStack::handleEvent(const std::uint8_t* evt, int n)
@@ -64,11 +159,8 @@ void BtStack::handleEvent(const std::uint8_t* evt, int n)
     case 0x01: // inquiry complete
         m_inqDone = true;
         break;
-    case 0x02: // inquiry result
-        for (int i = 0; i < e[0]; i++)
-        {
-            onInquiryRecord(e + 1 + i * 14, -128, nullptr, 0);
-        }
+    case 0x02:
+        onInquiryResults(e, false);
         break;
     case 0x03:
         onConnectionComplete(e);
@@ -94,85 +186,31 @@ void BtStack::handleEvent(const std::uint8_t* evt, int n)
     case 0x13:
         onCompletedPackets(e, n);
         break;
-    case 0x16: // PIN code request
-        if (std::memcmp(e, m_target.data(), 6) == 0)
-        {
-            std::uint8_t rep[23];
-
-            logLine("PIN code requested, replying 0000");
-            std::memset(rep, 0, sizeof rep);
-            std::memcpy(rep, e, 6);
-            rep[6] = 4;
-            rep[7] = rep[8] = rep[9] = rep[10] = '0';
-            cmd(hci::kPinCodeReply, rep, 23);
-        }
+    case 0x16:
+        onPinCodeRequest(e);
         break;
-    case 0x17: // link key request
-        if (std::memcmp(e, m_target.data(), 6) == 0)
-        {
-            std::uint8_t rep[22];
-
-            if (!m_key.have || std::memcmp(m_key.peer.data(), e, 6) != 0)
-            {
-                logLine("no stored key: pairing");
-                cmd(hci::kLinkKeyNegReply, e, 6);
-            }
-            else
-            {
-                std::memcpy(rep, e, 6);
-                std::memcpy(rep + 6, m_key.key.data(), 16);
-                cmd(hci::kLinkKeyReply, rep, 22);
-            }
-        }
+    case 0x17:
+        onLinkKeyRequest(e);
         break;
     case 0x18:
         onLinkKeyNotification(e);
         break;
     case 0x22: // inquiry result with RSSI
-        for (int i = 0; i < e[0]; i++)
-        {
-            onInquiryRecord(e + 1 + i * 14, static_cast<std::int8_t>(e[14 + i * 14]), nullptr, 0);
-        }
+        onInquiryResults(e, true);
         break;
     case 0x2f: // extended inquiry result
         onInquiryRecord(e + 1, static_cast<std::int8_t>(e[14]), e + 15, n - 0x11);
         break;
-    case 0x31: // IO capability request
-        if (std::memcmp(e, m_target.data(), 6) == 0)
-        {
-            std::uint8_t rep[9];
-
-            std::memcpy(rep, e, 6);
-            rep[6] = 3; // NoInputNoOutput
-            rep[7] = 0; // no OOB
-            rep[8] = 4; // MITM not required
-            cmd(hci::kIoCapabilityReply, rep, 9);
-        }
+    case 0x31:
+        onIoCapabilityRequest(e);
         break;
-    case 0x33: // user confirmation request
-        if (std::memcmp(e, m_target.data(), 6) == 0)
-        {
-            cmd(hci::kUserConfirmReply, e, 6);
-        }
+    case 0x33:
+        onUserConfirmRequest(e);
+        break;
+    case 0xff:
+        onVendorEvent(evt, n);
         break;
     default:
-        if (evt[0] == 0xff && m_vendorDumps < 5)
-        { // vendor event: raw
-            char dump[128];
-            int off = 0;
-            int m = n - 1;
-
-            m_vendorDumps++;
-            if (m > 0x1f)
-            {
-                m = 0x1f;
-            }
-            for (int k = 0; k < m + 1; k++)
-            {
-                off += std::snprintf(dump + off, 0x61 - off, "%02x ", evt[k]);
-            }
-            logLine("chip vendor event, raw (%d bytes): %s", n, dump);
-        }
         break;
     }
 }
@@ -181,9 +219,9 @@ void BtStack::onConnectionComplete(const std::uint8_t* e)
 {
     const BdAddr peer = addressFrom(e + 3);
 
-    // service mode: a paired device that dialed in while we were busy with
-    // something else still counts
-    if (m_service && e[0] == 0 && !m_connDone && peer != m_target && bondExists(peer))
+    // a paired device that dialed in while we were busy with something else
+    // still counts
+    if (e[0] == 0 && !m_connDone && peer != m_target && hasBond(peer))
     {
         m_target = peer;
         setBond(peer);
@@ -191,22 +229,14 @@ void BtStack::onConnectionComplete(const std::uint8_t* e)
     if (peer == m_target && (e[0] != 0x0b || !m_connDone))
     {
         m_connDone = true;
-        m_handle = (e[1] | e[2] << 8) & 0xfff;
+        m_handle = getLe16(e + 1) & 0xfff;
         m_connStatus = e[0];
         if (e[0] == 0)
         { // a fresh link: clean slate
             m_connGen++;
             m_disconnected = false;
-            m_authDone = false;
-            m_authStatus = 0;
-            m_encOn = false;
-            m_encStatus = 0;
-            m_credits = m_creditsMax;
-            m_ifHead = 0;
-            m_ifCount = 0;
-        }
-        if (e[0] == 0)
-        {
+            clearSecurity();
+            resetCredits();
             logLine("connection complete: handle %#05x", m_handle);
         }
         else
@@ -230,12 +260,12 @@ void BtStack::onConnectionRequest(const std::uint8_t* e)
         m_target = peer;
         accept = true;
     }
-    else if (m_service)
+    else
     {
-        // service mode: only devices paired before dial in
-        const std::uint32_t cls = static_cast<std::uint32_t>(e[6]) | e[7] << 8 | e[8] << 16;
+        // only devices paired before may dial in
+        const std::uint32_t cls = getLe24(e + 6);
 
-        if (bondExists(peer))
+        if (hasBond(peer))
         {
             m_target = peer;
             setBond(peer);
@@ -248,20 +278,6 @@ void BtStack::onConnectionRequest(const std::uint8_t* e)
             logLine("inbound connection from %s (%s, class %06x) "
                     "ignored: not paired with this adapter, #%ld",
                     addressText(peer).c_str(), deviceClassName(cls), cls, count);
-            accept = false;
-        }
-    }
-    else
-    {
-        const std::uint32_t cls = static_cast<std::uint32_t>(e[6]) | e[7] << 8 | e[8] << 16;
-
-        if (!m_key.have && (e[7] & 0x1f) == 4 && !isJunkDevice(cls, std::string()))
-        {
-            m_target = peer;
-            accept = true; // unknown headphones dialing in
-        }
-        else
-        {
             accept = false;
         }
     }
@@ -288,7 +304,7 @@ void BtStack::onDisconnectionComplete(const std::uint8_t* e)
     }
     else
     {
-        logLine("another link closed: handle %#05x, %s (reason %#04x)", (e[1] | e[2] << 8) & 0xfff, hciStatusName(e[3]),
+        logLine("another link closed: handle %#05x, %s (reason %#04x)", getLe16(e + 1) & 0xfff, hciStatusName(e[3]),
                 e[3]);
     }
 }
@@ -325,19 +341,24 @@ void BtStack::onEncryptionChange(const std::uint8_t* e)
     logLine("encryption change: %s, %s", hciStatusName(e[0]), e[3] ? "on" : "off");
 }
 
-void BtStack::onCommandComplete(const std::uint8_t* evt, int n)
+void BtStack::noteForeignReply(std::uint16_t op, unsigned status)
 {
-    const std::uint8_t* e = evt + 2;
-    const std::uint16_t op = static_cast<std::uint16_t>(e[1] | e[2] << 8);
-
     if (!replyIsOurs(op) && m_systemReplies < 50)
     {
         m_systemReplies++;
-        logLine("the console's own command answered: %s (%#06x), status %#04x", hciOpcodeName(op), op, e[3]);
+        logLine("the console's own command answered: %s (%#06x), status %#04x", hciOpcodeName(op), op, status);
     }
+}
+
+void BtStack::onCommandComplete(const std::uint8_t* evt, int n)
+{
+    const std::uint8_t* e = evt + 2;
+    const std::uint16_t op = getLe16(e + 1);
+
+    noteForeignReply(op, e[3]);
     if (op == hci::kRoleDiscovery && e[3] == 0)
     {
-        logLine("link role: handle %#05x, we are the %s", (e[4] | e[5] << 8) & 0xfff, e[6] == 0 ? "master" : "slave");
+        logLine("link role: handle %#05x, we are the %s", getLe16(e + 4) & 0xfff, e[6] == 0 ? "master" : "slave");
     }
     m_ccOp = op;
     m_ccLen = n > 1099 ? 1100 : static_cast<std::uint32_t>(n);
@@ -346,14 +367,10 @@ void BtStack::onCommandComplete(const std::uint8_t* evt, int n)
 
 void BtStack::onCommandStatus(const std::uint8_t* e)
 {
-    const std::uint16_t op = static_cast<std::uint16_t>(e[2] | e[3] << 8);
+    const std::uint16_t op = getLe16(e + 2);
     const std::uint32_t status = e[0];
 
-    if (!replyIsOurs(op) && m_systemReplies < 50)
-    {
-        m_systemReplies++;
-        logLine("the console's own command answered: %s (%#06x), status %#04x", hciOpcodeName(op), op, e[0]);
-    }
+    noteForeignReply(op, e[0]);
     if (status != 0)
     {
         if (op == hci::kAuthRequested)
@@ -379,8 +396,8 @@ void BtStack::onCompletedPackets(const std::uint8_t* e, int n)
         {
             break;
         }
-        const std::uint16_t h = static_cast<std::uint16_t>(r[0] | r[1] << 8);
-        const std::uint16_t cnt = static_cast<std::uint16_t>(r[2] | r[3] << 8);
+        const std::uint16_t h = getLe16(r);
+        const std::uint16_t cnt = getLe16(r + 2);
 
         if (m_connStatus == 0 && m_connDone && m_handle == (h & 0xfff))
         {
@@ -392,8 +409,7 @@ void BtStack::onCompletedPackets(const std::uint8_t* e, int n)
                 {
                     break;
                 }
-                m_ifHead = (m_ifHead + 1) % 64;
-                m_ifCount--;
+                popInFlight();
             }
         }
         else
@@ -411,7 +427,7 @@ void BtStack::onLinkKeyNotification(const std::uint8_t* e)
 {
     bool junk = false;
 
-    if (std::memcmp(e, m_target.data(), 6) != 0)
+    if (!isTarget(e))
     {
         return;
     }
@@ -445,8 +461,8 @@ void BtStack::onLinkKeyNotification(const std::uint8_t* e)
 
 void BtStack::handleAcl(const std::uint8_t* acl, int n)
 {
-    const std::uint16_t hf = static_cast<std::uint16_t>(acl[0] | acl[1] << 8);
-    const std::uint16_t dlen = static_cast<std::uint16_t>(acl[2] | acl[3] << 8);
+    const std::uint16_t hf = getLe16(acl);
+    const std::uint16_t dlen = getLe16(acl + 2);
     const std::uint8_t* pl = acl + 4;
 
     // The event and ACL pipes are separate, so an ACL packet can arrive before
@@ -481,7 +497,7 @@ void BtStack::handleAcl(const std::uint8_t* acl, int n)
         else if (cid == 0x50)
         {
             std::uint8_t out[512];
-            const int r = SdpServer::handle(payload, static_cast<std::uint32_t>(len), out, 512);
+            const int r = handleSdpRequest(payload, static_cast<std::uint32_t>(len), out, 512);
 
             if (r > 0 && m_sdp.theirCid != 0)
             {

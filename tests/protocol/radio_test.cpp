@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include "capture_sink.hpp"
+#include "core/bluetooth/device_filter.hpp"
 #include "core/radio.hpp"
 #include "fake_audio.hpp"
 #include "fake_speaker.hpp"
@@ -41,7 +42,7 @@ TEST_F(RadioTest, OpenStartsTheControllerInServiceMode)
     EXPECT_TRUE(radio.open("ugen1.2"));
     EXPECT_EQ("ugen1.2", controller.selectedNode);
     EXPECT_EQ("", radio.openError());
-    // service mode: an unknown device dialing in is counted, not accepted
+    // an unknown device dialing in is counted, not accepted
     controller.event(0x04, {0x99, 0, 0, 0, 0, 0, 0x04, 0x04, 0x24, 1});
     radio.poll(10);
     EXPECT_EQ(1, radio.foreignRequests());
@@ -71,7 +72,7 @@ TEST_F(RadioTest, CloseDropsTheTickAndStopsTheStack)
     EXPECT_EQ(before, ticks);
 }
 
-TEST_F(RadioTest, ScanListsDevicesWithTheJunkFlag)
+TEST_F(RadioTest, ScanListsTheDevicesItFound)
 {
     InquiryDevice tv, speakerDevice;
     tv.address = BdAddr{{1, 1, 1, 1, 1, 1}};
@@ -86,8 +87,8 @@ TEST_F(RadioTest, ScanListsDevicesWithTheJunkFlag)
     const auto devices = radio.devices();
     ASSERT_EQ(2u, devices.size());
     EXPECT_EQ("Samsung TV", devices[0].name);
-    EXPECT_TRUE(devices[0].other);
-    EXPECT_FALSE(devices[1].other);
+    EXPECT_TRUE(isJunkDevice(devices[0].classOfDevice, devices[0].name)); // a TV
+    EXPECT_FALSE(isJunkDevice(devices[1].classOfDevice, devices[1].name));
     EXPECT_EQ(-50, devices[1].rssi);
     EXPECT_TRUE(radio.hasBond(devices[1].address));
     ASSERT_EQ(1u, radio.bonds().size());
@@ -105,7 +106,7 @@ TEST_F(RadioTest, ASessionFromConnectToTheEnd)
     ASSERT_TRUE(radio.startAudio(true)) << sink.all();
 
     RecordingObserver observer;
-    radio.setStreamObserver(&observer);
+    radio.setStreamObserver(observer.hook());
     controller.remoteDisconnect(0x13, 3000);
     EXPECT_TRUE(radio.stream(true));
     EXPECT_GT(speaker.media.size(), 100u);

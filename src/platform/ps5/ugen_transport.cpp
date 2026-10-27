@@ -61,6 +61,37 @@ void UgenTransport::closeFd()
     m_fd = -1;
 }
 
+// Opens transfer `transfer` on endpoint address `endpoint`: one frame of at
+// most `length` bytes.
+bool UgenTransport::openTransfer(int transfer, std::uint8_t endpoint, std::uint32_t length)
+{
+    usb_fs_open op;
+
+    std::memset(&op, 0, sizeof op);
+    op.max_bufsize = length;
+    op.max_frames = 1;
+    op.ep_index = static_cast<std::uint8_t>(transfer);
+    op.ep_no = endpoint;
+    return ioctl(m_fd, USB_FS_OPEN, &op) == 0;
+}
+
+// Opens the transfers `first` to `last` on one endpoint; how many could be opened.
+int UgenTransport::openTransfers(int first, int last, std::uint8_t endpoint, std::uint32_t length)
+{
+    int opened = 0;
+
+    for (int i = first; i <= last; i++)
+    {
+        if (!openTransfer(i, endpoint, length))
+        {
+            logLine("hci: USB_FS_OPEN %#x (transfer %d) errno=%d", endpoint, i, errno);
+            break;
+        }
+        opened++;
+    }
+    return opened;
+}
+
 bool UgenTransport::open()
 {
     usb_fs_init init;
@@ -99,19 +130,6 @@ bool UgenTransport::open()
         return false;
     }
 
-    // Opens transfer `transfer` on endpoint address `endpoint`: one frame of at
-    // most `length` bytes.
-    const auto openTransfer = [this](int transfer, std::uint8_t endpoint, std::uint32_t length) {
-        usb_fs_open op;
-
-        std::memset(&op, 0, sizeof op);
-        op.max_bufsize = length;
-        op.max_frames = 1;
-        op.ep_index = static_cast<std::uint8_t>(transfer);
-        op.ep_no = endpoint;
-        return ioctl(m_fd, USB_FS_OPEN, &op) == 0;
-    };
-
     // ACL out endpoint
     if (!openTransfer(kAclOut, m_layout.aclOut, kXferBuf))
     {
@@ -119,30 +137,8 @@ bool UgenTransport::open()
         closeFd();
         return false;
     }
-
-    // 48 event reads
-    m_eventReads = 0;
-    for (int i = kEventFirst; i <= kEventLast; i++)
-    {
-        if (!openTransfer(i, m_layout.events, m_eventLength))
-        {
-            logLine("hci: USB_FS_OPEN %#x (transfer %d) errno=%d", m_layout.events, i, errno);
-            break;
-        }
-        m_eventReads++;
-    }
-
-    // 16 ACL reads
-    m_aclReads = 0;
-    for (int i = kAclFirst; i <= kAclLast; i++)
-    {
-        if (!openTransfer(i, m_layout.aclIn, kXferBuf))
-        {
-            logLine("hci: USB_FS_OPEN %#x (transfer %d) errno=%d", m_layout.aclIn, i, errno);
-            break;
-        }
-        m_aclReads++;
-    }
+    m_eventReads = openTransfers(kEventFirst, kEventLast, m_layout.events, m_eventLength); // 48 event reads
+    m_aclReads = openTransfers(kAclFirst, kAclLast, m_layout.aclIn, kXferBuf);             // 16 ACL reads
 
     if (m_aclReads != 0 && m_eventReads > 0)
     {
@@ -226,55 +222,42 @@ bool UgenTransport::startTransfer(int t)
     m_eps[t].nFrames = 1;
     m_eps[t].aFrames = 0;
     m_eps[t].status = 0;
-    if (ioctl(m_fd, USB_FS_START, &id) == 0)
-    {
-        return true;
-    }
-    return false;
+    return ioctl(m_fd, USB_FS_START, &id) == 0;
 }
 
-// submit any idle async reads, then wait for something to land in a ring
-// (true) or the timeout to expire (false)
+// Starts every one of the `count` read transfers from `first` on that is not
+// running.
+void UgenTransport::armReads(int first, int count, std::uint32_t length)
+{
+    for (int i = first; i < first + count; i++)
+    {
+        if (m_pending[i])
+        {
+            continue;
+        }
+        m_bufLen[i] = length;
+        if (startTransfer(i))
+        {
+            m_pending[i] = 1;
+        }
+        else
+        {
+            m_dgStartError++;
+            logLine("hci: USB_FS_START %d errno=%d", i, errno);
+        }
+    }
+}
+
+// Submits any idle async reads, then waits for something to land in a ring
+// (true) or the timeout to expire (false).
 bool UgenTransport::pump(std::uint32_t timeoutMs)
 {
     const std::uint64_t deadline = m_clock.nowMs() + timeoutMs;
 
     for (;;)
     {
-        for (int i = kEventFirst; i < kEventFirst + m_eventReads; i++)
-        {
-            if (m_pending[i])
-            {
-                continue;
-            }
-            m_bufLen[i] = m_eventLength;
-            if (startTransfer(i))
-            {
-                m_pending[i] = 1;
-            }
-            else
-            {
-                m_dgStartError++;
-                logLine("hci: USB_FS_START %d errno=%d", i, errno);
-            }
-        }
-        for (int i = kAclFirst; i < kAclFirst + m_aclReads; i++)
-        {
-            if (m_pending[i])
-            {
-                continue;
-            }
-            m_bufLen[i] = kXferBuf;
-            if (startTransfer(i))
-            {
-                m_pending[i] = 1;
-            }
-            else
-            {
-                m_dgStartError++;
-                logLine("hci: USB_FS_START %d errno=%d", i, errno);
-            }
-        }
+        armReads(kEventFirst, m_eventReads, m_eventLength);
+        armReads(kAclFirst, m_aclReads, kXferBuf);
 
         const std::uint32_t r = reap();
 
@@ -309,95 +292,94 @@ std::uint32_t UgenTransport::reap()
             return reaped;
         }
         reaped = 1;
-
-        if (t >= kTransfers)
+        if (t < kTransfers)
         {
-            continue;
-        }
-        m_dgComplete++;
-        m_pending[t] = 0;
-        if (t == kAclOut)
-        {
-            if (m_eps[t].status != 0)
-            {
-                logLine("hci: ACL out status=%d", m_eps[t].status);
-            }
-            continue;
-        }
-        if (m_eps[t].status != 0)
-        {
-            m_dgError++;
-            continue;
-        }
-        if (m_eps[t].aFrames == 0)
-        {
-            m_dgEmpty++;
-            continue;
-        }
-        m_dgData++;
-        if (t <= kEventLast)
-        {
-            m_dgEventData++;
-        }
-        else
-        {
-            m_dgAclData++;
-        }
-
-        const std::uint32_t len = m_bufLen[t];
-        const std::uint8_t* buf = m_buf[t];
-        // While detecting roles, the answer to our Read Buffer Size command (a
-        // Command Complete for opcode 0x1005) shows which pipe carries events.
-        if (m_detecting && m_detected == 0 && len >= 6 && buf[0] == 0x0e && buf[1] == len - 2 && buf[3] == 0x05 &&
-            buf[4] == 0x10)
-        {
-            m_detected = t <= kEventLast ? 1 : 2;
-        }
-        Ring& ring = t <= kEventLast ? m_events : m_acl;
-        const std::uint32_t hdr = t <= kEventLast ? 2 : 4; // event hdr / ACL hdr
-        if (len < hdr)
-        {
-            continue;
-        }
-
-        // a transfer may contain several back-to-back packets
-        std::uint32_t off = 0;
-        while (off + hdr <= len)
-        {
-            std::uint32_t plen;
-
-            if (hdr == 2)
-            {
-                plen = buf[off + 1]; // event
-            }
-            else
-            {
-                plen = buf[off + 2] | buf[off + 3] << 8; // ACL
-            }
-            std::uint32_t total = plen + hdr;
-            if (off + total > len)
-            {
-                break;
-            }
-            const std::uint32_t advance = total;
-            if (total > 1099) // larger than any packet the controller sends: keep a slot's worth
-            {
-                total = kXferBuf;
-            }
-
-            if (ring.count == kRingSlots)
-            {
-                logLine("hci: queue full, dropping oldest packet");
-                ring.head = (ring.head + 1) % kRingSlots;
-                ring.count--;
-            }
-            const int slot = (ring.head + ring.count) % kRingSlots;
-            std::memcpy(ring.buf[slot], buf + off, total);
-            ring.len[slot] = total;
-            ring.count++;
-            off += advance;
+            onTransferComplete(t);
         }
     }
+}
+
+// The kernel finished transfer `t`: count it, and queue the packets it carried.
+void UgenTransport::onTransferComplete(int t)
+{
+    m_dgComplete++;
+    m_pending[t] = 0;
+    if (t == kAclOut)
+    {
+        if (m_eps[t].status != 0)
+        {
+            logLine("hci: ACL out status=%d", m_eps[t].status);
+        }
+        return;
+    }
+    if (m_eps[t].status != 0)
+    {
+        m_dgError++;
+        return;
+    }
+    if (m_eps[t].aFrames == 0)
+    {
+        m_dgEmpty++;
+        return;
+    }
+    m_dgData++;
+
+    const bool isEvent = t <= kEventLast;
+    const std::uint32_t len = m_bufLen[t];
+    const std::uint8_t* buf = m_buf[t];
+
+    if (isEvent)
+    {
+        m_dgEventData++;
+    }
+    else
+    {
+        m_dgAclData++;
+    }
+    // While detecting roles, the answer to our Read Buffer Size command (a
+    // Command Complete for opcode 0x1005) shows which pipe carries events.
+    if (m_detecting && m_detected == 0 && len >= 6 && buf[0] == 0x0e && buf[1] == len - 2 && buf[3] == 0x05 &&
+        buf[4] == 0x10)
+    {
+        m_detected = isEvent ? 1 : 2;
+    }
+    queuePackets(isEvent ? m_events : m_acl, buf, len, isEvent ? 2 : 4); // event hdr / ACL hdr
+}
+
+// A transfer may contain several back-to-back packets; each one goes to the
+// ring whole. `hdr` is the header size: 2 for an event, 4 for ACL data.
+void UgenTransport::queuePackets(Ring& ring, const std::uint8_t* buf, std::uint32_t len, std::uint32_t hdr)
+{
+    std::uint32_t off = 0;
+
+    while (off + hdr <= len)
+    {
+        const std::uint32_t plen = hdr == 2 ? buf[off + 1] : buf[off + 2] | buf[off + 3] << 8;
+        const std::uint32_t total = plen + hdr;
+
+        if (off + total > len)
+        {
+            break;
+        }
+        // larger than any packet the controller sends: keep a slot's worth
+        ringPush(ring, buf + off, total > 1099 ? kXferBuf : total);
+        off += total;
+    }
+}
+
+void UgenTransport::ringPush(Ring& ring, const std::uint8_t* data, std::uint32_t length)
+{
+    if (ring.count == kRingSlots)
+    {
+        logLine("hci: queue full, dropping oldest packet");
+        ring.head = (ring.head + 1) % kRingSlots;
+        ring.count--;
+    }
+    const int slot = (ring.head + ring.count) % kRingSlots;
+
+    std::memcpy(ring.buf[slot], data, length);
+    ring.len[slot] = length;
+    ring.count++;
 }
 
 bool UgenTransport::sendAcl(const std::uint8_t* packet, std::uint32_t length)

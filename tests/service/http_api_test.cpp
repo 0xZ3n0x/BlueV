@@ -114,13 +114,13 @@ TEST_F(HttpApi, ForgetAcceptsAPercentEncodedAddress)
     EXPECT_TRUE(waitFor([&] { return forgotten.load() == 1; }, 2000));
 }
 
-TEST_F(HttpApi, UninstallShortcutReachesTheShortcut)
+TEST_F(HttpApi, UninstallShortcutAsksTheInstaller)
 {
     ASSERT_TRUE(startService());
     std::string body;
-    EXPECT_CALL(shortcut, remove()).WillOnce(Return(true));
+    EXPECT_CALL(installer, unregisterTitle(_)).WillOnce(Return(true));
     EXPECT_EQ(200, request("POST", "/api/uninstall-shortcut", body));
-    EXPECT_CALL(shortcut, remove()).WillOnce(Return(false));
+    EXPECT_CALL(installer, unregisterTitle(_)).WillOnce(Return(false));
     EXPECT_EQ(409, request("POST", "/api/uninstall-shortcut", body));
 }
 
@@ -295,9 +295,9 @@ TEST_F(WithRadioOn, DevicesAlsoShowPairedOnesThatWereNotSeen)
 TEST_F(WithRadioOn, ASeenDeviceWithoutANameGetsTheNameOfItsBond)
 {
     ON_CALL(radio, devices()).WillByDefault(::testing::Invoke([] {
-        RadioDevice d;
+        BtDevice d;
         d.address = BdAddr{{0xCC, 0xBB, 0xAA, 0x22, 0x11, 0x00}};
-        return std::vector<RadioDevice>{d};
+        return std::vector<BtDevice>{d};
     }));
     BondEntry b;
     b.peer = BdAddr{{0xCC, 0xBB, 0xAA, 0x22, 0x11, 0x00}};

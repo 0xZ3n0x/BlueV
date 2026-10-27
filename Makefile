@@ -39,7 +39,7 @@ ifdef DEBUG
 COMMON  += -g
 endif
 CFLAGS   := $(COMMON)
-CXXFLAGS := $(COMMON) -std=c++20 -fno-exceptions -fno-rtti -Wthread-safety \
+CXXFLAGS := $(COMMON) -std=c++20 -fno-exceptions -fno-rtti \
             -DBLUEV_VERSION=\"$(VERSION)\"
 LDFLAGS  := -lkernel_sys
 

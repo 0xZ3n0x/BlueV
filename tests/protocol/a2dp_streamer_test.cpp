@@ -18,7 +18,7 @@ class Stream : public BtFixture
   protected:
     Stream()
         : speaker(controller, clock), session(stack, clock), audio(clock),
-          streamer(stack, session, audio, clock, &observer)
+          streamer(stack, session, audio, clock, observer.hook())
     {
     }
 

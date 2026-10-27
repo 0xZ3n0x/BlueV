@@ -42,7 +42,7 @@ void ServiceHarness::setUpDefaultRadio()
         std::lock_guard<std::mutex> l(m_tickMutex);
         m_tick = std::move(tick);
     }));
-    ON_CALL(radio, setStreamObserver(_)).WillByDefault(Invoke([this](IStreamObserver* o) { m_observer = o; }));
+    ON_CALL(radio, setStreamObserver(_)).WillByDefault(Invoke([this](StreamObserver o) { m_observer = std::move(o); }));
     // like the real one: waits, and runs the once-a-second tick (faster here)
     ON_CALL(radio, poll(_)).WillByDefault(Invoke([this](std::uint32_t ms) {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms < 20 ? 20 : ms / 4));
@@ -73,14 +73,14 @@ void ServiceHarness::setUpDefaultRadio()
         return 2;
     }));
     ON_CALL(radio, devices()).WillByDefault(Invoke([] {
-        std::vector<RadioDevice> out;
+        std::vector<BtDevice> out;
         for (int i = 0; i < 2; i++)
         {
-            RadioDevice d;
+            BtDevice d;
             d.address = BdAddr{{static_cast<std::uint8_t>(i + 1), 0, 0, 0, 0, 0}};
             d.rssi = -50 - i;
-            d.name = "Device \"" + std::to_string(i) + "\"\n";
-            d.other = i == 1;
+            // the second one is called a TV, which the service marks as probably not audio
+            d.name = (i == 1 ? "TV \"" : "Device \"") + std::to_string(i) + "\"\n";
             out.push_back(d);
         }
         return out;
@@ -104,9 +104,9 @@ void ServiceHarness::setUpDefaultRadio()
         while (!m_stopFlag.load())
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            if (m_observer != nullptr)
+            if (m_observer)
             {
-                m_observer->onStream(48000, 20, 49, ++packets);
+                m_observer(48000, 20, 49, ++packets);
             }
             std::function<void()> tick;
             {
@@ -129,9 +129,7 @@ void ServiceHarness::setUpDefaultRadio()
 
 bool ServiceHarness::startService(bool capturing)
 {
-    Service::Ports ports{radio, usb, system, shortcut, log, page, address};
-
-    m_service = std::make_unique<Service>(ports, ServerPorts{m_portBase});
+    m_service = std::make_unique<Service>(radio, usb, shortcut, log, page, "CFI-2002 B01", address, m_portBase);
     m_thread = std::thread([this, capturing] { m_service->run(capturing); });
     for (int i = 0; i < 100 && port == 0; i++)
     {

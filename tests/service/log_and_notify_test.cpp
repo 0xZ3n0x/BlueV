@@ -126,7 +126,7 @@ TEST(LogBuffer, ManyThreadsAtOnce)
     EXPECT_EQ(2000u, next);
 }
 
-// ---- NotificationQueue ----
+// ---- AppLog ----
 namespace
 {
 struct Collected
@@ -146,129 +146,29 @@ struct Collected
 };
 } // namespace
 
-TEST(NotificationQueue, SendsInOrderFromTheWorker)
-{
-    Collected c;
-    NotificationQueue q([&](const std::string& t) { c.add(t); }, std::chrono::milliseconds(1));
-    q.start();
-    q.post("one", false);
-    q.post("two", true);
-    q.post("three", false);
-    q.stop(); // sends what is queued first
-    EXPECT_EQ((std::vector<std::string>{"one", "two", "three"}), c.get());
-}
-
-TEST(NotificationQueue, AHeldMessageDelaysTheNext)
-{
-    std::vector<std::chrono::steady_clock::time_point> times;
-    std::mutex m;
-    NotificationQueue q(
-        [&](const std::string&) {
-            std::lock_guard<std::mutex> l(m);
-            times.push_back(std::chrono::steady_clock::now());
-        },
-        std::chrono::milliseconds(150));
-    q.start();
-    q.post("a", true);
-    q.post("b", false);
-    std::this_thread::sleep_for(std::chrono::milliseconds(400));
-    q.stop();
-    ASSERT_EQ(2u, times.size());
-    EXPECT_GE(times[1] - times[0], std::chrono::milliseconds(140));
-}
-
-TEST(NotificationQueue, PostNeverBlocksOnTheSender)
-{
-    std::atomic<bool> release{false};
-    NotificationQueue q([&](const std::string&) {
-        while (!release.load())
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-    });
-    q.start();
-    const auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < 100; i++)
-    {
-        q.post("x", true);
-    }
-    EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::milliseconds(200));
-    release.store(true);
-    const auto t1 = std::chrono::steady_clock::now();
-    q.stop();
-    // the held messages do not make stopping wait for each of them
-    EXPECT_LT(std::chrono::steady_clock::now() - t1, std::chrono::seconds(2));
-}
-
-TEST(NotificationQueue, OnlyThirtyTwoAreKept)
-{
-    std::atomic<bool> release{false};
-    Collected c;
-    NotificationQueue q(
-        [&](const std::string& t) {
-            while (!release.load())
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            c.add(t);
-        },
-        std::chrono::milliseconds(0));
-    q.start();
-    for (int i = 0; i < 100; i++)
-    {
-        q.post(std::to_string(i), false);
-    }
-    release.store(true);
-    q.stop();
-    const auto got = c.get();
-    EXPECT_LE(got.size(), 34u);  // 32 queued, one being sent, one racing
-    EXPECT_EQ("99", got.back()); // the newest survive
-}
-
-TEST(NotificationQueue, StartAndStopCanBeRepeated)
-{
-    Collected c;
-    NotificationQueue q([&](const std::string& t) { c.add(t); }, std::chrono::milliseconds(0));
-    q.start();
-    q.start();
-    q.post("a", false);
-    q.stop();
-    q.stop();
-    q.start();
-    q.post("b", false);
-    q.stop();
-    EXPECT_EQ((std::vector<std::string>{"a", "b"}), c.get());
-}
-
-// ---- AppLog ----
 TEST(AppLog, StampsAndFansOut)
 {
     LogBuffer buffer;
     Collected notes, file;
-    NotificationQueue q([&](const std::string& t) { notes.add(t); }, std::chrono::milliseconds(0));
     AppLog log(
-        buffer, q, [&](const std::string& t) { file.add(t); },
+        buffer, [&](const std::string& t) { file.add(t); }, [&](const std::string& t) { notes.add(t); },
         [] { return static_cast<std::time_t>(3600 * 5 + 60 * 7 + 9); });
-    q.start();
 
     log.line("hello");
     log.notify("on screen");
-    log.notifyShow("both");
     log.flush();
     log.flush(); // nothing new: no second write
-    q.stop();
 
-    EXPECT_EQ((std::vector<std::string>{"on screen", "both"}), notes.get());
-    EXPECT_EQ((std::vector<std::string>{"05:07:09 hello\n05:07:09 both\n"}), file.get());
+    EXPECT_EQ((std::vector<std::string>{"on screen"}), notes.get());
+    EXPECT_EQ((std::vector<std::string>{"05:07:09 hello\n"}), file.get());
     unsigned next = 0;
-    EXPECT_EQ("05:07:09 hello\n05:07:09 both\n", buffer.since(0, next, 1000));
+    EXPECT_EQ("05:07:09 hello\n", buffer.since(0, next, 1000));
 }
 
 TEST(AppLog, WorksWithoutAFile)
 {
     LogBuffer buffer;
-    NotificationQueue q([](const std::string&) {});
-    AppLog log(buffer, q, nullptr);
+    AppLog log(buffer, nullptr, nullptr);
     log.line("x");
     log.flush();
     unsigned next = 0;
@@ -279,14 +179,11 @@ TEST(AppLog, ThroughTheGlobalFunctions)
 {
     LogBuffer buffer;
     Collected notes;
-    NotificationQueue q([&](const std::string& t) { notes.add(t); }, std::chrono::milliseconds(0));
-    AppLog log(buffer, q, nullptr);
+    AppLog log(buffer, nullptr, [&](const std::string& t) { notes.add(t); });
     setLogSink(&log);
-    q.start();
     logLine("value %d", 42);
     notify("note %s", "n");
     flushLog();
-    q.stop();
     setLogSink(nullptr);
     unsigned next = 0;
     EXPECT_NE(std::string::npos, buffer.since(0, next, 100).find("value 42\n"));

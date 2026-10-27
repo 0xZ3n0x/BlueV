@@ -262,10 +262,9 @@ TEST_F(Link, LinkResetForgetsTheState)
 }
 
 // ---- the device dials in ----
-TEST_F(Link, ServiceModeAcceptsAPairedDeviceAndAdoptsTheLink)
+TEST_F(Link, AcceptsAPairedDeviceThatDialsInAndAdoptsTheLink)
 {
     bondedAndStarted();
-    stack.setServiceMode(true);
     controller.event(0x04, inboundRequest(remoteAddress(), 0x240404));
     stack.poll(10);
 
@@ -281,10 +280,9 @@ TEST_F(Link, ServiceModeAcceptsAPairedDeviceAndAdoptsTheLink)
     EXPECT_TRUE(sink.has("link encrypted"));
 }
 
-TEST_F(Link, ServiceModeIgnoresADeviceThatIsNotPaired)
+TEST_F(Link, IgnoresADeviceThatIsNotPaired)
 {
     startExternal();
-    stack.setServiceMode(true);
     controller.event(0x04, inboundRequest(remoteAddress(), 0x240404));
     controller.event(0x04, inboundRequest(remoteAddress(), 0x240404));
     stack.poll(10);
@@ -298,38 +296,15 @@ TEST_F(Link, ServiceModeIgnoresADeviceThatIsNotPaired)
 TEST_F(Link, OtherRadioLinkTypesAreLeftAlone)
 {
     bondedAndStarted();
-    stack.setServiceMode(true);
     controller.event(0x04, inboundRequest(remoteAddress(), 0x240404, 0)); // SCO
     stack.poll(10);
     EXPECT_FALSE(controller.sawCommand(kAcceptConnReq));
     EXPECT_EQ(0, stack.foreignRequests());
 }
 
-TEST_F(Link, WithoutServiceModeUnknownHeadphonesAreAcceptedButNotTelevisions)
-{
-    startExternal();
-    controller.event(0x04, inboundRequest(remoteAddress(), 0x240404));
-    stack.poll(10);
-    EXPECT_TRUE(controller.sawCommand(kAcceptConnReq));
-
-    controller.commands.clear();
-    BdAddr tv = remoteAddress();
-    tv[0] = 0x99;
-    controller.event(0x04, inboundRequest(tv, 0x24042c));
-    stack.poll(10);
-    EXPECT_FALSE(controller.sawCommand(kAcceptConnReq));
-
-    BdAddr phone = remoteAddress();
-    phone[0] = 0x98;
-    controller.event(0x04, inboundRequest(phone, 0x5a020c)); // not audio
-    stack.poll(10);
-    EXPECT_FALSE(controller.sawCommand(kAcceptConnReq));
-}
-
-TEST_F(Link, ServiceModeAdoptsAPairedDeviceThatConnectsWhileBusy)
+TEST_F(Link, AdoptsAPairedDeviceThatConnectsWhileBusy)
 {
     bondedAndStarted();
-    stack.setServiceMode(true);
     // a connection complete from a paired device we did not expect
     controller.event(0x03, {0, 0x42, 0x00, 0xCC, 0xBB, 0xAA, 0x22, 0x11, 0x00, 1, 0});
     stack.poll(10);
@@ -341,7 +316,6 @@ TEST_F(Link, ServiceModeAdoptsAPairedDeviceThatConnectsWhileBusy)
 TEST_F(Link, ADeviceThatReconnectsWhileTearingDownKeepsItsLink)
 {
     bondedAndStarted();
-    stack.setServiceMode(true);
     ASSERT_TRUE(stack.connectTo(remoteAddress()));
     // it hangs up and dials in again right away
     controller.remoteDisconnect(0x13, 20);

@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core/audio/pcm_fifo.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace bluev
 {
+
+namespace
+{
+std::int16_t toSample(float value)
+{
+    return static_cast<std::int16_t>(static_cast<std::int32_t>(std::clamp(value, -1.0f, 1.0f) * 32767.0f));
+}
+} // namespace
 
 void PcmFifo::push(float l, float r)
 {
@@ -12,26 +21,8 @@ void PcmFifo::push(float l, float r)
     {
         return;
     }
-    if (l > 1.0f)
-    {
-        l = 1.0f;
-    }
-    if (l < -1.0f)
-    {
-        l = -1.0f;
-    }
-    if (r > 1.0f)
-    {
-        r = 1.0f;
-    }
-    if (r < -1.0f)
-    {
-        r = -1.0f;
-    }
-    m_samples[static_cast<std::size_t>(m_size) * 2] =
-        static_cast<std::int16_t>(static_cast<std::int32_t>(l * 32767.0f));
-    m_samples[static_cast<std::size_t>(m_size) * 2 + 1] =
-        static_cast<std::int16_t>(static_cast<std::int32_t>(r * 32767.0f));
+    m_samples[static_cast<std::size_t>(m_size) * 2] = toSample(l);
+    m_samples[static_cast<std::size_t>(m_size) * 2 + 1] = toSample(r);
     m_size++;
 }
 

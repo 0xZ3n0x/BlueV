@@ -12,7 +12,12 @@ namespace bluev
 namespace
 {
 constexpr std::uint16_t kAvdtpPsm = 0x19;
+
+// the media channel carries no frames we need
+void ignoreMedia(std::uint32_t, const std::uint8_t*, int)
+{
 }
+} // namespace
 
 A2dpSession::A2dpSession(BtStack& bt, IClock& clock) : m_bt(bt), m_clock(clock)
 {
@@ -81,11 +86,14 @@ void A2dpSession::stop()
     m_bt.closeChannel(m_sig);
 }
 
-bool A2dpSession::start(bool initiatedByUs)
+// Gets the AVDTP signaling channel up, from either side. `openedByUs` tells
+// which side did it. False when neither did.
+bool A2dpSession::openSignaling(bool initiatedByUs, bool& openedByUs)
 {
-    bool openedByUs = false;
     const auto onFrame = [this](std::uint32_t, const std::uint8_t* buf, int len) { onSignal(buf, len); };
     const auto signalingUp = [this] { return m_sig.up && m_sig.configured; };
+
+    openedByUs = false;
 
     // Many headsets open the AVDTP signaling channel themselves when they
     // reconnect; give them a moment before opening it ourselves. When we made
@@ -95,44 +103,40 @@ bool A2dpSession::start(bool initiatedByUs)
     // only open the channel after that. If our own attempt fails the headset
     // still gets the rest of the twenty seconds.
     m_bt.bindInbound(kAvdtpPsm, m_sig, onFrame);
-    std::uint64_t deadline = m_clock.nowMs() + (initiatedByUs ? 1000 : 20000);
-    while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !signalingUp())
-    {
-        m_bt.poll(50);
-    }
+    m_bt.wait(signalingUp, initiatedByUs ? 1000 : 20000);
     if (m_sig.connDone && signalingUp())
     {
         logLine("avdtp: the device opened the signaling channel");
+        return true;
     }
-    else if (m_bt.openChannel(m_sig, kAvdtpPsm, onFrame))
+    if (m_bt.openChannel(m_sig, kAvdtpPsm, onFrame))
     {
         openedByUs = true;
         logLine("avdtp: signaling channel opened by us");
+        return true;
     }
-    else if (initiatedByUs && !m_bt.linkLost())
-    {
-        deadline = m_clock.nowMs() + 17000;
-        while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !signalingUp())
-        {
-            m_bt.poll(50);
-        }
-        if (!(m_sig.connDone && signalingUp()))
-        {
-            return false;
-        }
-        logLine("avdtp: the device opened the signaling channel");
-    }
-    else
+    if (!initiatedByUs || m_bt.linkLost())
     {
         return false;
     }
+    m_bt.wait(signalingUp, 17000);
+    if (!(m_sig.connDone && signalingUp()))
+    {
+        return false;
+    }
+    logLine("avdtp: the device opened the signaling channel");
+    return true;
+}
 
-    // Give the headset time to run the procedure itself. As long as it keeps
-    // sending commands it is driving, however slowly (the pause between its
-    // commands has been seen to reach two seconds); only a headset that has
-    // been silent for four seconds is left to us, and never wait longer than
-    // twenty seconds in all.
+// Give the headset time to run the procedure itself. As long as it keeps
+// sending commands it is driving, however slowly (the pause between its
+// commands has been seen to reach two seconds); only a headset that has been
+// silent for four seconds is left to us, and never wait longer than twenty
+// seconds in all.
+void A2dpSession::waitForPeerSetup(bool openedByUs)
+{
     const std::uint64_t began = m_clock.nowMs();
+
     while (!m_bt.linkLost() && !m_peerConfigured)
     {
         const std::uint64_t now = m_clock.nowMs();
@@ -144,64 +148,66 @@ bool A2dpSession::start(bool initiatedByUs)
         }
         m_bt.poll(50);
     }
+}
+
+bool A2dpSession::start(bool initiatedByUs)
+{
+    bool openedByUs = false;
+
+    if (!openSignaling(initiatedByUs, openedByUs))
+    {
+        return false;
+    }
+    waitForPeerSetup(openedByUs);
     return m_peerConfigured ? followPeer() : driveSetup();
 }
 
 // the device configured the stream itself
 bool A2dpSession::followPeer()
 {
-    const auto onMedia = [](std::uint32_t, const std::uint8_t*, int) {};
-
     logLine("avdtp: the device configured the stream itself (%02x %02x, bitpool %u-%u)", m_peerCaps & 0xff,
             m_peerCaps >> 8 & 0xff, m_peerCaps >> 16 & 0xff, m_peerCaps >> 24);
     if (!chooseA2dpParams(m_peerCaps, m_config))
     {
         return false;
     }
-    std::uint64_t deadline = m_clock.nowMs() + 6000;
-    while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !m_peerOpened)
-    {
-        m_bt.poll(50);
-    }
-    m_bt.bindInbound(kAvdtpPsm, m_media, onMedia);
-    deadline = m_clock.nowMs() + 6000;
-    while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !(m_media.up && m_media.configured))
-    {
-        m_bt.poll(50);
-    }
+
+    // it opens the media channel towards us; wait for that, and for its Start
+    m_bt.wait([this] { return m_peerOpened; }, 6000);
+    m_bt.bindInbound(kAvdtpPsm, m_media, ignoreMedia);
+    m_bt.wait([this] { return m_media.up && m_media.configured; }, 6000);
     if (!(m_media.up && m_media.configured))
     {
         logLine("avdtp: the media channel did not open");
         return false;
     }
-    deadline = m_clock.nowMs() + 300;
-    while (!m_bt.linkLost() && m_clock.nowMs() < deadline && !m_peerStarted)
-    {
-        m_bt.poll(50);
-    }
+    m_bt.wait([this] { return m_peerStarted; }, 300);
     if (!m_peerStarted)
     {
-        const int st = command(avdtp::kStart, &m_peerSeid, 1);
-
-        if (st != 2)
-        {
-            logLine("avdtp: start status %d, streaming anyway", st);
-        }
-        else
-        {
-            m_peerStarted = true;
-        }
+        m_peerStarted = sendStart(m_peerSeid);
     }
     logLine("avdtp: streaming SBC %d Hz, bitpool %d (the device drove it, started=%d)", m_config.rate, m_config.bitpool,
             m_peerStarted);
     return true;
 }
 
-// we discover, configure, open and start
-bool A2dpSession::driveSetup()
+// Sends Start for the endpoint `seidByte` (seid << 2). A device that refuses is
+// streamed to anyway.
+bool A2dpSession::sendStart(std::uint8_t seidByte)
 {
-    const auto onMedia = [](std::uint32_t, const std::uint8_t*, int) {};
-    std::uint8_t sep[1];
+    const int status = command(avdtp::kStart, &seidByte, 1);
+
+    if (status != 2)
+    {
+        logLine("avdtp: start status %d, streaming anyway", status);
+    }
+    return status == 2;
+}
+
+// Asks the device what it has and picks its first SBC sink (m_sinkSeid, and the
+// SBC capabilities in `caps`).
+bool A2dpSession::findSbcSink(std::uint32_t& caps)
+{
     avdtp::Endpoint endpoints[15];
 
     if (command(avdtp::kDiscover, nullptr, 0) != 2)
@@ -213,169 +219,133 @@ bool A2dpSession::driveSetup()
 
     for (int i = 0; i < count; i++)
     {
-        std::uint32_t caps = 0;
+        const std::uint8_t seidByte = static_cast<std::uint8_t>(endpoints[i].seid << 2);
 
         if (!endpoints[i].isSink) // source, not a sink
         {
             continue;
         }
-        sep[0] = static_cast<std::uint8_t>(endpoints[i].seid << 2);
-        if (command(avdtp::kGetCapabilities, sep, 1) != 2)
+        if (command(avdtp::kGetCapabilities, &seidByte, 1) != 2 || static_cast<int>(m_responseLength) < 4 ||
+            !avdtp::findSbcCapabilities(m_response, static_cast<int>(m_responseLength), caps))
         {
             continue;
         }
-        if (static_cast<int>(m_responseLength) < 4)
-        {
-            continue;
-        }
-        if (!avdtp::findSbcCapabilities(m_response, static_cast<int>(m_responseLength), caps))
-        {
-            continue;
-        }
-
         m_sinkSeid = endpoints[i].seid;
-        logLine("avdtp: SBC sink %d, capabilities %02x %02x, bitpool %u-%u", m_sinkSeid, caps & 0xff, caps >> 8 & 0xff,
-                caps >> 16 & 0xff, caps >> 24);
-
-        if (!chooseA2dpParams(caps, m_config))
-        {
-            return false;
-        }
-
-        // SET_CONFIGURATION with the SBC media codec capabilities
-        std::uint8_t cfg[12] = {};
-        cfg[0] = static_cast<std::uint8_t>(m_sinkSeid << 2);
-        cfg[1] = 0x04;
-        cfg[2] = 0x01;
-        cfg[3] = 0x00;
-        cfg[4] = 0x07;
-        cfg[5] = 0x06;
-        cfg[6] = 0x00;
-        cfg[7] = 0x00;
-        cfg[8] = m_config.freqMode;
-        cfg[9] = m_config.cfg;
-        cfg[10] = static_cast<std::uint8_t>(m_config.bitpool);
-        cfg[11] = static_cast<std::uint8_t>(m_config.bitpool);
-        if (command(avdtp::kSetConfiguration, cfg, 12) != 2)
-        {
-            logLine("avdtp: configuration refused (rsp %02x %02x %02x %02x, sent %02x %02x)", m_response[0],
-                    m_response[1], m_response[2], m_response[3], cfg[8], cfg[9]);
-            return false;
-        }
-        sep[0] = static_cast<std::uint8_t>(m_sinkSeid << 2);
-        if (command(avdtp::kOpen, sep, 1) != 2)
-        {
-            logLine("avdtp: open refused");
-            return false;
-        }
-
-        // the headset opens the media channel towards us
-        m_bt.bindInbound(kAvdtpPsm, m_media, onMedia);
-        std::uint64_t deadline = m_clock.nowMs() + 1500;
-        if (m_clock.nowMs() < deadline && !m_media.up)
-        {
-            while (!m_bt.linkLost())
-            {
-                m_bt.poll(50);
-                if (m_clock.nowMs() >= deadline || m_media.up)
-                {
-                    break;
-                }
-            }
-        }
-
-        if (!(m_media.connDone && m_media.up && m_media.configured))
-        {
-            if (!m_bt.openChannel(m_media, kAvdtpPsm, onMedia))
-            {
-                return false;
-            }
-        }
-        deadline = m_clock.nowMs() + 300;
-        while (!m_bt.linkLost() && m_clock.nowMs() < deadline)
-        {
-            m_bt.poll(50);
-        }
-
-        sep[0] = static_cast<std::uint8_t>(m_sinkSeid << 2);
-        const int st = command(avdtp::kStart, sep, 1);
-        if (st != 2)
-        {
-            logLine("avdtp: start status %d, streaming anyway", st);
-        }
-        logLine("avdtp: streaming SBC %d Hz, bitpool %d", m_config.rate, m_config.bitpool);
         return true;
     }
-
     logLine("avdtp: the device has no SBC sink");
     return false;
 }
 
-// the device's commands, and the answers to ours
+// we configure the stream: pick the sink, set the codec, open, start
+bool A2dpSession::driveSetup()
+{
+    std::uint32_t caps = 0;
+
+    if (!findSbcSink(caps))
+    {
+        return false;
+    }
+    const std::uint8_t sink = static_cast<std::uint8_t>(m_sinkSeid << 2);
+
+    logLine("avdtp: SBC sink %d, capabilities %02x %02x, bitpool %u-%u", m_sinkSeid, caps & 0xff, caps >> 8 & 0xff,
+            caps >> 16 & 0xff, caps >> 24);
+    if (!chooseA2dpParams(caps, m_config))
+    {
+        return false;
+    }
+
+    // Set Configuration: media transport, then the SBC codec with our choice
+    const std::uint8_t cfg[12] = {sink,
+                                  0x04,
+                                  0x01,
+                                  0x00,
+                                  0x07,
+                                  0x06,
+                                  0x00,
+                                  0x00,
+                                  m_config.freqMode,
+                                  m_config.cfg,
+                                  static_cast<std::uint8_t>(m_config.bitpool),
+                                  static_cast<std::uint8_t>(m_config.bitpool)};
+
+    if (command(avdtp::kSetConfiguration, cfg, 12) != 2)
+    {
+        logLine("avdtp: configuration refused (rsp %02x %02x %02x %02x, sent %02x %02x)", m_response[0], m_response[1],
+                m_response[2], m_response[3], cfg[8], cfg[9]);
+        return false;
+    }
+    if (command(avdtp::kOpen, &sink, 1) != 2)
+    {
+        logLine("avdtp: open refused");
+        return false;
+    }
+
+    // the headset opens the media channel towards us; open it ourselves when it does not
+    m_bt.bindInbound(kAvdtpPsm, m_media, ignoreMedia);
+    m_bt.wait([this] { return m_media.up; }, 1500);
+    if (!(m_media.connDone && m_media.up && m_media.configured) && !m_bt.openChannel(m_media, kAvdtpPsm, ignoreMedia))
+    {
+        return false;
+    }
+    m_bt.wait([] { return false; }, 300); // let the channel settle
+
+    sendStart(sink);
+    logLine("avdtp: streaming SBC %d Hz, bitpool %d", m_config.rate, m_config.bitpool);
+    return true;
+}
+
 void A2dpSession::onSignal(const std::uint8_t* buf, int len)
 {
     avdtp::Header h;
+    avdtp::PeerConfig peer;
     std::uint8_t rsp[16];
+    std::size_t n;
 
     if (!avdtp::parseHeader(buf, len, h))
     {
         return;
     }
-    if (h.type == avdtp::kCommand)
+    if (h.type != avdtp::kCommand)
     {
-        m_peerLastCommand = m_clock.nowMs(); // the headset is driving
+        if (h.label == m_label)
+        { // the answer to our pending transaction
+            m_responseLength = len < 256 ? static_cast<std::uint32_t>(len) : 256;
+            std::memcpy(m_response, buf, m_responseLength);
+            m_responseReady = true;
+        }
+        return;
     }
 
-    if (h.type == avdtp::kCommand && h.signal == avdtp::kDiscover)
+    m_peerLastCommand = m_clock.nowMs(); // the headset is driving
+    if (h.signal == avdtp::kDiscover)
     {
-        // some sinks ask us first and close the channel when we refuse;
-        // offer one SBC source endpoint
-        m_bt.send(m_sig.theirCid, rsp, static_cast<int>(avdtp::buildDiscoverAccept(h.label, rsp)));
-        return;
+        n = avdtp::buildDiscoverAccept(h.label, rsp);
     }
-    if (h.type == avdtp::kCommand && h.signal == avdtp::kGetCapabilities)
+    else if (h.signal == avdtp::kGetCapabilities)
     {
-        m_bt.send(m_sig.theirCid, rsp, static_cast<int>(avdtp::buildCapabilitiesAccept(h.label, rsp)));
-        return;
+        n = avdtp::buildCapabilitiesAccept(h.label, rsp);
     }
-    avdtp::PeerConfig peer;
-    if (h.type == avdtp::kCommand && h.signal == avdtp::kSetConfiguration &&
-        avdtp::parseSetConfiguration(buf, len, peer))
+    else if (h.signal == avdtp::kSetConfiguration && avdtp::parseSetConfiguration(buf, len, peer))
     {
-        // take the headset's choice
         m_peerSeid = peer.seid;
         if (peer.haveSbc)
         {
             m_peerCaps = peer.caps;
             m_peerConfigured = true;
         }
-        m_bt.send(m_sig.theirCid, rsp, static_cast<int>(avdtp::buildAccept(h.label, avdtp::kSetConfiguration, rsp)));
-        return;
+        n = avdtp::buildAccept(h.label, avdtp::kSetConfiguration, rsp);
     }
-    if (h.type == avdtp::kCommand && (h.signal == avdtp::kOpen || h.signal == avdtp::kStart))
+    else if (h.signal == avdtp::kOpen || h.signal == avdtp::kStart)
     {
-        m_bt.send(m_sig.theirCid, rsp, static_cast<int>(avdtp::buildAccept(h.label, h.signal, rsp)));
-        if (h.signal == avdtp::kOpen)
-        {
-            m_peerOpened = true;
-        }
-        else
-        {
-            m_peerStarted = true;
-        }
-        return;
+        (h.signal == avdtp::kOpen ? m_peerOpened : m_peerStarted) = true;
+        n = avdtp::buildAccept(h.label, h.signal, rsp);
     }
-    if (h.type == avdtp::kCommand)
+    else
     { // anything else: general reject
-        m_bt.send(m_sig.theirCid, rsp, static_cast<int>(avdtp::buildReject(h.label, h.signal, 0x19, rsp)));
-        return;
+        n = avdtp::buildReject(h.label, h.signal, 0x19, rsp);
     }
-    if (h.label == m_label)
-    { // our pending transaction
-        m_responseLength = len < 256 ? static_cast<std::uint32_t>(len) : 256;
-        std::memcpy(m_response, buf, m_responseLength);
-        m_responseReady = true;
-    }
+    m_bt.send(m_sig.theirCid, rsp, static_cast<int>(n));
 }
 
 } // namespace bluev

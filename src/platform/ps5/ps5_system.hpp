@@ -1,22 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The small pieces of the console that have no better home: the model name,
-// the app installer and the on-screen notification.
+// The console's app installer.
 #pragma once
 
 #include <string>
 
 #include "core/ports/app_installer.hpp"
-#include "core/ports/system_info.hpp"
 
 namespace bluev
 {
-
-class Ps5SystemInfo final : public ISystemInfo
-{
-  public:
-    // From sceKernelGetHwModelName; empty when the call fails.
-    std::string modelName() override;
-};
 
 // The system's app installer. Linking its stub library keeps the payload from
 // starting at all on the console, so the library is loaded here and the
@@ -41,8 +32,5 @@ class Ps5AppInstaller final : public IAppInstaller
     // Loads the library and looks the functions up; false when too few are found.
     bool load(Functions& f);
 };
-
-// a message on the console's screen
-void sendNotification(const std::string& text);
 
 } // namespace bluev
