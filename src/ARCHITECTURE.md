@@ -24,7 +24,7 @@ tried and dropped, is in sections 17 and 18.
 | `src/app/main.cpp` | composition root: lock file, builds the real objects, runs the service |
 | `src/core/ports/` | interfaces: `IClock`, `ILogSink`, `IHciTransport`, `IBondStore`, `IAudioSource`, `IUsbDirectory`, `IAppInstaller`. An interface exists only where a test needs a fake of something it cannot run (the controller, the console, time, files); the rest are plain classes or `std::function` |
 | `src/core/bluetooth/bt_stack*.cpp` | `BtStack`: controller start/stop, inquiry, paging/pairing/encryption, event and ACL loop, L2CAP, credit flow control, bonds |
-| `src/core/bluetooth/` (rest) | `handleSdpRequest` (SDP), addresses, names, `device_filter` (TV classification, EIR names), `L2capReassembler`, HCI opcodes |
+| `src/core/bluetooth/` (rest) | `handleSdpRequest` (SDP), `findHciLayout` (the endpoints in a configuration descriptor), addresses, names, `device_filter` (TV classification, EIR names), `L2capReassembler`, HCI opcodes |
 | `src/core/audio/` | `A2dpSession` (AVDTP), `A2dpStreamer` (capture, resample, SBC, RTP), `avdtp`, `a2dp_params`, `PcmFifo`, `LinearResampler`, `rtp.hpp` |
 | `src/core/radio.*` | `IRadio` (what the service needs) and `Radio` (wires `BtStack` + `A2dpSession` + `A2dpStreamer`) |
 | `src/service/service.*` | `Service`: state machine driven by the web interface; depends on `IRadio`, `IUsbDirectory` and the concrete `HomeScreenShortcut` / `LogBuffer` |
@@ -32,7 +32,7 @@ tried and dropped, is in sections 17 and 18.
 | `src/service/log_buffer.*`, `app_log.*` | log ring + file buffer, the program's `ILogSink` (also sends the on-screen notifications) |
 | `src/service/home_screen_shortcut.*` | the home screen entry (files + `IAppInstaller`) |
 | `src/service/json.hpp` | JSON writer |
-| `src/platform/ps5/` | the only code that knows the console: `UgenTransport` (raw HCI over ugen), `Ps5UsbDirectory` (the USB device list + libSceUsbd descriptors), `AvcapSource` (libSceAvcap2), `Ps5AppInstaller`, `askOtherInstanceToQuit` (process list lookup), `consoleModelName()`, `sendNotification()` |
+| `src/platform/ps5/` | the only code that knows the console: `UgenTransport` (raw HCI over ugen), `Ps5UsbDirectory` (the USB device list + the descriptors, by ioctl), `AvcapSource` (libSceAvcap2), `Ps5AppInstaller`, `askOtherInstanceToQuit` (process list lookup), `consoleModelName()`, `sendNotification()` |
 | `src/platform/posix/` | `FileBondStore`, `LogFile` (plain files; also used by the tests) |
 | `web/index.html` | the control page, embedded at build time (`tools/embed.py`) |
 | `third_party/sbc/` | BlueZ libsbc 2.2, git submodule, built unmodified (not tested) |
@@ -149,9 +149,10 @@ The **endpoint numbers differ between hardware revisions**:
 | PS5 Slim | `0x81` | `0x82` | `0x02` |
 
 The layout is read from the device's descriptors at radio start
-(`Ps5UsbDirectory::discoverLayout`, libSceUsbd, read only; the first `e0/01/01` interface
-with an interrupt in, a bulk in and a bulk out, the bulk out taking the number
-of the bulk in), the same for the console's chip and for adapters. Everything
+(`Ps5UsbDirectory::discoverLayout` reads the kernel's copy of the configuration
+descriptor with `USB_GET_FULL_DESC`, read only; `findHciLayout` picks the first
+`e0/01/01` interface with an interrupt in, a bulk in and a bulk out, the bulk out
+taking the number of the bulk in), the same for the console's chip and for adapters. Everything
 else, opening, commands, events and ACL, goes through ugen. If the descriptors
 cannot be read, an adapter gets the standard layout and the console's chip the
 detection by behaviour below.
@@ -486,14 +487,19 @@ console's driver state per interface with `KernelDriverActive`:
 So the standard layout assumed for external adapters is right. The console's
 chip has a second group of the same shape on interface 3 (`8c`/`8d`/`0b`/`0d`);
 what it is used for is not known. Our radio uses group 0 (`81`, `82`, `02`).
-BlueV uses libusb for one thing only: reading the configuration descriptor at
-radio start to find the endpoints (`Ps5UsbDirectory::discoverLayout`). On the console's chip
-(Slim) it gives events `0x81`, ACL in `0x82`, ACL out `0x02` without the
+BlueV reads the configuration descriptor at radio start to find the endpoints
+(`Ps5UsbDirectory::discoverLayout`). It used libSceUsbd for that until the ioctl
+libusb itself uses was found: `USB_GET_FULL_DESC` (the SDK's `usb_ioctl.h` has it)
+returns the whole descriptor from the kernel's copy, so nothing is loaded and
+only the node that is used is opened (libusb opens every ugen node, the
+console's own chip and the gamepad included, to list the devices). Checked with the
+CSR adapter: 177 bytes, interface 0 with `0x81`, `0x02`, `0x82`. On the console's chip
+(Slim) the layout read this way is events `0x81`, ACL in `0x82`, ACL out `0x02`, without the
 detection by behaviour, whose 48 + 16 reads on the wrong pipes for a few seconds
 had broken the gamepad's reconnection; the radio opens in 3 s. Measured
 (2026-10-24): internal radio on, the speaker connected and streaming for a
 while, the gamepad (Bluetooth) kept working; the adapter streams as before. One
-run each. The probes in `tools/` also use libusb.
+run each. The probe in `tools/` still uses libusb.
 
 Is interface 3 a controller of its own? a throw-away probe (not kept) sent the read-only
 commands Read BD_ADDR, Read Local Version and Read Buffer Size with
@@ -632,7 +638,7 @@ Rules that keep this race-free:
 
 Tests: `tests/run.sh [plain|thread|address] [gtest filter]` builds everything
 except the PS5 adapters on a PC (CMake + Ninja, googletest submodule) and runs
-about 210 tests: the Bluetooth stack against a fake controller and a fake
+the tests: the Bluetooth stack against a fake controller and a fake
 speaker (pairing, paging, L2CAP, flow control, AVDTP, the streaming loop), the
 service against a gmock radio over real HTTP (including 8 clients firing random
 requests), and the file/log/notification helpers. The PS5 adapters under
@@ -708,7 +714,7 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | One radio thread; web threads only post one pending command and read snapshots under a mutex | The HCI side is never touched from two threads; a second command gets `Busy` instead of a race |
 | The radio is off at start; the user starts it from the page | Nothing opens a USB device until asked: the internal chip is shared with the gamepad (section 12) |
 | A USB adapter is the recommended path | The chip is ours alone: no gamepad problem, 11 s from selecting a speaker to audio against about 105 s on the internal chip (12b) |
-| Endpoint layout read from the USB descriptors (`libSceUsbd`), not guessed by behaviour | Behaviour detection armed reads on the wrong pipes and broke the gamepad's reconnection (12c) |
+| Endpoint layout read from the USB descriptors (one ioctl on the node), not guessed by behaviour | Behaviour detection armed reads on the wrong pipes and broke the gamepad's reconnection (12c) |
 | A paired device that dials in is accepted; an unpaired one is refused and counted (`foreign_requests`) | The console is not pairable by whoever walks past; a speaker that reconnects by itself just works |
 | Pairings are files, per adapter and device; names per device | The same speaker can be paired with the internal chip and with an adapter at once; plain files are easy to inspect and to test |
 | AVDTP: wait for the device to start the procedure (1 s if we made the connection, 20 s if it did), then drive it ourselves | Headsets differ: the Sony WH-CH720N hangs up after about 8 s if the host does nothing, the WH-1000XM5 after 2-3 s (was 3 s here, 2026-10-25), the Creative speaker opens its channel later; starting at once collided with a device that drives (link timeout, 2026-10-18) |
@@ -742,7 +748,7 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | Shorter page rounds and a longer listen window to speed up Connect | Noted and deliberately not applied: the speaker mostly connects to us by itself during the listen window (see 18) |
 | One front end for the launcher menu and the web page | The launcher can only draw its own list (`showCarousel`), not HTML; the home screen entry opens the same page in the console's browser. A menu described by the server (`/api/ui`) was designed and dropped because the page already does everything |
 | A confirmation window before starting the internal radio | Replaced by the warning text only, on the page and in the launcher menu |
-| Compute the NIDs from the function names (SDK `nid_encode`) | Its implementation is not in the SDK libraries; the 8 NIDs stay as strings, each next to its name |
+| Compute the NIDs from the function names (SDK `nid_encode`) | Its implementation is not in the SDK libraries; the NIDs stay as strings, each next to its name |
 | Test `src/platform/ps5/` on the PC | It cannot run there; it is compiled by the console build and checked on the console, with the external adapter |
 | Convert `tools/usbprobe` (C) to C++ | A separate diagnostic payload; not worth it |
 

@@ -185,8 +185,8 @@ in the hope that it will be useful, but without any warranty.
 It is under the GPL because of the [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk)
 that builds it: every payload built with it contains the SDK's start-up code, and its headers
 are GPL-3.0-or-later. BlueV itself includes `ps5/kernel.h` (`src/platform/ps5/ps5_api.hpp`)
-and calls the SDK's `kernel_dynlib_*` functions (`avcap_source.cpp`, `ps5_system.cpp`,
-`ps5_usb_directory.cpp`). The third-party parts keep their own licenses, which work with the GPL:
+and calls the SDK's `kernel_dynlib_*` functions (`avcap_source.cpp`,
+`ps5_system.cpp`). The third-party parts keep their own licenses, which work with the GPL:
 
 - `third_party/sbc` (libsbc from BlueZ) is LGPL-2.1-or-later, built unmodified
 - `third_party/googletest` is BSD-3-Clause and is only used for the tests
