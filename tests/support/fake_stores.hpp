@@ -154,6 +154,11 @@ class FakeFirmwareStore final : public IFirmwareStore
         return true;
     }
 
+    std::string location() const override
+    {
+        return "/data/bluev/firmware";
+    }
+
     std::map<std::string, std::vector<std::uint8_t>> files;
 };
 

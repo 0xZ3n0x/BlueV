@@ -205,6 +205,7 @@ TEST_F(BtFixture, UploadsTheRealtekPatchForARomOnlyAdapter)
     stack.useAdapter("ugen1.2");
     ASSERT_TRUE(stack.start()) << sink.all();
 
+    EXPECT_TRUE(controller.sawCommand(0xfc61)); // the key id comes before the file
     EXPECT_TRUE(controller.sawCommand(0xfc6d));
     EXPECT_EQ(1, controller.countCommand(0xfc20)); // 46 bytes fit one fragment
     const SentCommand* patch = controller.lastCommand(0xfc20);
@@ -231,7 +232,7 @@ TEST_F(BtFixture, ARealtekChipThatNeedsItsConfigNamesBothFiles)
     controller.lmpSubversion = 0x8723;
     controller.hciRevision = 0x000d;
     controller.hciVersion = 0x08;
-    firmware.files["rtl8723d_fw.bin"] = realtekV1Image(1);
+    firmware.files["rtl8723d_fw.bin"] = realtekV1Image(1, 9);
     stack.useAdapter("ugen1.2");
 
     EXPECT_FALSE(stack.start());
@@ -240,7 +241,23 @@ TEST_F(BtFixture, ARealtekChipThatNeedsItsConfigNamesBothFiles)
     EXPECT_FALSE(controller.sawCommand(0xfc20));
 }
 
-TEST_F(BtFixture, ARealtekAdapterThatAlreadyRunsFirmwareIsLeftAlone)
+TEST_F(BtFixture, AKeyIdChipSkipsTheConfigFileAndItsSecuritySectionGoesUp)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0x8723; // the config is mandatory for this one
+    controller.hciRevision = 0x000d;
+    controller.hciVersion = 0x08;
+    controller.keyId = 7;
+    firmware.files["rtl8723d_fw.bin"] = realtekV2Image(1, 9);
+
+    stack.useAdapter("ugen1.2");
+    ASSERT_TRUE(stack.start()) << sink.all();
+
+    EXPECT_TRUE(controller.sawCommand(0xfc20));
+    EXPECT_TRUE(sink.has("RTL8723DU firmware rtl8723d_fw.bin uploaded"));
+}
+
+TEST_F(BtFixture, ARealtekChipThatStaysUnknownIsLeftAlone)
 {
     controller.manufacturer = 0x005d;
     controller.lmpSubversion = 0xdfc6; // after the upload the ROM identity is gone
@@ -249,9 +266,67 @@ TEST_F(BtFixture, ARealtekAdapterThatAlreadyRunsFirmwareIsLeftAlone)
     stack.useAdapter("ugen1.2");
 
     ASSERT_TRUE(stack.start()) << sink.all();
+    EXPECT_TRUE(controller.sawCommand(0xfc66)); // btrtl drops a vendor patch first
     EXPECT_FALSE(controller.sawCommand(0xfc6d));
     EXPECT_FALSE(controller.sawCommand(0xfc20));
     EXPECT_FALSE(sink.has("not a chip with a known patch"));
+}
+
+TEST_F(BtFixture, ARealtekVendorFirmwareIsDroppedToRomAndPatched)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0xdfc6; // a vendor patch: not a ROM identity
+    controller.hciRevision = 0xd922;
+    controller.hciVersion = 0x0a;
+    controller.dropToRomOnFc66 = true;
+    controller.romVersion = 1;
+    firmware.files["rtl8761bu_fw.bin"] = realtekV1Image(1);
+
+    stack.useAdapter("ugen1.2");
+    ASSERT_TRUE(stack.start()) << sink.all();
+
+    EXPECT_TRUE(controller.sawCommand(0xfc66));
+    EXPECT_TRUE(controller.sawCommand(0xfc6d));
+    EXPECT_TRUE(controller.sawCommand(0xfc20));
+    EXPECT_TRUE(sink.has("RTL8761BU firmware rtl8761bu_fw.bin uploaded"));
+}
+
+TEST_F(BtFixture, The8852cPrefersTheV2File)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0x8852;
+    controller.hciRevision = 0x000c;
+    controller.hciVersion = 0x0c;
+    firmware.files["rtl8852cu_fw_v2.bin"] = realtekV1Image(1, 25);
+
+    stack.useAdapter("ugen1.2");
+    ASSERT_TRUE(stack.start()) << sink.all();
+
+    EXPECT_TRUE(sink.has("RTL8852CU firmware rtl8852cu_fw_v2.bin uploaded"));
+}
+
+TEST_F(BtFixture, The8852cNamesBothFilesWhenNeitherIsThere)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0x8852;
+    controller.hciRevision = 0x000c;
+    controller.hciVersion = 0x0c;
+    stack.useAdapter("ugen1.2");
+
+    EXPECT_FALSE(stack.start());
+    EXPECT_EQ("this adapter needs firmware: put rtl8852cu_fw_v2.bin or rtl8852cu_fw.bin in /data/bluev/firmware/",
+              stack.startError());
+}
+
+TEST_F(BtFixture, AFragmentThatIsRefusedSaysToReplugTheAdapter)
+{
+    makeItRealtekInRomMode(controller);
+    firmware.files["rtl8761bu_fw.bin"] = realtekV1Image(1);
+    controller.failingOpcodes = {0xfc20};
+
+    stack.useAdapter("ugen1.2");
+    EXPECT_FALSE(stack.start());
+    EXPECT_TRUE(stack.startError().find("unplug it and plug it back in") != std::string::npos);
 }
 
 TEST_F(BtFixture, AnotherFamilyIsNotBlockedByFirmware)

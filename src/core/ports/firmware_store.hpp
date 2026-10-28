@@ -20,6 +20,10 @@ class IFirmwareStore
     // Reads the plain file name `name` (no path) into `out`. False when the
     // file does not exist or cannot be read.
     virtual bool read(const std::string& name, std::vector<std::uint8_t>& out) = 0;
+
+    // The directory the files are read from, without a trailing slash, for the
+    // messages that tell the user where to put a missing file.
+    virtual std::string location() const = 0;
 };
 
 } // namespace bluev

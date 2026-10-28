@@ -105,10 +105,12 @@ The Windows driver package from TP-Link works too: BlueV accepts both the
 If the file is missing, **Start** stops with
 `this adapter needs firmware: put rtl8761bu_fw.bin in /data/bluev/firmware/`.
 The patch is uploaded whenever the chip is back in ROM mode (after a console
-power cycle, or when the adapter is plugged in); a chip that already runs its
-firmware is left alone. Other Realtek chips use their own file (for example
-`rtl8761cu_fw.bin`, `rtl8821cu_fw.bin`); the error names the one the adapter
-wants.
+power cycle, or when the adapter is plugged in). A Realtek chip that already
+carries a vendor patch is put back into ROM mode first, the way Linux's `btrtl`
+does, and the file is uploaded again. A file meant for another chip is refused
+(the log names the one this chip wants). Other Realtek chips use their own file
+(for example `rtl8761cu_fw.bin`, `rtl8821cu_fw.bin`); the error names the one
+the adapter wants.
 
 Only Realtek is supported so far. Broadcom, Intel and MediaTek dongles that need
 a firmware patch are not handled yet; the ones whose ROM works (such as the ASUS

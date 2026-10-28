@@ -143,7 +143,11 @@ bool BtStack::bringUpAdapterFirmware()
                     [this](std::uint32_t& length) -> const std::uint8_t* {
                         length = m_ccLen;
                         return m_cc;
-                    }};
+                    },
+                    [this](std::uint16_t opcode, const std::uint8_t* params, std::uint8_t length) {
+                        return cmd(opcode, params, length);
+                    },
+                    [this](int milliseconds) { poll(static_cast<std::uint32_t>(milliseconds)); }};
     const FirmwareResult result = installFirmware(identity, m_firmware, hci);
 
     if (!result.ok)

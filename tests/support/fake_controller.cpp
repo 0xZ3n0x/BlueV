@@ -156,6 +156,18 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
     case 0xfc6d: // Realtek: read ROM version
         complete(opcode, {0, romVersion});
         break;
+    case 0xfc61: // Realtek: read register 16 (the security key id)
+        complete(opcode, {0, keyId, 0});
+        break;
+    case 0xfc66: // Realtek: drop the vendor patch, then report the ROM identity
+        if (dropToRomOnFc66)
+        {
+            manufacturer = 0x005d;
+            lmpSubversion = 0x8761;
+            hciRevision = 0x000b;
+            hciVersion = 0x0a;
+        }
+        break; // no answer: the stack does not wait for one
     case 0xfc20: // Realtek: one firmware fragment
         complete(opcode, {0, static_cast<std::uint8_t>(p.empty() ? 0 : p[0])});
         break;

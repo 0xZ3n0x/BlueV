@@ -2,8 +2,6 @@
 // Controller families, by the manufacturer Read Local Version reports.
 #include "core/bluetooth/firmware.hpp"
 
-#include <cstdio>
-
 #include "core/bluetooth/realtek_firmware.hpp"
 #include "core/bytes.hpp"
 #include "core/ports/firmware_store.hpp"
@@ -88,24 +86,8 @@ FirmwareResult installFirmware(const ChipIdentity& identity, IFirmwareStore& fil
 
     switch (family)
     {
-    case FirmwareFamily::Realtek: {
-        const RealtekChip* chip = realtekChipFor(identity);
-
-        if (chip == nullptr)
-        {
-            if (!realtekInRomMode(identity))
-            {
-                return {true, ""}; // already patched, or a chip without a ROM-mode patch
-            }
-            char text[96];
-
-            std::snprintf(text, sizeof text,
-                          "Realtek %04x/%04x/%02x is not a chip with a known patch, starting as it is",
-                          identity.lmpSubversion, identity.hciRevision, identity.hciVersion);
-            return {true, text};
-        }
-        return realtekInstall(*chip, files, hci);
-    }
+    case FirmwareFamily::Realtek:
+        return realtekInstall(identity, files, hci);
     case FirmwareFamily::Csr:
     case FirmwareFamily::Unknown:
         return {true, ""};

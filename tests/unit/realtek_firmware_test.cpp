@@ -27,6 +27,11 @@ ChipIdentity romIdentity()
     return id;
 }
 
+RealtekTarget target(std::uint8_t romVersion, std::uint8_t keyId = 0)
+{
+    return RealtekTarget{0x8761, romVersion, keyId};
+}
+
 } // namespace
 
 TEST(RealtekFirmware, V1PicksThePatchForTheRomVersionAndStampsTheVersion)
@@ -35,7 +40,7 @@ TEST(RealtekFirmware, V1PicksThePatchForTheRomVersionAndStampsTheVersion)
     std::vector<std::uint8_t> image;
     std::string why;
 
-    ASSERT_TRUE(realtekImage(realtekV1Image(1), config, 1, image, why)) << why;
+    ASSERT_TRUE(realtekImage(realtekV1Image(1), config, target(1), image, why)) << why;
     EXPECT_EQ((std::vector<std::uint8_t>{1, 2, 3, 4, 0x44, 0x33, 0x22, 0x11, 0x51, 0xaa, 0x00, 0x00}), image);
 }
 
@@ -44,7 +49,7 @@ TEST(RealtekFirmware, V1RefusesAnUnknownRomVersion)
     std::vector<std::uint8_t> image;
     std::string why;
 
-    EXPECT_FALSE(realtekImage(realtekV1Image(1), kNoConfig, 7, image, why));
+    EXPECT_FALSE(realtekImage(realtekV1Image(1), kNoConfig, target(7), image, why));
     EXPECT_NE(std::string::npos, why.find("no patch for ROM version 7"));
 }
 
@@ -55,7 +60,7 @@ TEST(RealtekFirmware, V1RefusesACutOffFile)
     std::string why;
 
     firmware.resize(20);
-    EXPECT_FALSE(realtekImage(firmware, kNoConfig, 1, image, why));
+    EXPECT_FALSE(realtekImage(firmware, kNoConfig, target(1), image, why));
     EXPECT_FALSE(why.empty());
 }
 
@@ -64,8 +69,9 @@ TEST(RealtekFirmware, V2OrdersTheSubsectionsAndKeepsOnlyThisRomVersion)
     std::vector<std::uint8_t> image;
     std::string why;
 
-    ASSERT_TRUE(realtekImage(realtekV2Image(1), kNoConfig, 1, image, why)) << why;
-    EXPECT_EQ((std::vector<std::uint8_t>{0x11, 0x22, 0x33, 0xaa, 0xbb, 0xcc, 0xdd}), image);
+    ASSERT_TRUE(realtekImage(realtekV2Image(1), kNoConfig, target(1), image, why)) << why;
+    // equal priorities come out in reverse file order, as btrtl orders them
+    EXPECT_EQ((std::vector<std::uint8_t>{0x44, 0x55, 0x11, 0x22, 0x33, 0xaa, 0xbb, 0xcc, 0xdd}), image);
 }
 
 TEST(RealtekFirmware, V2RefusesAnUnknownRomVersion)
@@ -73,17 +79,57 @@ TEST(RealtekFirmware, V2RefusesAnUnknownRomVersion)
     std::vector<std::uint8_t> image;
     std::string why;
 
-    EXPECT_FALSE(realtekImage(realtekV2Image(1), kNoConfig, 5, image, why));
+    EXPECT_FALSE(realtekImage(realtekV2Image(1), kNoConfig, target(5), image, why));
     EXPECT_NE(std::string::npos, why.find("no patch for ROM version 5"));
 }
 
-TEST(RealtekFirmware, RefusesAFileThatIsNotFirmware)
+TEST(RealtekFirmware, V2WithoutAKeyIdSkipsTheSecuritySectionAndAppendsTheConfig)
 {
-    const std::vector<std::uint8_t> firmware(64, 0x5a);
+    const std::vector<std::uint8_t> config = {0x51, 0xaa};
     std::vector<std::uint8_t> image;
     std::string why;
 
-    EXPECT_FALSE(realtekImage(firmware, kNoConfig, 1, image, why));
+    ASSERT_TRUE(realtekImage(realtekV2Image(1), config, target(1), image, why)) << why;
+    EXPECT_EQ((std::vector<std::uint8_t>{0x44, 0x55, 0x11, 0x22, 0x33, 0xaa, 0xbb, 0xcc, 0xdd, 0x51, 0xaa}), image);
+}
+
+TEST(RealtekFirmware, V2WithAKeyIdKeepsItsSecuritySubsectionAndSkipsTheConfig)
+{
+    const std::vector<std::uint8_t> config = {0x51, 0xaa};
+    std::vector<std::uint8_t> image;
+    std::string why;
+
+    ASSERT_TRUE(realtekImage(realtekV2Image(1), config, target(1, 7), image, why)) << why;
+    EXPECT_EQ((std::vector<std::uint8_t>{0xe1, 0xe2, 0x44, 0x55, 0x11, 0x22, 0x33, 0xaa, 0xbb, 0xcc, 0xdd}), image);
+}
+
+TEST(RealtekFirmware, RefusesAFileWithoutTheExtensionSignature)
+{
+    std::vector<std::uint8_t> firmware = realtekV1Image(1);
+    std::vector<std::uint8_t> image;
+    std::string why;
+
+    firmware.resize(firmware.size() - sizeof(std::uint32_t));
+    EXPECT_FALSE(realtekImage(firmware, kNoConfig, target(1), image, why));
+    EXPECT_NE(std::string::npos, why.find("extension section"));
+}
+
+TEST(RealtekFirmware, RefusesAFileForAnotherChip)
+{
+    std::vector<std::uint8_t> image;
+    std::string why;
+    RealtekTarget other{0x8852, 1, 0};
+
+    EXPECT_FALSE(realtekImage(realtekV1Image(1), kNoConfig, other, image, why));
+    EXPECT_NE(std::string::npos, why.find("another chip"));
+}
+
+TEST(RealtekFirmware, RefusesAFileThatIsNotRealtech)
+{
+    std::vector<std::uint8_t> image;
+    std::string why;
+
+    EXPECT_FALSE(realtekImage(std::vector<std::uint8_t>(64, 0x5a), {}, target(1), image, why));
     EXPECT_NE(std::string::npos, why.find("not a Realtek firmware file"));
 }
 
@@ -138,4 +184,31 @@ TEST(RealtekFirmware, TheChipTableMatchesOnlyRomMode)
     EXPECT_EQ(nullptr, realtekChipFor(loaded));
     EXPECT_TRUE(realtekInRomMode(id));
     EXPECT_FALSE(realtekInRomMode(loaded));
+}
+
+TEST(RealtekFirmware, The8761cRowAcceptsAnyHciVersion)
+{
+    ChipIdentity id = romIdentity();
+    id.hciRevision = 0x000e;
+    id.hciVersion = 0x0c;
+
+    const RealtekChip* chip = realtekChipFor(id);
+
+    ASSERT_NE(nullptr, chip);
+    EXPECT_STREQ("RTL8761CU", chip->name);
+    EXPECT_STREQ("rtl8761cu_fw.bin", chip->firmwareFile);
+}
+
+TEST(RealtekFirmware, The8852cRowNamesTheV2FileFirst)
+{
+    ChipIdentity id = romIdentity();
+    id.lmpSubversion = 0x8852;
+    id.hciRevision = 0x000c;
+    id.hciVersion = 0x0c;
+
+    const RealtekChip* chip = realtekChipFor(id);
+
+    ASSERT_NE(nullptr, chip);
+    EXPECT_STREQ("rtl8852cu_fw_v2.bin", chip->firmwareFileV2);
+    EXPECT_STREQ("rtl8852cu_fw.bin", chip->firmwareFile);
 }

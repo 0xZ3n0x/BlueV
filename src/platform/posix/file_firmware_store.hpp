@@ -19,6 +19,10 @@ class FileFirmwareStore final : public IFirmwareStore
     }
 
     bool read(const std::string& name, std::vector<std::uint8_t>& out) override;
+    std::string location() const override
+    {
+        return m_dir;
+    }
 
   private:
     std::string m_dir;

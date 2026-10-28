@@ -20,6 +20,7 @@ TEST(FileFirmwareStore, ReadsAFileFromTheDirectory)
     FileFirmwareStore store(dir.path());
     std::vector<std::uint8_t> out;
 
+    EXPECT_EQ(dir.path(), store.location()); // the messages get the directory from here
     ASSERT_TRUE(store.read("rtl8761bu_fw.bin", out));
     EXPECT_EQ(bytes, out);
 }
