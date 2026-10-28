@@ -239,6 +239,10 @@ already took. The parsers and the fragmenter are pure functions and the HCI
 surface is the four-function `FirmwareHci`, so they run on the PC; `BtStack`
 supplies `hciSync`, `cmd`, `poll` and the last Command Complete.
 
+Only the RTL8761BU has been run on hardware. The other rows, including the
+secure-boot parts whose patch comes from the key-id security sections, follow
+the same path as `btrtl` but are untested.
+
 The uploader is not in the console code: it is in `core` and reads through
 `IFirmwareStore`, whose console-side implementation is `FileFirmwareStore`
 (`/data/bluev/firmware`). `installFirmware` is the family dispatch; a

@@ -167,7 +167,7 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
             hciRevision = 0x000b;
             hciVersion = 0x0a;
         }
-        break; // no answer: the stack does not wait for one
+        break;   // no answer: the stack does not wait for one
     case 0xfc20: // Realtek: one firmware fragment
         complete(opcode, {0, static_cast<std::uint8_t>(p.empty() ? 0 : p[0])});
         break;

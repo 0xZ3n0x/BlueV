@@ -263,9 +263,8 @@ bool buildV2(const std::vector<std::uint8_t>& firmware, std::uint8_t romVersion,
                 if (eco == static_cast<std::uint8_t>(romVersion + 1) &&
                     (opcode != kSectionSecurity || sectionKey == keyId))
                 {
-                    insertInPriorityOrder(
-                        pieces,
-                        {priority, std::vector<std::uint8_t>(firmware.begin() + at, firmware.begin() + at + size)});
+                    insertInPriorityOrder(pieces, {priority, std::vector<std::uint8_t>(firmware.begin() + at,
+                                                                                       firmware.begin() + at + size)});
                 }
                 at += size;
             }

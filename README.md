@@ -112,6 +112,12 @@ does, and the file is uploaded again. A file meant for another chip is refused
 (for example `rtl8761cu_fw.bin`, `rtl8821cu_fw.bin`); the error names the one
 the adapter wants.
 
+Only the RTL8761BU (the UB600) has been tested on hardware. The loader also says
+it knows the other USB chips in Linux's `btrtl` table, but they are untested: in
+particular the secure-boot parts (RTL8852AU/BU/CU, RTL8851BU, RTL8922AU,
+RTL8852BTU) take their patch from the key-id security sections, a path that has
+not been run on a console yet.
+
 Only Realtek is supported so far. Broadcom, Intel and MediaTek dongles that need
 a firmware patch are not handled yet; the ones whose ROM works (such as the ASUS
 BT400) are left alone.
