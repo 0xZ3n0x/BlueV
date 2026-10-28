@@ -16,9 +16,11 @@
 #include <vector>
 
 #include "core/bluetooth/address.hpp"
+#include "core/bluetooth/firmware.hpp"
 #include "core/bluetooth/l2cap_reassembler.hpp"
 #include "core/ports/bond_store.hpp"
 #include "core/ports/clock.hpp"
+#include "core/ports/firmware_store.hpp"
 #include "core/ports/hci_transport.hpp"
 #include "core/ports/usb_directory.hpp"
 
@@ -82,8 +84,8 @@ using FrameHandler = std::function<void(std::uint32_t cid, const std::uint8_t* d
 class BtStack
 {
   public:
-    // The four ports are used, not owned; they must outlive the stack.
-    BtStack(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IClock& clock);
+    // The five ports are used, not owned; they must outlive the stack.
+    BtStack(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IFirmwareStore& firmware, IClock& clock);
 
     // ---- the controller (bt_stack_controller.cpp) ----
     // Choose the controller before start(): the console's own chip (empty) or
@@ -112,8 +114,9 @@ class BtStack
         m_tick = std::move(tick);
     }
 
-    // a command whose answer is waited for; true when it succeeded
-    bool hciSync(std::uint16_t opcode, const std::uint8_t* params = nullptr, std::uint8_t length = 0);
+    // a command whose answer is waited for; true when it succeeded. `attempts`
+    // is how many times it is sent when no reply comes.
+    bool hciSync(std::uint16_t opcode, const std::uint8_t* params = nullptr, std::uint8_t length = 0, int attempts = 5);
 
     // ---- inquiry and the list of devices (bt_stack_inquiry.cpp) ----
     // Inquiry for up to `timeoutMs`; replaces devices() and returns how many
@@ -213,6 +216,8 @@ class BtStack
     // stack shares the chip and its replies arrive here too).
     bool replyIsOurs(std::uint16_t opcode);
     bool openTransport();
+    // Uploads the patch an adapter's ROM needs (Realtek only, for now).
+    bool bringUpAdapterFirmware();
     void readBufferSize();
     bool identifyController();
     void logControllerSettings();
@@ -286,6 +291,7 @@ class BtStack
     IHciTransport& m_transport;
     IBondStore& m_bondStore;
     IUsbDirectory& m_usb;
+    IFirmwareStore& m_firmware;
     IClock& m_clock;
 
     // the controller
@@ -295,6 +301,7 @@ class BtStack
     bool m_layoutKnown = false;      // the endpoints are known, no detection needed
     bool m_internalStandard = false; // detected once on the console's chip
     std::string m_startError;
+    FirmwareFamily m_family = FirmwareFamily::Unknown; // for the "scan found nothing" hint
     BdAddr m_local{};
     bool m_localKnown = false;
     std::function<void()> m_tick;

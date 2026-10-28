@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "core/bluetooth/bt_stack.hpp"
+#include "core/bluetooth/firmware.hpp"
 #include "core/bluetooth/hci_defs.hpp"
 #include "core/bluetooth/names.hpp"
 #include "core/bytes.hpp"
@@ -51,6 +52,7 @@ void BtStack::useAdapter(const std::string& node)
 
     m_node = node;
     m_external = !node.empty();
+    m_family = FirmwareFamily::Unknown;
     m_layoutKnown = false;
     m_layout = HciLayout{};
     // the same lookup for the console's chip and for an adapter: which
@@ -112,6 +114,51 @@ bool BtStack::openTransport()
         {
             return false;
         }
+    }
+    return true;
+}
+
+// Some adapters (the Realtek USB family, for one) boot into a ROM that answers
+// HCI but cannot scan, and need a patch uploaded at every power-up. The patch
+// is not part of BlueV: it is read from the firmware directory. Families whose
+// ROM is usable (CSR, most Broadcom sticks) are left alone.
+bool BtStack::bringUpAdapterFirmware()
+{
+    if (!hciSync(hci::kReadLocalVersion))
+    {
+        logLine("adapter: local version not answered, no firmware step");
+        return true;
+    }
+    ChipIdentity identity;
+
+    if (!chipIdentityFromLocalVersion(m_cc, m_ccLen, identity))
+    {
+        return true;
+    }
+    m_family = firmwareFamily(identity);
+
+    FirmwareHci hci{[this](std::uint16_t opcode, const std::uint8_t* params, std::uint8_t length, int attempts) {
+                        return hciSync(opcode, params, length, attempts);
+                    },
+                    [this](std::uint32_t& length) -> const std::uint8_t* {
+                        length = m_ccLen;
+                        return m_cc;
+                    },
+                    [this](std::uint16_t opcode, const std::uint8_t* params, std::uint8_t length) {
+                        return cmd(opcode, params, length);
+                    },
+                    [this](int milliseconds) { poll(static_cast<std::uint32_t>(milliseconds)); }};
+    const FirmwareResult result = installFirmware(identity, m_firmware, hci);
+
+    if (!result.ok)
+    {
+        m_startError = result.message;
+        m_transport.close();
+        return false;
+    }
+    if (!result.message.empty())
+    {
+        logLine("adapter: %s", result.message.c_str());
     }
     return true;
 }
@@ -233,6 +280,10 @@ bool BtStack::start()
     {
         m_startError = "the adapter did not answer (HCI Reset)";
         m_transport.close();
+        return false;
+    }
+    if (m_external && !bringUpAdapterFirmware())
+    {
         return false;
     }
     readBufferSize();

@@ -3,6 +3,7 @@
 // together and runs the service. Nothing else in the program knows which
 // implementation sits behind an interface.
 #include <chrono>
+#include <string>
 #include <thread>
 
 #include <fcntl.h>
@@ -15,6 +16,7 @@
 #include "core/radio.hpp"
 #include "icon_png.h"
 #include "platform/posix/file_bond_store.hpp"
+#include "platform/posix/file_firmware_store.hpp"
 #include "platform/posix/log_file.hpp"
 #include "platform/posix/net_address.hpp"
 #include "platform/posix/quit_signal.hpp"
@@ -100,8 +102,9 @@ int run(bluev::LogBuffer& buffer, int lockFd)
     bluev::SystemClock clock;
     bluev::UgenTransport transport(clock);
     bluev::FileBondStore bonds(kDirBase);
+    bluev::FileFirmwareStore firmware(std::string(kDirBase) + "/firmware");
     bluev::Ps5UsbDirectory usb;
-    bluev::Radio radio(transport, bonds, usb, capture, clock);
+    bluev::Radio radio(transport, bonds, usb, firmware, capture, clock);
     bluev::Ps5AppInstaller installer;
     bluev::HomeScreenShortcut shortcut(installer,
                                        std::string_view(reinterpret_cast<const char*>(icon_png), icon_png_len));

@@ -182,15 +182,72 @@ process; nothing is re-detected per connection.
 
 1. `IHciTransport::open`; failure means "radio busy".
 2. Role detection and reopen (section 4).
-3. `Read Buffer Size` gives the ACL size and credit count (default 7 x 1021
+3. HCI Reset for an external adapter; the console's own chip is never reset.
+4. Adapter firmware (section 5a): `Read Local Version`, and for a Realtek USB
+   chip still in ROM mode upload its patch, then reset again.
+5. `Read Buffer Size` gives the ACL size and credit count (default 7 x 1021
    when there is no answer; the Slim reports 8 x 1021).
-4. `Set Event Mask`, Secure Simple Pairing on, `Write Inquiry Mode` (`0x0c45`,
+6. `Set Event Mask`, Secure Simple Pairing on, `Write Inquiry Mode` (`0x0c45`,
    value 2: results with RSSI and EIR, which carries the device name),
    Class of Device `04 01 00`, local name `BlueV`, plus a few
    read-only commands whose replies are logged for diagnostics.
-5. `drop_stale_links`: scanning off, then `Disconnect` for handles 1-8 to clear
+7. `drop_stale_links`: scanning off, then `Disconnect` for handles 1-8 to clear
    links left behind by a killed payload.
-6. Page scan on, so a paired device can connect to us.
+8. Page scan on, so a paired device can connect to us.
+
+### 5a. Adapter firmware (`core/bluetooth/firmware.*`, `realtek_firmware.*`)
+
+Some USB controllers boot into a limited ROM: they enumerate, answer HCI and
+appear in the adapter list, but the radio cannot scan until the host uploads a
+patch. `Read Local Version` names the family (`firmwareFamily`, by
+manufacturer). Only Realtek has an uploader; CSR runs from ROM, and Broadcom,
+Intel and MediaTek are logged as "not supported yet" and left to start as they
+are, because many of their sticks do work without a patch.
+
+For the Realtek USB family, a match in the table in `realtek_firmware.cpp`
+(LMP subversion, HCI revision and version, the way `btrtl` matches them; an HCI
+version of 0 is a wildcard, which the RTL8761CU row uses) means the chip is
+still in ROM mode; after the upload those numbers change, so a later start skips
+the step. A chip that matches no row is first sent `0xfc66` (drop the vendor
+patch) and has its version read again after 200 ms, as `btrtl` does; if it is
+still unknown it is started as it is. The sequence:
+
+1. `Read ROM version` (`0xfc6d`).
+2. Read the security key id from `RTL_SEC_PROJ` (`0xfc61`).
+3. Read `rtl8761bu_fw.bin` (and the optional `rtl8761bu_config.bin`) from
+   `/data/bluev/firmware/`, through `IFirmwareStore`. The RTL8852C prefers
+   `rtl8852cu_fw_v2.bin` and falls back to `rtl8852cu_fw.bin`.
+4. Parse the container: check the extension signature at the end and that its
+   project id belongs to this chip (a file for another Realtek chip is
+   refused). `Realtech` v1: a patch table; keep the patch whose chip id is
+   `romVersion + 1`, and stamp the file's version into its last four bytes.
+   `RTBTCore` v2: sections and subsections; keep the ones for this ROM version
+   and insert them in priority order (equal priorities in reverse file order,
+   the way `btrtl` inserts them). For a chip with a non-zero key id, only the
+   security subsections carrying that key id are kept, and the config file is
+   not used; without a key id the security sections are skipped and the config
+   blob is appended.
+5. Send it in 252-byte fragments with `0xfc20` (an index byte, `0x7f` wraps to
+   `1` because `0x80` marks the end, and the last fragment has `0x80` set), one
+   command at a time.
+6. HCI Reset, then the normal bring-up continues.
+
+A missing or unusable file fails `start()` with the file name and the directory,
+rather than leaving an adapter that cannot scan. A failed upload says to unplug
+and replug the adapter, because the chip keeps whatever part of the patch it
+already took. The parsers and the fragmenter are pure functions and the HCI
+surface is the four-function `FirmwareHci`, so they run on the PC; `BtStack`
+supplies `hciSync`, `cmd`, `poll` and the last Command Complete.
+
+Only the RTL8761BU has been run on hardware. The other rows, including the
+secure-boot parts whose patch comes from the key-id security sections, follow
+the same path as `btrtl` but are untested.
+
+The uploader is not in the console code: it is in `core` and reads through
+`IFirmwareStore`, whose console-side implementation is `FileFirmwareStore`
+(`/data/bluev/firmware`). `installFirmware` is the family dispatch; a
+Broadcom/Intel/MediaTek loader is a new module and one branch there, not a
+change to the transport or the stack.
 
 ## 6. Connections and pairing (`core/bluetooth/bt_stack_link.cpp`, `bt_stack_inquiry.cpp`)
 
@@ -763,7 +820,7 @@ Security
 Console and hardware
 
 - Run the transport and USB directory after the move to the SDK's USB structures on the console (external adapter first). Nothing in them is tested on the PC.
-- Other adapters: Broadcom-family sticks with the vendor-specific class (`ff/01/01`) are untested; the descriptor lookup only accepts `e0/01/01`.
+- Other adapters: only the Realtek USB family has a firmware uploader (`core/bluetooth/firmware.*`). Broadcom `.hcd` (`0xfc4c`/`0xfc4e`), Intel `.sfi`/`.ddc` and MediaTek would each need their own loader. Broadcom-family sticks with the vendor-specific class (`ff/01/01`) are untested; the descriptor lookup only accepts `e0/01/01`.
 - Longer runs than 21 minutes, other speakers, and the capture running together with Remote Play.
 - The Sony WH-CH720N does not work on the internal chip (it works on a USB adapter); the Creative speaker does. Find out why.
 - Only a PS5 Slim was tested; reports from a PS5 Pro and the fat PS5 are wanted (README, Contributing); other models lay the chip out differently (the `0x82/0x01` layout in the code comments) and the home screen entry's `AppInstallTitleDir` is missing on firmware 12.40.

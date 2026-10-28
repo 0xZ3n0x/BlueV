@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "bt_fixture.hpp"
 #include "core/bluetooth/hci_defs.hpp"
+#include "realtek_image.hpp"
 
 using namespace bluev;
 using namespace bluev::testing;
@@ -179,4 +180,171 @@ TEST_F(BtFixture, WaitStopsOnTimeoutAndOnLinkLoss)
 
     int calls = 0;
     EXPECT_TRUE(stack.wait([&] { return ++calls > 3; }, 5000));
+}
+
+namespace
+{
+
+void makeItRealtekInRomMode(FakeController& controller)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0x8761;
+    controller.hciRevision = 0x000b;
+    controller.hciVersion = 0x0a;
+}
+
+} // namespace
+
+TEST_F(BtFixture, UploadsTheRealtekPatchForARomOnlyAdapter)
+{
+    makeItRealtekInRomMode(controller);
+    controller.romVersion = 1;
+    firmware.files["rtl8761bu_fw.bin"] = realtekV1Image(1);
+    firmware.files["rtl8761bu_config.bin"] = {0x51, 0xaa, 0x00, 0x00};
+
+    stack.useAdapter("ugen1.2");
+    ASSERT_TRUE(stack.start()) << sink.all();
+
+    EXPECT_TRUE(controller.sawCommand(0xfc61)); // the key id comes before the file
+    EXPECT_TRUE(controller.sawCommand(0xfc6d));
+    EXPECT_EQ(1, controller.countCommand(0xfc20)); // 46 bytes fit one fragment
+    const SentCommand* patch = controller.lastCommand(0xfc20);
+    ASSERT_NE(nullptr, patch);
+    EXPECT_EQ(0x80, patch->params[0]);             // fragment 0, and the last one
+    EXPECT_EQ(2, controller.countCommand(kReset)); // before and after the upload
+    EXPECT_TRUE(sink.has("RTL8761BU firmware rtl8761bu_fw.bin uploaded"));
+}
+
+TEST_F(BtFixture, RealtekWithoutTheFirmwareFileSaysWhereToPutIt)
+{
+    makeItRealtekInRomMode(controller);
+    stack.useAdapter("ugen1.2");
+
+    EXPECT_FALSE(stack.start());
+    EXPECT_EQ("this adapter needs firmware: put rtl8761bu_fw.bin in /data/bluev/firmware/", stack.startError());
+    EXPECT_FALSE(controller.sawCommand(0xfc20));
+    EXPECT_EQ(1, controller.closes);
+}
+
+TEST_F(BtFixture, ARealtekChipThatNeedsItsConfigNamesBothFiles)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0x8723;
+    controller.hciRevision = 0x000d;
+    controller.hciVersion = 0x08;
+    firmware.files["rtl8723d_fw.bin"] = realtekV1Image(1, 9);
+    stack.useAdapter("ugen1.2");
+
+    EXPECT_FALSE(stack.start());
+    EXPECT_EQ("this adapter needs firmware: put rtl8723d_fw.bin and rtl8723d_config.bin in /data/bluev/firmware/",
+              stack.startError());
+    EXPECT_FALSE(controller.sawCommand(0xfc20));
+}
+
+TEST_F(BtFixture, AKeyIdChipSkipsTheConfigFileAndItsSecuritySectionGoesUp)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0x8723; // the config is mandatory for this one
+    controller.hciRevision = 0x000d;
+    controller.hciVersion = 0x08;
+    controller.keyId = 7;
+    firmware.files["rtl8723d_fw.bin"] = realtekV2Image(1, 9);
+
+    stack.useAdapter("ugen1.2");
+    ASSERT_TRUE(stack.start()) << sink.all();
+
+    EXPECT_TRUE(controller.sawCommand(0xfc20));
+    EXPECT_TRUE(sink.has("RTL8723DU firmware rtl8723d_fw.bin uploaded"));
+}
+
+TEST_F(BtFixture, ARealtekChipThatStaysUnknownIsLeftAlone)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0xdfc6; // after the upload the ROM identity is gone
+    controller.hciRevision = 0xd922;
+    controller.hciVersion = 0x0a;
+    stack.useAdapter("ugen1.2");
+
+    ASSERT_TRUE(stack.start()) << sink.all();
+    EXPECT_TRUE(controller.sawCommand(0xfc66)); // btrtl drops a vendor patch first
+    EXPECT_FALSE(controller.sawCommand(0xfc6d));
+    EXPECT_FALSE(controller.sawCommand(0xfc20));
+    EXPECT_FALSE(sink.has("not a chip with a known patch"));
+}
+
+TEST_F(BtFixture, ARealtekVendorFirmwareIsDroppedToRomAndPatched)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0xdfc6; // a vendor patch: not a ROM identity
+    controller.hciRevision = 0xd922;
+    controller.hciVersion = 0x0a;
+    controller.dropToRomOnFc66 = true;
+    controller.romVersion = 1;
+    firmware.files["rtl8761bu_fw.bin"] = realtekV1Image(1);
+
+    stack.useAdapter("ugen1.2");
+    ASSERT_TRUE(stack.start()) << sink.all();
+
+    EXPECT_TRUE(controller.sawCommand(0xfc66));
+    EXPECT_TRUE(controller.sawCommand(0xfc6d));
+    EXPECT_TRUE(controller.sawCommand(0xfc20));
+    EXPECT_TRUE(sink.has("RTL8761BU firmware rtl8761bu_fw.bin uploaded"));
+}
+
+TEST_F(BtFixture, The8852cPrefersTheV2File)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0x8852;
+    controller.hciRevision = 0x000c;
+    controller.hciVersion = 0x0c;
+    firmware.files["rtl8852cu_fw_v2.bin"] = realtekV1Image(1, 25);
+
+    stack.useAdapter("ugen1.2");
+    ASSERT_TRUE(stack.start()) << sink.all();
+
+    EXPECT_TRUE(sink.has("RTL8852CU firmware rtl8852cu_fw_v2.bin uploaded"));
+}
+
+TEST_F(BtFixture, The8852cNamesBothFilesWhenNeitherIsThere)
+{
+    controller.manufacturer = 0x005d;
+    controller.lmpSubversion = 0x8852;
+    controller.hciRevision = 0x000c;
+    controller.hciVersion = 0x0c;
+    stack.useAdapter("ugen1.2");
+
+    EXPECT_FALSE(stack.start());
+    EXPECT_EQ("this adapter needs firmware: put rtl8852cu_fw_v2.bin or rtl8852cu_fw.bin in /data/bluev/firmware/",
+              stack.startError());
+}
+
+TEST_F(BtFixture, AFragmentThatIsRefusedSaysToReplugTheAdapter)
+{
+    makeItRealtekInRomMode(controller);
+    firmware.files["rtl8761bu_fw.bin"] = realtekV1Image(1);
+    controller.failingOpcodes = {0xfc20};
+
+    stack.useAdapter("ugen1.2");
+    EXPECT_FALSE(stack.start());
+    EXPECT_TRUE(stack.startError().find("unplug it and plug it back in") != std::string::npos);
+}
+
+TEST_F(BtFixture, AnotherFamilyIsNotBlockedByFirmware)
+{
+    controller.manufacturer = 0x000f; // Broadcom; most sticks work from ROM
+    stack.useAdapter("ugen1.2");
+
+    ASSERT_TRUE(stack.start()) << sink.all();
+    EXPECT_FALSE(controller.sawCommand(0xfc20));
+    EXPECT_TRUE(sink.has("Broadcom firmware is not supported yet"));
+}
+
+TEST_F(BtFixture, AnEmptyScanHintsAtFirmwareForAnUnsupportedFamily)
+{
+    controller.manufacturer = 0x000f;
+    stack.useAdapter("ugen1.2");
+    ASSERT_TRUE(stack.start()) << sink.all();
+
+    EXPECT_EQ(0, stack.scan(4000));
+    EXPECT_TRUE(sink.has("if this Broadcom adapter needs firmware"));
 }

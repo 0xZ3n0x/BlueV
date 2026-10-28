@@ -30,6 +30,8 @@ from a simple web page, on the console itself or from a phone or PC on the same 
 - A PS5 that runs payloads (for example with `elfldr` listening on port 9021)
 - A Bluetooth speaker or headphones
 - **Recommended:** a USB Bluetooth adapter. A CSR 4.0 adapter (`0a12:0001`) is tested.
+  Realtek adapters such as the TP-Link UB600 (RTL8761BU) work with a firmware file
+  on the console; see [Realtek adapters](#realtek-adapters).
   The console's own chip also works, but it is shared with your gamepad (see
   [Good to know](#good-to-know)).
 
@@ -79,9 +81,52 @@ to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit
   headphones work. With the internal chip the Creative works, but the WH-CH720N could not be
   made to work (see [Contributing](#contributing)).
 
+## Realtek adapters
+
+Realtek USB adapters (the RTL8761BU in the UB600, the UB500, and other Realtek
+sticks) start in a ROM mode that answers Bluetooth commands and appears in the
+adapter list, but the radio cannot scan. BlueV uploads the missing patch, the
+same way Linux's `btrtl` does, from files you put on the console:
+
+```text
+/data/bluev/firmware/rtl8761bu_fw.bin
+/data/bluev/firmware/rtl8761bu_config.bin      (optional)
+```
+
+Copy them with your usual file-transfer payload (create `/data/bluev/firmware/`
+first if your tool does not). The files are in the
+`linux-firmware` package (`/lib/firmware/rtl_bt/` on Linux, `firmware-realtek` on
+Debian and Ubuntu), or in the
+[`rtl_bt` tree of linux-firmware](https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/rtl_bt).
+The Windows driver package from TP-Link works too: BlueV accepts both the
+`Realtech` and the `RTBTCore` file formats, as long as the file is named
+`rtl8761bu_fw.bin`.
+
+If the file is missing, **Start** stops with
+`this adapter needs firmware: put rtl8761bu_fw.bin in /data/bluev/firmware/`.
+The patch is uploaded whenever the chip is back in ROM mode (after a console
+power cycle, or when the adapter is plugged in). A Realtek chip that already
+carries a vendor patch is put back into ROM mode first, the way Linux's `btrtl`
+does, and the file is uploaded again. A file meant for another chip is refused
+(the log names the one this chip wants). Other Realtek chips use their own file
+(for example `rtl8761cu_fw.bin`, `rtl8821cu_fw.bin`); the error names the one
+the adapter wants.
+
+Only the RTL8761BU (the UB600) has been tested on hardware. The loader also says
+it knows the other USB chips in Linux's `btrtl` table, but they are untested: in
+particular the secure-boot parts (RTL8852AU/BU/CU, RTL8851BU, RTL8922AU,
+RTL8852BTU) take their patch from the key-id security sections, a path that has
+not been run on a console yet.
+
+Only Realtek is supported so far. Broadcom, Intel and MediaTek dongles that need
+a firmware patch are not handled yet; the ones whose ROM works (such as the ASUS
+BT400) are left alone.
+
 ## Troubleshooting
 
 - **Nothing in the list:** the device must be in pairing mode, and close to the console.
+  A Realtek adapter that finds nothing while its firmware is missing is explained in
+  [Realtek adapters](#realtek-adapters); **Start** reports the exact file it wants.
 - **No sound:** check that the page shows *Streaming*, and that the game is making sound
   (BlueV streams what the console plays).
 - **Logs:** the *Log* card on the control page, or the file `/data/bluev/bluev.log` on the
@@ -101,9 +146,12 @@ original **fat PS5**, please try it and report what happens: does the radio star
 endpoints does the log show, does a speaker connect and stream? The first lines of the log
 (console model, adapter, endpoints) are the interesting part.
 
-**Try other Bluetooth adapters.** The only USB adapter tested is a CSR 4.0 (`0a12:0001`).
-Results with other brands (Realtek, Intel, Broadcom and so on) are welcome, including the
-ones that do not work. Adapters that need firmware to be loaded first will likely fail.
+**Try other Bluetooth adapters.** The USB adapter tested here is a CSR 4.0
+(`0a12:0001`). The Realtek path is new (see [Realtek adapters](#realtek-adapters));
+reports for the UB600 and other Realtek sticks are welcome. Results with other brands
+are welcome too, including the ones that do not work. Only the Realtek family has a
+firmware uploader so far; Broadcom (`.hcd`), Intel (`.sfi`/`.ddc`) and MediaTek dongles
+that boot from ROM are not handled yet.
 
 **Try other speakers and headphones, especially on the internal chip.** With the internal
 chip the Creative Stage Air V2 works, but I could not get the Sony WH-CH720N to work. It

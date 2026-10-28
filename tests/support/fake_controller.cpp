@@ -147,8 +147,29 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
                   static_cast<std::uint8_t>(aclBuffers & 0xff), static_cast<std::uint8_t>(aclBuffers >> 8), 0, 0});
         break;
     case kReadLocalVersion:
-        complete(opcode, {0, hciVersion, 0x34, 0x12, hciVersion, static_cast<std::uint8_t>(manufacturer & 0xff),
-                          static_cast<std::uint8_t>(manufacturer >> 8), 0x78, 0x56});
+        complete(opcode,
+                 {0, hciVersion, static_cast<std::uint8_t>(hciRevision & 0xff),
+                  static_cast<std::uint8_t>(hciRevision >> 8), hciVersion,
+                  static_cast<std::uint8_t>(manufacturer & 0xff), static_cast<std::uint8_t>(manufacturer >> 8),
+                  static_cast<std::uint8_t>(lmpSubversion & 0xff), static_cast<std::uint8_t>(lmpSubversion >> 8)});
+        break;
+    case 0xfc6d: // Realtek: read ROM version
+        complete(opcode, {0, romVersion});
+        break;
+    case 0xfc61: // Realtek: read register 16 (the security key id)
+        complete(opcode, {0, keyId, 0});
+        break;
+    case 0xfc66: // Realtek: drop the vendor patch, then report the ROM identity
+        if (dropToRomOnFc66)
+        {
+            manufacturer = 0x005d;
+            lmpSubversion = 0x8761;
+            hciRevision = 0x000b;
+            hciVersion = 0x0a;
+        }
+        break;   // no answer: the stack does not wait for one
+    case 0xfc20: // Realtek: one firmware fragment
+        complete(opcode, {0, static_cast<std::uint8_t>(p.empty() ? 0 : p[0])});
         break;
     case kReadLocalFeatures:
         complete(opcode, {0, 0xff, 0xff, 0xcd, 0xfe, static_cast<std::uint8_t>(bredr ? 0x98 : 0xb8), 0x59, 0x83, 0x7a});

@@ -108,6 +108,12 @@ int BtStack::scan(std::uint32_t timeoutMs)
     logLine("scan: %u s", timeoutMs / 1000);
     runInquiry(timeoutMs);
     logLine("scan: %d device(s)", static_cast<int>(m_devices.size()));
+    if (m_devices.empty() && m_external && m_family != FirmwareFamily::Unknown && m_family != FirmwareFamily::Csr &&
+        !firmwareUploadSupported(m_family))
+    {
+        logLine("scan: nothing found; if this %s adapter needs firmware, BlueV cannot upload it yet",
+                firmwareFamilyName(m_family));
+    }
     return static_cast<int>(m_devices.size());
 }
 

@@ -17,6 +17,7 @@
 #include "core/ports/audio_source.hpp"
 #include "core/ports/bond_store.hpp"
 #include "core/ports/clock.hpp"
+#include "core/ports/firmware_store.hpp"
 #include "core/ports/hci_transport.hpp"
 #include "core/ports/usb_directory.hpp"
 
@@ -86,7 +87,8 @@ class IRadio
 class Radio final : public IRadio
 {
   public:
-    Radio(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IAudioSource& audio, IClock& clock);
+    Radio(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IFirmwareStore& firmware,
+          IAudioSource& audio, IClock& clock);
 
     bool open(const std::string& node) override;
     std::string openError() override;
