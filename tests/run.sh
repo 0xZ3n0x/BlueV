@@ -12,5 +12,5 @@ cmake -S "$HERE" -B "$OUT" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
     -DBLUEV_SANITIZE="$SAN" > "$OUT.configure.log" 2>&1 || { cat "$OUT.configure.log"; exit 1; }
 cmake --build "$OUT" 2>&1 | grep -E "error|warning: unused|FAILED|undefined" | head -40 || true
 cmake --build "$OUT" > "$OUT.build.log" 2>&1 || { tail -40 "$OUT.build.log"; exit 1; }
-TSAN_OPTIONS="halt_on_error=0 exitcode=66" "$OUT/bluev_tests" --gtest_filter="$FILTER" 2>&1 | tail -${TAIL:-25}
+TSAN_OPTIONS="halt_on_error=0 exitcode=66" "$OUT/tests/bluev_tests" --gtest_filter="$FILTER" 2>&1 | tail -${TAIL:-25}
 exit ${PIPESTATUS:-0}

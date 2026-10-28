@@ -41,7 +41,9 @@ tried and dropped, is in sections 17 and 18.
 
 Build for the console: `git submodule update --init` (libsbc), then `make`. Host tests: `tests/run.sh`. libsbc is the
 upstream release 2.2 without changes; `src/compat/config.h` only supplies the
-build settings.
+build settings. The console build uses libsbc's MMX and SSE paths; the host tests
+use its plain C path on every CPU (x86-64 and arm64), which gives the same frames
+byte for byte.
 
 ## 1. Top level (`app/main.cpp`, `service/service.cpp`)
 

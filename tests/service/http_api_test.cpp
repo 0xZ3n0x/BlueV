@@ -474,10 +474,14 @@ TEST_F(WithRadioOn, QuitDuringAStreamEndsTheStream)
     SUCCEED();
 }
 
+// A fixed number of requests, not a fixed time: every request leaves a client
+// port in TIME_WAIT, and macOS has only 16384 of them, held for 30 s. A fast
+// machine running for a fixed time used them all up, and then /api/quit could
+// not connect and the test hung.
 TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
 {
-    std::atomic<bool> go{true};
-    std::atomic<long> served{0}, bad{0};
+    constexpr int kRequestsPerClient = 100;
+    std::atomic<long> bad{0};
     std::mutex badMutex;
     std::vector<std::string> badNotes;
     const auto noteBad = [&](const std::string& what, int code, const std::string& reply) {
@@ -496,7 +500,7 @@ TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
         clients.emplace_back([&, c] {
             std::mt19937 rng(static_cast<unsigned>(c) + 1);
 
-            while (go.load())
+            for (int i = 0; i < kRequestsPerClient; i++)
             {
                 std::string reply;
                 int code;
@@ -527,12 +531,9 @@ TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
                     bad++;
                     noteBad("request", code, reply);
                 }
-                served++;
             }
         });
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
-    go.store(false);
     for (std::thread& client : clients)
     {
         client.join();
@@ -542,7 +543,6 @@ TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
     {
         ADD_FAILURE() << note;
     }
-    EXPECT_GT(served.load(), 100);
     std::string body;
     request("POST", "/api/disconnect", body);
     EXPECT_TRUE(waitForState("idle", 5000));
