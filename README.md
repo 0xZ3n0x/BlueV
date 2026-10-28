@@ -186,11 +186,17 @@ make release      # build/release/bluev.elf and its .sha256, for a release (see 
 compiler note, and with the paths of the machine that built it taken out of the binary (the
 build fails if one is left). Run it from a clean checkout of the tag (`make clean release`).
 
-Tests run on a PC (they need `clang++`, `cmake` and `ninja`):
+Tests run on a PC, on x86-64 or arm64 (they need `clang++`, `cmake` and `ninja`):
 
 ```sh
 tests/run.sh              # all tests
 tests/run.sh address      # with AddressSanitizer (also: thread)
+```
+
+or with the CMake presets `debug`, `release`, `asan` and `tsan` (build in `build-host/<preset>`):
+
+```sh
+cmake --preset asan && cmake --build --preset asan && ctest --preset asan
 ```
 
 ## For developers
