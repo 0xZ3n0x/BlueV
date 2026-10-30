@@ -99,7 +99,7 @@ connection is served by a short-lived thread (browsers keep idle sockets open
 and must not block the others), at most 8 at a time, reserved with a
 compare-and-swap. `stop()` stops accepting and then waits for the requests in
 flight. Port 7733, fixed; `start()` is retried every 2 s if it is taken (also how
-it comes up once the network does). No authentication: anyone on the local network can use it.
+it comes up once the network does). No authentication: by default it listens on every address, so anyone on the local network can use it; the page can limit it to this console (`POST /api/network`, below).
 
 | Endpoint | Purpose |
 |---|---|
@@ -112,6 +112,7 @@ it comes up once the network does). No authentication: anyone on the local netwo
 | `POST /api/disconnect` | end the stream and drop the link |
 | `POST /api/forget?addr=...` | delete a device's bond files |
 | `POST /api/autostart?on=1\|0` | open the radio with the USB adapter in use when BlueV starts (section 12b); needs the radio on with a USB adapter, `409` otherwise; `on=0` always works; `/api/status` shows `radio.autostart` |
+| `POST /api/network?v=lan\|local` | who can open the page: `lan` (the default) every address of the console, `local` only the loopback address, which the console's own browser (the home screen entry) uses; saved in the settings file (`network=`); the radio thread starts the server again right after the answer, so the answer still arrives, and a PC or phone is shut out from then on; `/api/status` shows `network` |
 | `POST /api/quality?v=0\|1` | the sound quality of the next stream, 0 normal (bitpool 40), 1 high (bitpool 53); saved in the settings file; `/api/status` shows `quality` |
 | `POST /api/volume?v=N` | set the headset's volume, N = 0..100 percent; only while streaming to a headset that reports a volume (section 9a) |
 | `POST /api/quit` | stop the service |
@@ -751,7 +752,9 @@ controller and starts it:
 
 **Sound quality** (`quality=0|1` in the same file, `POST /api/quality`, the page's "Sound quality" box): 0 asks the headset for SBC bitpool 40 (93-byte frames at 48 kHz joint stereo, about 279 kbit/s), 1 for bitpool 53 (119-byte frames, about 357 kbit/s), in both cases limited to the range the headset offers (a headset that stops at 39 gets 39 either way). It applies from the next connection; `A2dpSession` reads it when it picks the parameters, whether we drive the setup or follow the headset's. The bigger frames mean fewer fit in a packet (two instead of three on the CSR adapter's 310-byte buffers) and more packets per second, which needs more ACL credits: it is on the page as "use it only if the sound stays clean". Normal stays the default; high has not been run on the console yet, so it is untested for dropouts on the internal chip (few credits) and on the USB adapter.
 
-**Starting at launch** (`Service::startFromSettings`, `service/settings.*`): with
+**Who can open the page** (`network=lan|local`, the page's "Who can open this page" box): `lan` is the default and the old behaviour, `local` binds the server to `127.0.0.1` only. The page asks for confirmation before it closes itself to the PC, and the notice at start-up then says to use the home screen entry. The change is made by `Service::applyNetwork()`, which stops the server (waiting for the request that asked) and starts it again; it runs from the loop when nothing is going on and from the once-a-second tick during a stream, where it can cost a short gap in the audio (the stop waits up to 200 ms for the accept thread).
+
+**Starting at launch** (`Service::autostartRadio`, `service/settings.*`): with
 `autostart` ticked on the page (only offered while a USB adapter is in use), the
 file `/data/bluev/settings` holds `autostart=1` and `adapter=<vendor>:<product>`
 (hex), next to the `quality` line. When BlueV starts it looks for that adapter among the USB devices, by
@@ -904,7 +907,7 @@ Product
 
 Security
 
-- The API has no authentication; anyone on the network can control it. Options: listen on the loopback address only (the home screen entry needs nothing else), a switch for the local network, or a token.
+- The API has no authentication. Done: a switch on the page limits it to this console (section 2). Not done: a token for the case where the network is open; no one has needed it.
 
 Console and hardware
 

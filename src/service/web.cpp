@@ -158,8 +158,9 @@ HttpResponse postResponse(Service::PostResult result)
         break;
     case Service::PostResult::BadValue:
         response.code = 400;
-        response.body =
-            message(false, "bad value (volume: a percentage, 0 to 100; autostart: 0 or 1; quality: 0 or 1)");
+        response.body = message(
+            false,
+            "bad value (volume: a percentage, 0 to 100; autostart: 0 or 1; quality: 0 or 1; network: lan or local)");
         break;
     case Service::PostResult::NotAllowed:
         response.code = 409;
@@ -200,7 +201,7 @@ bool HttpServer::start()
     }
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_addr.s_addr = htonl(m_localOnly.load() ? INADDR_LOOPBACK : INADDR_ANY);
     address.sin_port = htons(static_cast<std::uint16_t>(m_wantedPort));
     if (bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0 || listen(fd, kBacklog) != 0)
     {
@@ -211,7 +212,7 @@ bool HttpServer::start()
     m_port = m_wantedPort;
     m_stopping.store(false);
     m_acceptThread = std::thread([this] { acceptLoop(); });
-    logLine("web: listening on port %d", m_port.load());
+    logLine("web: listening on port %d%s", m_port.load(), m_localOnly.load() ? " (this console only)" : "");
     return true;
 }
 
@@ -441,6 +442,10 @@ HttpResponse HttpServer::route(std::string_view method, std::string_view path, s
         if (path == "/api/volume")
         {
             return postResponse(m_service.setVolume(queryValue(query, "v")));
+        }
+        if (path == "/api/network")
+        {
+            return postResponse(m_service.setNetwork(queryValue(query, "v")));
         }
         if (path == "/api/quality")
         {

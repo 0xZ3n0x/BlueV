@@ -268,6 +268,29 @@ Service::PostResult Service::setQuality(std::string_view quality)
     return PostResult::Ok;
 }
 
+Service::PostResult Service::setNetwork(std::string_view who)
+{
+    if (who != "lan" && who != "local")
+    {
+        return PostResult::BadValue;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    m_saved.localOnly = who == "local";
+    if (!m_settings.save(m_saved))
+    {
+        logLine("settings: could not save the settings file");
+    }
+    m_restartServer.store(true);
+    return PostResult::Ok;
+}
+
+bool Service::localOnly()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_saved.localOnly;
+}
+
 std::string Service::statusJson()
 {
     Json json;
@@ -291,6 +314,8 @@ std::string Service::statusJson()
         .value(volumePercent(m_radio.volume()))
         .key("quality")
         .value(m_saved.quality)
+        .key("network")
+        .value(m_saved.localOnly ? "local" : "lan")
         .key("stream")
         .beginObject()
         .key("rate")
@@ -489,6 +514,7 @@ void Service::tick()
     {
         m_radio.requestStop();
     }
+    applyNetwork();
 }
 
 // Shows a volume change that came from the headset's own buttons. This runs
@@ -657,7 +683,7 @@ void Service::closeRadio()
     setState(State::Idle, "radio off");
 }
 
-void Service::startFromSettings()
+void Service::loadSettings()
 {
     const Settings saved = m_settings.load();
     {
@@ -665,6 +691,36 @@ void Service::startFromSettings()
         m_saved = saved;
     }
     m_radio.setQuality(saved.quality);
+    m_server.setLocalOnly(saved.localOnly);
+}
+
+void Service::applyNetwork()
+{
+    if (!m_restartServer.exchange(false))
+    {
+        return;
+    }
+    bool localOnly;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        localOnly = m_saved.localOnly;
+    }
+    m_server.stop(); // waits for the requests being served, the one that asked for this included
+    m_server.setLocalOnly(localOnly);
+    m_serverUp = m_server.start();
+    if (!m_serverUp)
+    {
+        logLine("web: could not start the HTTP server again, will keep trying");
+    }
+}
+
+void Service::autostartRadio()
+{
+    Settings saved;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        saved = m_saved;
+    }
     if (!saved.autostart)
     {
         return;
@@ -685,6 +741,7 @@ void Service::startFromSettings()
 
 bool Service::run(bool capturing)
 {
+    loadSettings();
     m_serverUp = m_server.start();
     if (!m_serverUp)
     {
@@ -692,7 +749,7 @@ bool Service::run(bool capturing)
     }
     publishDevices();
     setState(State::Idle, "radio off");
-    if (!m_address.empty() && m_server.port() > 0)
+    if (!m_address.empty() && m_server.port() > 0 && !localOnly())
     {
         notify("BlueV ready: open http://%s:%d", m_address.c_str(), m_server.port());
     }
@@ -701,7 +758,7 @@ bool Service::run(bool capturing)
         notify("BlueV ready: open its entry on the home screen");
     }
 
-    startFromSettings();
+    autostartRadio();
 
     auto lastServerTry = std::chrono::steady_clock::now();
 
@@ -711,6 +768,7 @@ bool Service::run(bool capturing)
         {
             continue;
         }
+        applyNetwork();
         // started at boot, the network may not be up yet
         if (!m_serverUp && std::chrono::steady_clock::now() - lastServerTry > std::chrono::seconds(2))
         {

@@ -21,10 +21,15 @@ Settings SettingsFile::load() const
     while (std::fgets(line, sizeof line, file) != nullptr)
     {
         unsigned flag = 0, vid = 0, pid = 0, quality = 0;
+        char network[8] = {};
 
         if (std::sscanf(line, "autostart=%u", &flag) == 1)
         {
             settings.autostart = flag != 0;
+        }
+        else if (std::sscanf(line, "network=%7s", network) == 1)
+        {
+            settings.localOnly = std::strcmp(network, "local") == 0;
         }
         else if (std::sscanf(line, "quality=%u", &quality) == 1)
         {
@@ -50,8 +55,8 @@ bool SettingsFile::save(const Settings& settings) const
     {
         return false;
     }
-    std::fprintf(file, "autostart=%d\nadapter=%04x:%04x\nquality=%d\n", settings.autostart ? 1 : 0, settings.vid,
-                 settings.pid, settings.quality);
+    std::fprintf(file, "autostart=%d\nadapter=%04x:%04x\nquality=%d\nnetwork=%s\n", settings.autostart ? 1 : 0,
+                 settings.vid, settings.pid, settings.quality, settings.localOnly ? "local" : "lan");
     const bool written = std::fclose(file) == 0;
 
     return written && std::rename(temporary.c_str(), m_path.c_str()) == 0;

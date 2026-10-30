@@ -80,6 +80,11 @@ class Service final
     // The sound quality of the next stream, "0" normal or "1" high; saved for
     // the next run too. Always accepted.
     PostResult setQuality(std::string_view quality);
+    // Who can open the web page: "lan" (anyone on the network) or "local" (only
+    // this console, on its loopback address). Saved for the next run; the
+    // server is started again on the radio thread, so the answer to this
+    // request is sent first. Always accepted.
+    PostResult setNetwork(std::string_view who);
     // The state, the peer, the stream numbers and the radio, as JSON for /api/status.
     std::string statusJson();
     // The last scan plus the paired devices, as JSON for /api/devices.
@@ -147,9 +152,12 @@ class Service final
     void publishDevices();
     void addBondedDevices(std::vector<DeviceInfo>& devices);
     void announceVolume();
-    // At start: takes the saved settings and opens the radio with the saved USB
-    // adapter when asked to.
-    void startFromSettings();
+    // At start, before the web server: takes the saved settings.
+    void loadSettings();
+    // At start: opens the radio with the saved USB adapter when asked to.
+    void autostartRadio();
+    // Starts the web server again when setNetwork() asked for another address.
+    void applyNetwork();
     // One connection from start to end; `address` null = a device dialled in.
     void runSession(bool capturing, const BdAddr* address);
     // Opens the controller (empty node = the console's chip); false, with the
@@ -160,6 +168,9 @@ class Service final
     // the state and the radio flag, for the radio thread
     State currentState();
     bool radioIsOn();
+
+    // the saved choice of who can open the web page
+    bool localOnly();
 
     // true when a newer copy asked us to quit (and now "quit" is posted)
     bool checkQuitSignal();
@@ -186,7 +197,8 @@ class Service final
     std::uint16_t m_adapterVid = 0, m_adapterPid = 0; // of the USB adapter in use
     Settings m_saved;                                 // what the settings file holds
 
-    std::atomic<bool> m_quit{false}; // "quit" was posted
+    std::atomic<bool> m_quit{false};          // "quit" was posted
+    std::atomic<bool> m_restartServer{false}; // setNetwork() changed the address
     // set by the web threads, honoured by the radio thread
     std::atomic<bool> m_disconnectRequested{false};
     // the volume asked for from the page (raw, 0..127), so that its echo from the headset is not announced
