@@ -64,6 +64,18 @@ TEST_F(Link, ForcesEncryptionWhenTheLinkDoesNotDoItAlone)
     EXPECT_EQ(1, controller.lastCommand(kSetConnEncryption)->params[2]);
 }
 
+TEST_F(Link, AKnownDeviceThatDoesNotEncryptIsAskedAfterHalfASecond)
+{
+    bondedAndStarted();
+    controller.remote.encrypts = false;
+    const auto t0 = clock.nowMs();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    EXPECT_TRUE(controller.sawCommand(kSetConnEncryption));
+    EXPECT_LT(clock.nowMs() - t0, 2000u);
+    EXPECT_TRUE(sink.has("connect: paging "));
+}
+
 TEST_F(Link, PairsANewDeviceAndSavesTheKey)
 {
     startExternal();
