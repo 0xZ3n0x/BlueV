@@ -2,6 +2,7 @@
 #include "service/service.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -185,6 +186,35 @@ Service::PostResult Service::stopRadio()
     return PostResult::Ok;
 }
 
+namespace
+{
+// the headset's raw volume (0..127) as a percentage; -1 stays -1
+int volumePercent(int raw)
+{
+    return raw < 0 ? -1 : (raw * 100 + 63) / 127;
+}
+} // namespace
+
+Service::PostResult Service::setVolume(std::string_view percent)
+{
+    int value = -1;
+    const auto parsed = std::from_chars(percent.data(), percent.data() + percent.size(), value);
+
+    if (parsed.ec != std::errc() || parsed.ptr != percent.data() + percent.size() || value < 0 || value > 100)
+    {
+        return PostResult::BadValue;
+    }
+    if (currentState() != State::Streaming || m_radio.volume() < 0)
+    {
+        return PostResult::NotAllowed;
+    }
+    const int raw = (value * 127 + 50) / 100;
+
+    m_askedVolume.store(raw);
+    m_radio.setVolume(raw);
+    return PostResult::Ok;
+}
+
 std::string Service::statusJson()
 {
     Json json;
@@ -204,6 +234,8 @@ std::string Service::statusJson()
         .key("addr")
         .value(idle ? std::string_view() : std::string_view(m_peerAddress))
         .endObject()
+        .key("volume")
+        .value(volumePercent(m_radio.volume()))
         .key("stream")
         .beginObject()
         .key("rate")
@@ -387,6 +419,7 @@ void Service::tick()
         m_peerName = name;
         m_peerAddress = address;
     }
+    announceVolume();
     const State state = currentState();
 
     if (state == State::Scanning || state == State::Idle)
@@ -398,6 +431,33 @@ void Service::tick()
     if (state != State::Idle && state != State::Scanning && (m_disconnectRequested.load() || m_quit.load()))
     {
         m_radio.requestStop();
+    }
+}
+
+// Shows a volume change that came from the headset's own buttons. This runs
+// once a second, so a button held down gives one message with the last value.
+void Service::announceVolume()
+{
+    const int volume = m_radio.volume();
+
+    if (volume == m_announcedVolume)
+    {
+        return;
+    }
+    const bool first = m_announcedVolume < 0;
+
+    m_announcedVolume = volume;
+    if (volume < 0 || first)
+    {
+        m_askedVolume.store(-1);
+    }
+    else if (volume == m_askedVolume.load())
+    {
+        m_askedVolume.store(-1); // the answer to the volume set from the page
+    }
+    else
+    {
+        notify("Headset volume %d%%", volumePercent(volume));
     }
 }
 

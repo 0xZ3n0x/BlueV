@@ -16,10 +16,10 @@
 #include "capture_sink.hpp"
 #include "fake_stores.hpp"
 #include "mock_radio.hpp"
-#include "temp_dir.hpp"
 #include "service/home_screen_shortcut.hpp"
 #include "service/log_buffer.hpp"
 #include "service/service.hpp"
+#include "temp_dir.hpp"
 
 namespace bluev::testing
 {
@@ -72,6 +72,7 @@ class ServiceHarness : public ::testing::Test
     std::atomic<bool> lastStreamCapturing{false};
     std::atomic<int> streamingForMs{0}; // how long stream() blocks at most (0 = until a stop)
     std::atomic<bool> connectWorks{true};
+    std::atomic<int> headsetVolume{-1}; // what the fake headset reports (raw, 0..127)
 
   private:
     static int nextPortBase();

@@ -13,6 +13,7 @@
 
 #include "core/audio/a2dp_session.hpp"
 #include "core/audio/a2dp_streamer.hpp"
+#include "core/audio/avrcp.hpp"
 #include "core/bluetooth/bt_stack.hpp"
 #include "core/ports/audio_source.hpp"
 #include "core/ports/bond_store.hpp"
@@ -82,6 +83,11 @@ class IRadio
     virtual bool stream(bool capturing) = 0;
     // From any thread: ends stream() and the setup waits.
     virtual void requestStop() = 0;
+    // The headset's own volume, 0..127; -1 when it has none or has not said.
+    // From any thread.
+    virtual int volume() = 0;
+    // Asks the headset to take this volume, 0..127. From any thread.
+    virtual void setVolume(int volume) = 0;
 };
 
 class Radio final : public IRadio
@@ -95,7 +101,10 @@ class Radio final : public IRadio
     void close() override;
     void setTick(std::function<void()> tick) override
     {
-        m_bt.setTick(std::move(tick));
+        m_bt.setTick([this, tick = std::move(tick)] {
+            m_avrcp.service();
+            tick();
+        });
     }
     void setStreamObserver(StreamObserver observer) override
     {
@@ -158,17 +167,25 @@ class Radio final : public IRadio
     void resetAudio() override
     {
         m_session.reset();
+        m_avrcp.reset();
     }
     void listenAudio() override
     {
         m_session.listen();
+        m_avrcp.listen();
     }
     bool startAudio(bool initiatedByUs) override
     {
-        return m_session.start(initiatedByUs);
+        if (!m_session.start(initiatedByUs))
+        {
+            return false;
+        }
+        m_avrcp.start();
+        return true;
     }
     void stopAudio() override
     {
+        m_avrcp.stop();
         m_session.stop();
     }
     bool stream(bool capturing) override
@@ -179,10 +196,19 @@ class Radio final : public IRadio
     {
         m_session.requestStop();
     }
+    int volume() override
+    {
+        return m_avrcp.volume();
+    }
+    void setVolume(int volume) override
+    {
+        m_avrcp.setVolume(volume);
+    }
 
   private:
     BtStack m_bt;
     A2dpSession m_session;
+    Avrcp m_avrcp;
     A2dpStreamer m_streamer;
 };
 

@@ -37,6 +37,7 @@ ServiceHarness::~ServiceHarness()
 void ServiceHarness::setUpDefaultRadio()
 {
     ON_CALL(radio, open(_)).WillByDefault(Return(true));
+    ON_CALL(radio, volume()).WillByDefault(Invoke([this] { return headsetVolume.load(); }));
     ON_CALL(radio, openError()).WillByDefault(Return(std::string()));
     ON_CALL(radio, setTick(_)).WillByDefault(Invoke([this](std::function<void()> tick) {
         std::lock_guard<std::mutex> l(m_tickMutex);

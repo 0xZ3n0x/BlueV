@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <iterator>
 
 #include "core/bytes.hpp"
 #include "core/ports/log.hpp"
@@ -16,11 +17,9 @@ namespace
 // DataElement size header for the fixed sizes 1/2/4/8/16
 constexpr int kFixedSize[5] = {1, 2, 4, 8, 16};
 
-// UUIDs we consider "A2DP related" when a device searches us
-constexpr std::uint32_t kA2dpUuids[] = {0x110a, 0x110d, 0x0019, 0x0100};
 constexpr std::uint32_t kPublicBrowseRoot = 0x1002;
 
-// the advertised service record, attribute by attribute
+// one attribute of a service record
 struct Attribute
 {
     std::uint32_t id;
@@ -29,7 +28,10 @@ struct Attribute
 };
 
 #define BLOB(text) reinterpret_cast<const std::uint8_t*>(text)
-const Attribute kRecord[] = {
+
+// the A2DP audio source
+const std::uint32_t kA2dpUuids[] = {0x110a, 0x110d, 0x0019, 0x0100, kPublicBrowseRoot};
+const Attribute kA2dpAttributes[] = {
     {0x000, BLOB("\x0a\x00\x01\x00\x01"), 5}, // service record handle 0x00010001
     {0x001, BLOB("\x35\x03\x19\x11\x0a"), 5}, // class: audio source
     {0x004,
@@ -44,7 +46,42 @@ const Attribute kRecord[] = {
      7},                              // service name
     {0x311, BLOB("\x09\x00\x01"), 3}, // supported features: player
 };
+
+// the AV remote control controller (AVRCP 1.4): we only send the volume
+const std::uint32_t kAvrcpUuids[] = {0x110e, 0x0017, 0x0100, kPublicBrowseRoot};
+const Attribute kAvrcpAttributes[] = {
+    {0x000, BLOB("\x0a\x00\x01\x00\x02"), 5}, // service record handle 0x00010002
+    {0x001, BLOB("\x35\x03\x19\x11\x0e"), 5}, // class: remote control
+    {0x004,
+     BLOB("\x35\x10\x35\x06\x19\x01\x00\x09\x00\x17" // protocols: L2CAP on psm 0x17,
+          "\x35\x06\x19\x00\x17\x09\x01\x04"),
+     18},                                                          // then AVCTP 1.4
+    {0x005, BLOB("\x35\x03\x19\x10\x02"), 5},                      // browse group: public root
+    {0x009, BLOB("\x35\x08\x35\x06\x19\x11\x0e\x09\x01\x04"), 10}, // profile: AVRCP 1.4
+    {0x100,
+     BLOB("\x25\x05"
+          "BlueV"),
+     7},                              // service name
+    {0x311, BLOB("\x09\x00\x01"), 3}, // supported features: category 1
+};
 #undef BLOB
+
+// A service record we advertise. A search matches it when the pattern names
+// one of its UUIDs.
+struct Record
+{
+    std::uint32_t handle;
+    const std::uint32_t* uuids;
+    std::size_t uuidCount;
+    const Attribute* attributes;
+    std::size_t attributeCount;
+};
+
+const Record kRecords[] = {
+    {0x10001, kA2dpUuids, std::size(kA2dpUuids), kA2dpAttributes, std::size(kA2dpAttributes)},
+    {0x10002, kAvrcpUuids, std::size(kAvrcpUuids), kAvrcpAttributes, std::size(kAvrcpAttributes)},
+};
+constexpr unsigned kRecordCount = std::size(kRecords);
 
 // Parses one DataElement header (not necessarily a sequence). Returns the
 // header length and sets *elen to the data length; 0 when it does not fit.
@@ -105,24 +142,21 @@ int seqHeader(const std::uint8_t* p, std::uint32_t avail, std::uint32_t* elen)
     return h;
 }
 
-// Does the search pattern contain an A2DP UUID? 1 = yes, 0 = no, -1 = bad.
-int patternMatches(const std::uint8_t* pat, std::uint32_t len, int* consumed)
+// Which of our records does the search pattern name? Bit i of *mask is set
+// when kRecords[i] has one of its UUIDs. False when the pattern is malformed.
+bool patternMatches(const std::uint8_t* pat, std::uint32_t len, int* consumed, unsigned* mask)
 {
     std::uint32_t plen = 0;
     const std::uint32_t hdr = static_cast<std::uint32_t>(seqHeader(pat, len, &plen));
-    int hit = 0;
 
+    *mask = 0;
     if (hdr == 0)
     {
-        return -1;
+        return false;
     }
     const std::uint32_t end = hdr + plen;
 
     *consumed = static_cast<int>(end);
-    if (plen < 1)
-    {
-        return 0;
-    }
 
     std::uint32_t off = hdr;
     while (off < end)
@@ -133,7 +167,7 @@ int patternMatches(const std::uint8_t* pat, std::uint32_t len, int* consumed)
 
         if (ehdr == 0 || (e[0] & 0xf8) != 0x18)
         {
-            return -1;
+            return false;
         }
 
         // UUID value, big endian in 2 or 4 bytes
@@ -146,44 +180,41 @@ int patternMatches(const std::uint8_t* pat, std::uint32_t len, int* consumed)
             uuid = getBe16(e + ehdr);
         }
 
-        bool ours = uuid == kPublicBrowseRoot;
+        unsigned named = 0;
 
-        for (std::uint32_t known : kA2dpUuids)
+        for (unsigned i = 0; i < kRecordCount; i++)
         {
-            if (uuid == known)
+            for (std::size_t k = 0; k < kRecords[i].uuidCount; k++)
             {
-                ours = true;
+                if (kRecords[i].uuids[k] == uuid)
+                {
+                    named |= 1u << i;
+                }
             }
         }
-        if (ours)
-        {
-            hit = 1;
-        }
+        *mask |= named;
         if (elen == 0x10)
         {
             const std::uint8_t* u = e + ehdr;
 
             logLine("sdp: searched uuid %02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x (%s)",
                     u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11], u[12], u[13], u[14],
-                    u[15], ours ? "ours" : "not ours");
+                    u[15], named != 0 ? "ours" : "not ours");
         }
         else
         {
-            logLine("sdp: searched uuid %#06x (%s)", static_cast<unsigned>(uuid), ours ? "ours" : "not ours");
+            logLine("sdp: searched uuid %#06x (%s)", static_cast<unsigned>(uuid), named != 0 ? "ours" : "not ours");
         }
 
         off += elen + ehdr;
-        if (off >= end)
-        {
-            return hit;
-        }
     }
-    return hit;
+    return true;
 }
 
-// Builds the attribute list for the requested attribute ID ranges; the
-// length of the list, or -1.
-int buildAttributes(const std::uint8_t* ranges, std::uint32_t len, int* consumed, std::uint8_t* out, int outcap)
+// Builds the attribute list of `record` for the requested attribute ID
+// ranges; the length of the list, or -1.
+int buildAttributes(const Record& record, const std::uint8_t* ranges, std::uint32_t len, int* consumed,
+                    std::uint8_t* out, int outcap)
 {
     std::uint32_t plen = 0;
     const std::uint32_t hdr = static_cast<std::uint32_t>(seqHeader(ranges, len, &plen));
@@ -197,8 +228,9 @@ int buildAttributes(const std::uint8_t* ranges, std::uint32_t len, int* consumed
 
     *consumed = static_cast<int>(end);
 
-    for (const Attribute& attr : kRecord)
+    for (std::size_t n = 0; n < record.attributeCount; n++)
     {
+        const Attribute& attr = record.attributes[n];
         const std::uint8_t* r = ranges + hdr;
         bool match = false;
 
@@ -274,48 +306,70 @@ int errorResponse(std::uint8_t* out, const std::uint8_t* req, std::uint8_t code 
     return 7;
 }
 
-constexpr std::uint32_t kRecordHandle = 0x10001;
+// how many records the mask names
+int matchedRecords(unsigned mask)
+{
+    int n = 0;
 
-// Service Search: the record handle when the pattern names one of our UUIDs.
+    for (unsigned i = 0; i < kRecordCount; i++)
+    {
+        n += (mask >> i) & 1;
+    }
+    return n;
+}
+
+// Service Search: the handles of the records the pattern names.
 int serviceSearch(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* out)
 {
     int consumed = 0;
-    const int r = patternMatches(req + 5, plen, &consumed);
+    unsigned mask = 0;
 
-    if (r < 0)
+    if (!patternMatches(req + 5, plen, &consumed, &mask))
     {
         return errorResponse(out, req);
     }
+    const int r = matchedRecords(mask);
+    int pos = 9;
+
     logLine("sdp: service search -> %d record(s)", r);
     beginResponse(out, 0x03, req);
     putBe16(out + 5, r); // total record count
     putBe16(out + 7, r); // current record count
-    if (r == 0)
+    for (unsigned i = 0; i < kRecordCount; i++)
     {
-        out[9] = 0; // no continuation state
-        putBe16(out + 3, 5);
-        return 10;
+        if ((mask >> i) & 1)
+        {
+            putBe32(out + pos, kRecords[i].handle);
+            pos += 4;
+        }
     }
-    putBe32(out + 9, kRecordHandle);
-    out[13] = 0;
-    putBe16(out + 3, 9);
-    return 14;
+    out[pos] = 0; // no continuation state
+    putBe16(out + 3, pos - 4);
+    return pos + 1;
 }
 
-// Service Attribute: the attributes asked for, of our one record.
+// Service Attribute: the attributes asked for, of the record with that handle.
 int serviceAttribute(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* out, int outcap)
 {
     int consumed = 0;
+    const Record* record = nullptr;
 
     if (plen < 6)
     {
         return errorResponse(out, req);
     }
-    if (getBe32(req + 5) != kRecordHandle)
+    for (const Record& candidate : kRecords)
+    {
+        if (candidate.handle == getBe32(req + 5))
+        {
+            record = &candidate;
+        }
+    }
+    if (record == nullptr)
     {
         return errorResponse(out, req, kInvalidRecordHandle);
     }
-    const int r = buildAttributes(req + 11, plen - 6, &consumed, out + 7, outcap - 8);
+    const int r = buildAttributes(*record, req + 11, plen - 6, &consumed, out + 7, outcap - 8);
 
     if (r < 0)
     {
@@ -331,37 +385,39 @@ int serviceAttribute(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* 
     return static_cast<int>(outlen + 8);
 }
 
-// Service Search Attribute: the attributes of the record when the pattern
-// names one of our UUIDs, an empty list when not.
+// Service Search Attribute: the attributes of each record the pattern names,
+// in one list; an empty list when it names none.
 int serviceSearchAttribute(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* out, int outcap)
 {
     int consumed = 0;
-    const int r = patternMatches(req + 5, plen, &consumed);
+    unsigned mask = 0;
 
-    if (r < 0 || consumed + 2 > static_cast<int>(plen))
+    if (!patternMatches(req + 5, plen, &consumed, &mask) || consumed + 2 > static_cast<int>(plen))
     {
         return errorResponse(out, req);
     }
-    if (r == 0)
-    {
-        out[7] = 0x35; // empty attribute list
-        out[8] = 0;
-        logLine("sdp: search+attributes -> %d record(s), %d bytes", 0, 2);
-        beginResponse(out, 0x07, req);
-        putBe16(out + 5, 2);
-        out[9] = 0; // no continuation state
-        putBe16(out + 3, 5);
-        return 10;
-    }
-    int ignored = 0;
-    const std::int32_t outlen = buildAttributes(req + 5 + consumed + 2, plen - static_cast<std::uint32_t>(consumed) - 2,
-                                                &ignored, out + 10, outcap - 11);
+    const int r = matchedRecords(mask);
+    std::int32_t outlen = 0; // the attribute lists, one after the other
 
-    if (outlen < 0)
+    for (unsigned i = 0; i < kRecordCount; i++)
     {
-        return errorResponse(out, req);
+        int ignored = 0;
+
+        if (!((mask >> i) & 1))
+        {
+            continue;
+        }
+        const std::int32_t one =
+            buildAttributes(kRecords[i], req + 5 + consumed + 2, plen - static_cast<std::uint32_t>(consumed) - 2,
+                            &ignored, out + 10 + outlen, outcap - 11 - outlen);
+
+        if (one < 0)
+        {
+            return errorResponse(out, req);
+        }
+        outlen += one;
     }
-    out[7] = 0x36;
+    out[7] = 0x36; // the list of attribute lists
     putBe16(out + 8, outlen);
     logLine("sdp: search+attributes -> %d record(s), %d bytes", r, outlen + 3);
     beginResponse(out, 0x07, req);

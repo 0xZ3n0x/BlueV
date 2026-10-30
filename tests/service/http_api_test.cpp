@@ -554,3 +554,33 @@ TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
 // port rather than a range, so there is no fallback-port behaviour left to
 // cover here. Both are PS5-only (thr_set_name/sysctl) and are not part of
 // the host test build.
+
+TEST_F(WithRadioOn, VolumeIsShownAndSetOnlyWhileTheHeadsetHasOne)
+{
+    std::string body;
+    EXPECT_CALL(radio, setVolume(76)).Times(1); // 60 percent of 127
+
+    EXPECT_EQ(200, request("POST", std::string("/api/connect?addr=") + kSpeakerAddress, body));
+    ASSERT_TRUE(waitForState("streaming", 3000));
+    EXPECT_NE(std::string::npos, status().find("\"volume\":-1")) << "no volume until the headset reports one";
+    EXPECT_EQ(409, request("POST", "/api/volume?v=60", body));
+
+    headsetVolume = 127;
+    EXPECT_NE(std::string::npos, status().find("\"volume\":100")) << status();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300)); // a few ticks
+    for (const std::string& note : sink.notes())
+    {
+        EXPECT_EQ(std::string::npos, note.find("Headset volume")) << "the first value is not announced";
+    }
+    headsetVolume = 64; // a button on the headset
+    ASSERT_TRUE(waitFor(
+        [&] {
+            const auto notes = sink.notes();
+            return !notes.empty() && notes.back() == "Headset volume 50%";
+        },
+        3000));
+    EXPECT_EQ(400, request("POST", "/api/volume?v=101", body));
+    EXPECT_EQ(400, request("POST", "/api/volume?v=loud", body));
+    EXPECT_EQ(400, request("POST", "/api/volume", body));
+    EXPECT_EQ(200, request("POST", "/api/volume?v=60", body));
+}

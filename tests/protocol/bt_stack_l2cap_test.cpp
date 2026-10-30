@@ -316,7 +316,7 @@ TEST_F(L2cap, UnknownPsmsAreRefusedAndOnlyLoggedTwicePerLink)
         }
     }
     EXPECT_EQ(5, refused);
-    EXPECT_EQ(2, sink.count("l2cap: rejected psm 0x17 (remote control, not offered)"));
+    EXPECT_EQ(2, sink.count("l2cap: rejected psm 0x17"));
 }
 
 TEST_F(L2cap, SdpIsAlwaysServedOnCid0x50)

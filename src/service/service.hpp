@@ -46,7 +46,8 @@ class Service final
         BadAddress,
         NotAllowed,
         RadioOff,
-        BadAdapter
+        BadAdapter,
+        BadValue
     };
 
     // The caller owns `radio`, `usb`, `shortcut` and `log` and keeps them alive.
@@ -68,6 +69,9 @@ class Service final
     // it is on, nothing touches the USB side.
     PostResult startRadio(std::string_view adapter, std::string_view node);
     PostResult stopRadio();
+    // The headset's volume as a percentage, 0..100, while streaming to a
+    // headset that has a volume control.
+    PostResult setVolume(std::string_view percent);
     // The state, the peer, the stream numbers and the radio, as JSON for /api/status.
     std::string statusJson();
     // The last scan plus the paired devices, as JSON for /api/devices.
@@ -134,6 +138,7 @@ class Service final
     Pending takePending();
     void publishDevices();
     void addBondedDevices(std::vector<DeviceInfo>& devices);
+    void announceVolume();
     // One connection from start to end; `address` null = a device dialled in.
     void runSession(bool capturing, const BdAddr* address);
     // Opens the controller (empty node = the console's chip); false, with the
@@ -170,6 +175,9 @@ class Service final
     std::atomic<bool> m_quit{false}; // "quit" was posted
     // set by the web threads, honoured by the radio thread
     std::atomic<bool> m_disconnectRequested{false};
+    // the volume asked for from the page (raw, 0..127), so that its echo from the headset is not announced
+    std::atomic<int> m_askedVolume{-1};
+    int m_announcedVolume = -1; // radio thread only: the last volume seen
 
     // radio thread only
     std::optional<BdAddr> m_current; // the device of the session in progress

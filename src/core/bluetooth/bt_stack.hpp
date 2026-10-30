@@ -170,7 +170,8 @@ class BtStack
     // ---- L2CAP (bt_stack_l2cap.cpp) ----
     bool openChannel(L2Channel& channel, std::uint16_t psm, FrameHandler handler);
     void closeChannel(L2Channel& channel);
-    // accept an inbound connection to `psm` on `channel`
+    // accept an inbound connection to `psm` on `channel`; binding a PSM again
+    // replaces the channel (at most two PSMs)
     void bindInbound(std::uint16_t psm, L2Channel& channel, FrameHandler handler);
 
     // ---- sending and flow control ----
@@ -362,9 +363,14 @@ class BtStack
     FrameHandler m_handlers[kMaxChannels];
     int m_channelCount = 0;
     std::uint8_t m_sigId = 1;
-    std::uint16_t m_inPsm = 0;
-    L2Channel* m_inChannel = nullptr;
-    FrameHandler m_inHandler;
+    // the PSMs we accept connections to (AVDTP and AVCTP), see bindInbound()
+    struct Inbound
+    {
+        std::uint16_t psm = 0;
+        L2Channel* channel = nullptr;
+        FrameHandler handler;
+    };
+    Inbound m_inbound[2];
     unsigned m_rejectedGen = 0;
     int m_rejectedCount = 0; // refused inbound connections logged for this link
     L2capReassembler m_reassembler;
