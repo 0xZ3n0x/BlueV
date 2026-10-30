@@ -303,6 +303,74 @@ TEST_F(HttpApi, TheConsolesOwnChipIsNeverStartedAutomatically)
     EXPECT_NE(std::string::npos, status().find("\"autostart\":false"));
 }
 
+namespace
+{
+// whether something listens on this address and port
+bool listensOn(const char* address, int port)
+{
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in where{};
+    timeval timeout{1, 0};
+
+    where.sin_family = AF_INET;
+    where.sin_port = htons(static_cast<std::uint16_t>(port));
+    inet_pton(AF_INET, address, &where.sin_addr);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
+    const bool connected = connect(fd, reinterpret_cast<sockaddr*>(&where), sizeof where) == 0;
+    char answer[256];
+
+    if (connected)
+    {
+        recv(fd, answer, sizeof answer, 0); // the server answers the empty request; leave it time to
+    }
+    close(fd);
+    return connected;
+}
+} // namespace
+
+TEST_F(HttpApi, ThePageCanBeLimitedToTheConsoleAndBackAgain)
+{
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_NE(std::string::npos, status().find("\"network\":\"lan\""));
+    // every address of the machine answers; where 127.0.0.2 is not one (macOS), this part cannot be checked
+    const bool otherAddressWorks = listensOn("127.0.0.2", port);
+
+    EXPECT_EQ(400, request("POST", "/api/network?v=nobody", body));
+    EXPECT_EQ(400, request("POST", "/api/network", body));
+    EXPECT_EQ(200, request("POST", "/api/network?v=local", body));
+    // the radio thread starts the server again a moment after the answer
+    ASSERT_TRUE(waitFor([&] { return sink.has("(this console only)"); }, 3000))
+        << "the server did not come back on the loopback address";
+    EXPECT_NE(std::string::npos, status().find("\"network\":\"local\""));
+    EXPECT_TRUE(listensOn("127.0.0.1", port));
+    if (otherAddressWorks)
+    {
+        EXPECT_FALSE(listensOn("127.0.0.2", port)) << "the page is still open to the network";
+    }
+
+    EXPECT_EQ(200, request("POST", "/api/network?v=lan", body));
+    ASSERT_TRUE(
+        waitFor([&] { return otherAddressWorks ? listensOn("127.0.0.2", port) : listensOn("127.0.0.1", port); }, 3000));
+    EXPECT_NE(std::string::npos, status().find("\"network\":\"lan\""));
+}
+
+TEST_F(HttpApi, TheChoiceOfWhoCanOpenThePageIsRemembered)
+{
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_EQ(200, request("POST", "/api/network?v=local", body));
+    ASSERT_TRUE(waitFor([&] { return sink.has("(this console only)"); }, 3000));
+
+    stopService();
+    port = 0;
+    ASSERT_TRUE(startService());
+    EXPECT_NE(std::string::npos, status().find("\"network\":\"local\""));
+    EXPECT_TRUE(listensOn("127.0.0.1", port));
+}
+
 TEST_F(HttpApi, TheSoundQualityIsPassedOnAndRemembered)
 {
     EXPECT_CALL(radio, setQuality(0)).Times(1); // at start, nothing saved yet

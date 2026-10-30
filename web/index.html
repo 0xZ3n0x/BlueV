@@ -76,6 +76,14 @@ pre{margin:0;max-height:300px;overflow:auto;font:12px/1.5 ui-monospace,monospace
 
 <div class="card">
   <div class="row">
+    <b class="grow">Who can open this page</b>
+    <select id="network" onchange="setNetwork()"><option value="lan">Anyone on the network</option><option value="local">Only this console</option></select>
+  </div>
+  <div class="mut" style="margin-top:4px;font-size:12px">BlueV has no password. "Only this console" closes the page to your PC and phone; open it from the BlueV entry on the home screen to change it back.</div>
+</div>
+
+<div class="card">
+  <div class="row">
     <span id="state" class="badge">...</span>
     <span id="msg" class="grow mut"></span>
     <button id="btnDisc" onclick="post('disconnect')" disabled>Disconnect</button>
@@ -126,6 +134,15 @@ function setQuality(){
   fetch('/api/quality?v='+$('quality').value,{method:'POST'}).then(function(r){return r.json()}).then(function(j){
     $('radioNote').textContent=j.ok?'':'Error: '+j.message;
   }).catch(function(){$('radioNote').textContent='Request failed'});
+}
+function setNetwork(){
+  var want=$('network').value;
+  if(want==='local'&&!confirm('Close the page to everything except this console? Your PC and phone will not reach it any more; open it from the BlueV entry on the console\'s home screen to change this back.')){
+    $('network').value='lan';return;
+  }
+  fetch('/api/network?v='+want,{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+    $('msg').textContent=j.ok?(want==='local'?'This page is now limited to the console.':'This page is open to the network again.'):'Error: '+j.message;
+  }).catch(function(){$('msg').textContent='Request failed'});
 }
 function logShown(){return !$('log').hidden}
 function toggleLog(){
@@ -210,6 +227,7 @@ function refresh(){
     $('autoRow').style.display=radioOn&&s.radio.adapter==='external'?'':'none';
     $('auto').checked=!!s.radio.autostart;
     if(document.activeElement!==$('quality'))$('quality').value=String(s.quality||0);
+    if(document.activeElement!==$('network'))$('network').value=s.network||'lan';
     $('radioBadge').textContent=radioOn?(s.radio.adapter==='external'?'External on':'Internal on'):'Radio off';
     $('radioBadge').className='badge '+(radioOn?'streaming':'');
     var ext=document.querySelector('input[name=ad]:checked').value==='external';

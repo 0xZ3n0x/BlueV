@@ -40,6 +40,21 @@ TEST(SettingsFile, AMissingFileGivesTheDefaults)
     EXPECT_EQ(0, loaded.quality);
 }
 
+TEST(SettingsFile, TheNetworkChoiceComesBack)
+{
+    TempDir dir;
+    const SettingsFile file(dir.file("settings"));
+    Settings saved;
+
+    EXPECT_FALSE(file.load().localOnly); // the default: anyone on the network
+    saved.localOnly = true;
+    ASSERT_TRUE(file.save(saved));
+    EXPECT_TRUE(file.load().localOnly);
+    saved.localOnly = false;
+    ASSERT_TRUE(file.save(saved));
+    EXPECT_FALSE(file.load().localOnly);
+}
+
 TEST(SettingsFile, AnUnknownQualityIsNormal)
 {
     TempDir dir;

@@ -4,6 +4,7 @@
 //   autostart=1          open the radio when BlueV starts
 //   adapter=0a12:0001    the USB adapter to open then (vendor:product, in hex)
 //   quality=0            the sound quality: 0 normal, 1 high (the bitpool, see a2dp_params.hpp)
+//   network=lan          who can open the web page: "lan" anyone on the network, "local" only this console
 // A missing or damaged file gives the defaults; unknown lines are ignored.
 #pragma once
 
@@ -18,6 +19,7 @@ struct Settings
     bool autostart = false;
     std::uint16_t vid = 0, pid = 0; // the adapter; 0:0 when none is saved
     int quality = 0;
+    bool localOnly = false;
 };
 
 class SettingsFile final

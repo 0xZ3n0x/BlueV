@@ -42,6 +42,12 @@ class HttpServer
     // Stops accepting, then waits for the requests being served. Safe to
     // call more than once.
     void stop();
+    // Whether start() listens on the loopback address only (this console)
+    // instead of on every address. Takes effect at the next start().
+    void setLocalOnly(bool localOnly)
+    {
+        m_localOnly.store(localOnly);
+    }
 
     // The port in use; 0 while not listening.
     int port() const
@@ -72,6 +78,7 @@ class HttpServer
     int m_wantedPort;
     int m_listenFd = -1;
     std::atomic<int> m_port{0};
+    std::atomic<bool> m_localOnly{false};
     std::thread m_acceptThread;
     std::atomic<bool> m_stopping{false};
 

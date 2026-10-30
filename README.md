@@ -72,8 +72,10 @@ to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit
   not have this problem.
 - Connecting takes about 10 seconds with a USB adapter and can take over a minute with
   the internal chip.
-- The control page has no password. Anyone on your network can open it, so use it on a
-  network you trust.
+- The control page has no password. By default anyone on your network can open it, so use
+  it on a network you trust. On a shared network, set **Who can open this page** to
+  **Only this console**; the page then opens only from the BlueV entry on the console's
+  home screen (your PC and phone no longer reach it, and the same box changes it back).
 - Devices that are probably not audio devices (TVs and the like) are marked in the list.
 - BlueV uses SBC, the codec every Bluetooth audio device supports. It does not send
   microphone audio.
