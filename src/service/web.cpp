@@ -32,12 +32,21 @@ constexpr int kBacklog = 16;
 constexpr std::size_t kMaxRequest = 2048;  // bytes of a request that are read; more is cut
 constexpr std::size_t kMaxLogBytes = 8192; // most log text one /api/log answer carries
 
+// Writing to a client that has gone must give an error, not the SIGPIPE that
+// ends the whole program: MSG_NOSIGNAL where there is one, else (macOS) the
+// SO_NOSIGPIPE option of the socket, set in serve().
+#ifdef MSG_NOSIGNAL
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+constexpr int kSendFlags = 0;
+#endif
+
 // Sends everything, or stops quietly when the client has gone.
 void sendAll(int fd, const char* data, std::size_t size)
 {
     while (size > 0)
     {
-        ssize_t sent = send(fd, data, size, 0);
+        ssize_t sent = send(fd, data, size, kSendFlags);
 
         if (sent <= 0)
         {
@@ -301,6 +310,11 @@ void HttpServer::serve(int fd)
     char chunk[512];
 
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+#ifdef SO_NOSIGPIPE
+    const int one = 1;
+
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
     while (request.size() < kMaxRequest && request.find("\r\n\r\n") == std::string::npos)
     {
         ssize_t got = recv(fd, chunk, sizeof chunk, 0);

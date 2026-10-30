@@ -99,7 +99,7 @@ connection is served by a short-lived thread (browsers keep idle sockets open
 and must not block the others), at most 8 at a time, reserved with a
 compare-and-swap. `stop()` stops accepting and then waits for the requests in
 flight. Port 7733, fixed; `start()` is retried every 2 s if it is taken (also how
-it comes up once the network does). No authentication: by default it listens on every address, so anyone on the local network can use it; the page can limit it to this console (`POST /api/network`, below).
+it comes up once the network does). No authentication: by default it listens on every address, so anyone on the local network can use it; the page can limit it to this console (`POST /api/network`, below). A client that hangs up before the answer is written must not end the program: answers are sent with `MSG_NOSIGNAL` (`SO_NOSIGPIPE` on macOS), because the default `SIGPIPE` would kill the whole payload.
 
 | Endpoint | Purpose |
 |---|---|
