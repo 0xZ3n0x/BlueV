@@ -11,6 +11,7 @@
 #include <sys/thr.h>
 #include <unistd.h>
 
+#include "core/audio/avcap_capture.hpp"
 #include "core/bluetooth/usb_hci_transport.hpp"
 #include "core/ports/clock.hpp"
 #include "core/ports/log.hpp"
@@ -21,7 +22,7 @@
 #include "platform/posix/log_file.hpp"
 #include "platform/posix/net_address.hpp"
 #include "platform/posix/quit_signal.hpp"
-#include "platform/ps5/avcap_source.hpp"
+#include "platform/ps5/avcap_library.hpp"
 #include "platform/ps5/console_model.hpp"
 #include "platform/ps5/notification.hpp"
 #include "platform/ps5/process_identity.hpp"
@@ -92,8 +93,10 @@ int run(bluev::LogBuffer& buffer, int lockFd)
     // would actually get to keep running.
     thr_set_name(-1, kProcessName); // -1: the calling thread
 
-    bluev::AvcapSource capture;
-    const int opened = capture.open(); // -1 failed, 0 not running yet, 1 running
+    bluev::AvcapLibrary avcap;
+    bluev::AvcapCapture capture(avcap);
+    // -1 the library could not be loaded, 0 the capture is not running yet, 1 running
+    const int opened = avcap.load() ? (capture.start() ? 1 : 0) : -1;
 
     if (opened < 0)
     {
