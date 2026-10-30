@@ -174,8 +174,11 @@ process; nothing is re-detected per connection.
   `bmRequestType=0x20`) in `UgenTransport::command`.
 - `UgenTransport::pump(timeout)` restarts idle reads and `reap()` collects finished
   transfers. Consecutive packets inside one transfer are split into two
-  software rings (events and ACL, 32 slots each); the oldest packet is dropped
-  when a ring is full.
+  queues (`HciPacketQueue` in `core/bluetooth/`, events and ACL, 32 slots each);
+  the oldest packet is dropped when a queue is full. The queue and the test for
+  the Command Complete that role detection waits for hold no kernel call, so
+  they are tested on the PC (`tests/unit/hci_packet_queue_test.cpp`); what stays
+  in `UgenTransport` is the ioctls and the transfer table.
 - `UgenTransport::sendAcl` uses a single output transfer and waits up to 1 s for the
   previous one.
 - The system's own traffic passes through the same controller, so replies to

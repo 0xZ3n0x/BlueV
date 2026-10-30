@@ -143,8 +143,8 @@ bool UgenTransport::open()
     if (m_aclReads != 0 && m_eventReads > 0)
     {
         std::memset(m_pending, 0, sizeof m_pending);
-        m_events = Ring{};
-        m_acl = Ring{};
+        m_events.clear();
+        m_acl.clear();
         logLine("hci: controller open alongside the system, %d event and %d ACL reads (ep ev=%#x acl_in=%#x "
                 "acl_out=%#x)",
                 m_eventReads, m_aclReads, m_layout.events, m_layout.aclIn, m_layout.aclOut);
@@ -182,7 +182,7 @@ std::string UgenTransport::describe(const char* why)
                   "ACL packets %u, start errors %u, armed ev=%d acl=%d, queued ev=%d acl=%d",
                   why, m_layout.events, m_layout.aclIn, m_layout.aclOut, m_dgCommands, m_dgComplete, m_dgData,
                   m_dgEmpty, m_dgError, m_dgEventData, m_dgAclData, m_dgStartError, pendingEvents, pendingAcl,
-                  m_events.count, m_acl.count);
+                  m_events.count(), m_acl.count());
     return text;
 }
 
@@ -261,7 +261,7 @@ bool UgenTransport::pump(std::uint32_t timeoutMs)
 
         const std::uint32_t r = reap();
 
-        if (m_events.count != 0 || m_acl.count != 0)
+        if (m_events.count() != 0 || m_acl.count() != 0)
         {
             return true;
         }
@@ -338,48 +338,12 @@ void UgenTransport::onTransferComplete(int t)
     }
     // While detecting roles, the answer to our Read Buffer Size command (a
     // Command Complete for opcode 0x1005) shows which pipe carries events.
-    if (m_detecting && m_detected == 0 && len >= 6 && buf[0] == 0x0e && buf[1] == len - 2 && buf[3] == 0x05 &&
-        buf[4] == 0x10)
+    if (m_detecting && m_detected == 0 && isReadBufferSizeComplete(buf, len))
     {
         m_detected = isEvent ? 1 : 2;
     }
-    queuePackets(isEvent ? m_events : m_acl, buf, len, isEvent ? 2 : 4); // event hdr / ACL hdr
-}
-
-// A transfer may contain several back-to-back packets; each one goes to the
-// ring whole. `hdr` is the header size: 2 for an event, 4 for ACL data.
-void UgenTransport::queuePackets(Ring& ring, const std::uint8_t* buf, std::uint32_t len, std::uint32_t hdr)
-{
-    std::uint32_t off = 0;
-
-    while (off + hdr <= len)
-    {
-        const std::uint32_t plen = hdr == 2 ? buf[off + 1] : buf[off + 2] | buf[off + 3] << 8;
-        const std::uint32_t total = plen + hdr;
-
-        if (off + total > len)
-        {
-            break;
-        }
-        // larger than any packet the controller sends: keep a slot's worth
-        ringPush(ring, buf + off, total > 1099 ? kXferBuf : total);
-        off += total;
-    }
-}
-
-void UgenTransport::ringPush(Ring& ring, const std::uint8_t* data, std::uint32_t length)
-{
-    if (ring.count == kRingSlots)
-    {
-        logLine("hci: queue full, dropping oldest packet");
-        ring.head = (ring.head + 1) % kRingSlots;
-        ring.count--;
-    }
-    const int slot = (ring.head + ring.count) % kRingSlots;
-
-    std::memcpy(ring.buf[slot], data, length);
-    ring.len[slot] = length;
-    ring.count++;
+    // a transfer may hold several packets back to back
+    (isEvent ? m_events : m_acl).pushTransfer(buf, len, isEvent ? HciPacketKind::Event : HciPacketKind::Acl);
 }
 
 bool UgenTransport::sendAcl(const std::uint8_t* packet, std::uint32_t length)
@@ -417,31 +381,14 @@ bool UgenTransport::sendAcl(const std::uint8_t* packet, std::uint32_t length)
     return true;
 }
 
-int UgenTransport::ringPop(Ring& ring, std::uint8_t* out, int max)
-{
-    if (ring.count == 0)
-    {
-        return 0;
-    }
-    int n = static_cast<int>(ring.len[ring.head]);
-    if (n > max)
-    {
-        n = max;
-    }
-    std::memcpy(out, ring.buf[ring.head], n);
-    ring.head = (ring.head + 1) % kRingSlots;
-    ring.count--;
-    return n;
-}
-
 int UgenTransport::nextEvent(std::uint8_t* out, int max)
 {
-    return ringPop(m_events, out, max);
+    return m_events.pop(out, max);
 }
 
 int UgenTransport::nextAcl(std::uint8_t* out, int max)
 {
-    return ringPop(m_acl, out, max);
+    return m_acl.pop(out, max);
 }
 
 // Find out which of the two IN endpoints carries the HCI events: send Read
