@@ -22,7 +22,7 @@ tried and dropped, is in sections 16 and 17.
 | Path | Role |
 |---|---|
 | `src/app/main.cpp` | composition root: lock file, builds the real objects, runs the service |
-| `src/core/ports/` | interfaces: `IClock`, `ILogSink`, `IHciTransport`, `IBondStore`, `IAudioSource`, `IUsbDirectory`, `IAppInstaller`. An interface exists only where a test needs a fake of something it cannot run (the controller, the console, time, files); the rest are plain classes or `std::function` |
+| `src/core/ports/` | interfaces: `IClock`, `ILogSink`, `IHciTransport`, `IUsbDevice`, `IBondStore`, `IFirmwareStore`, `IAudioSource`, `IAvcap2`, `IUsbDirectory`, `IAppInstaller`. An interface exists only where a test needs a fake of something it cannot run (the controller, the console, time, files); the rest are plain classes or `std::function` |
 | `src/core/bluetooth/bt_stack*.cpp` | `BtStack`: controller start/stop, inquiry, paging/pairing/encryption, event and ACL loop, L2CAP, credit flow control, bonds |
 | `src/core/bluetooth/` (rest) | `UsbHciTransport` (HCI over USB: the reads, commands and queues, on top of `IUsbDevice`), `HciPacketQueue`, `handleSdpRequest` (SDP), addresses, names, `device_filter` (TV classification, EIR names), `L2capReassembler`, HCI opcodes |
 | `src/core/audio/` | `A2dpSession` (AVDTP), `A2dpStreamer` (capture, resample, SBC, RTP), `Avrcp` (the headset's volume, section 9a), `avdtp`, `a2dp_params`, `PcmFifo`, `LinearResampler`, `rtp.hpp` |
@@ -431,7 +431,7 @@ keeps sending commands, however slowly; it is left to us only after four silent
 seconds, and never waited for longer than twenty: its pause between commands has
 been seen to reach two seconds, and a fixed four second window made both sides
 configure at once), derives the encoder
-parameters from it with `choose_params`, waits for the Open and the media
+parameters from it with `chooseA2dpParams`, waits for the Open and the media
 channel (inbound, up to 6 s), then waits 300 ms for a Start from the headset
 and sends `START` itself if none came.
 
@@ -441,10 +441,10 @@ sinks, `chooseA2dpParams`, `SET_CONFIGURATION`, `OPEN`, media channel (the
 headset opens it within 1.5 s, otherwise we do), 300 ms, `START` (an
 unfavourable answer still lets streaming be attempted).
 
-`choose_params(caps)`: 48 kHz preferred, else 44.1 kHz; Joint Stereo
+`chooseA2dpParams(caps, quality)`: 48 kHz preferred, else 44.1 kHz; Joint Stereo
 preferred, else Stereo; blocks 16 > 12 > 8 > 4; 8 sub-bands when supported;
-Loudness allocation when supported, else SNR; **bitpool locked at 40**
-(clamped to the sink's range).
+Loudness allocation when supported, else SNR; **bitpool 40** (normal) or
+53 (high, section 12b), in both cases clamped to the sink's range.
 
 `A2dpSession::stop` sends `CLOSE` and closes the media and signaling channels.
 `a2dp_reset` clears the channels and all headset-driven state between
@@ -772,7 +772,7 @@ controller and starts it:
   from before this change (`bond-<their address>.key`) are not used; the
   device is paired once more.
 
-**Sound quality** (`quality=0|1` in the same file, `POST /api/quality`, the page's "Sound quality" box): 0 asks the headset for SBC bitpool 40 (93-byte frames at 48 kHz joint stereo, about 279 kbit/s), 1 for bitpool 53 (119-byte frames, about 357 kbit/s), in both cases limited to the range the headset offers (a headset that stops at 39 gets 39 either way). It applies from the next connection; `A2dpSession` reads it when it picks the parameters, whether we drive the setup or follow the headset's. The bigger frames mean fewer fit in a packet (two instead of three on the CSR adapter's 310-byte buffers) and more packets per second, which needs more ACL credits: it is on the page as "use it only if the sound stays clean". Normal stays the default; high has not been run on the console yet, so it is untested for dropouts on the internal chip (few credits) and on the USB adapter.
+**Sound quality** (`quality=0|1` in the same file, `POST /api/quality`, the page's "Sound quality" box): 0 asks the headset for SBC bitpool 40 (93-byte frames at 48 kHz joint stereo, about 279 kbit/s), 1 for bitpool 53 (119-byte frames, about 357 kbit/s), in both cases limited to the range the headset offers (a headset that stops at 39 gets 39 either way). It applies from the next connection; `A2dpSession` reads it when it picks the parameters, whether we drive the setup or follow the headset's. The bigger frames mean fewer fit in a packet (two instead of three on the CSR adapter's 310-byte buffers) and more packets per second, which needs more ACL credits: it is on the page as "use it only if the sound stays clean". Normal stays the default. High ran without dropouts on the USB adapter (about 5.7 minutes with the WH-CH720N, about 80 seconds with the Creative; 172-188 packets/s, queue under 5 ms, credits 5-10) and is untested on the internal chip (few credits).
 
 **Who can open the page** (`network=lan|local`, the page's "Who can open this page" box): `lan` is the default and the old behaviour, `local` binds the server to `127.0.0.1` only. The page asks for confirmation before it closes itself to the PC, and the notice at start-up then says to use the home screen entry. The change is made by `Service::applyNetwork()`, which stops the server (waiting for the request that asked) and starts it again; it runs from the loop when nothing is going on and from the once-a-second tick during a stream, where it can cost a short gap in the audio (the stop waits up to 200 ms for the accept thread).
 
@@ -809,16 +809,17 @@ file means the defaults (nothing is started).
 
 | Thread | Does |
 |---|---|
-| radio (main) | everything in `radio/` and `audio/`, the service state machine |
+| radio (main) | everything in `core/bluetooth/` and `core/audio/`, the service state machine |
 | web accept + one per request | HTTP only; touches the radio never |
 
 Rules that keep this race-free:
 
 - Radio state is owned by the radio thread. Other threads reach it through
   three boundary objects only: the pending command and status snapshot in
-  `Service` (one mutex), the log ring (`Logger`, its own
-  mutex), and two atomic flags (`m_quit`, `m_disconnect_requested`). The
-  streaming loop publishes its numbers with `service_publish_stream` (a few
+  `Service` (one mutex), the log ring (`LogBuffer`, its own
+  mutex), and a few atomic flags and values (`m_quit`, `m_disconnectRequested`,
+  `m_restartServer`, `m_askedVolume`). The
+  streaming loop publishes its numbers with `Service::publishStream` (a few
   times a second, under the service mutex) and polls an atomic stop flag.
 - ThreadSanitizer (`tests/run.sh thread`) runs the service tests, including 8
   clients firing random requests, to catch races.
@@ -827,7 +828,7 @@ Rules that keep this race-free:
 
 Tests: `tests/run.sh [plain|thread|address] [gtest filter]` builds everything
 except the PS5 adapters on a PC (CMake + Ninja, googletest submodule) and runs
-about 210 tests: the Bluetooth stack against a fake controller and a fake
+about 350 tests: the Bluetooth stack against a fake controller and a fake
 speaker (pairing, paging, L2CAP, flow control, AVDTP, the streaming loop), the
 service against a gmock radio over real HTTP (including 8 clients firing random
 requests), and the file/log/notification helpers. The PS5 adapters under
@@ -925,7 +926,7 @@ Product
 - Remember settings: the USB adapter, starting the radio at launch and the sound quality are done (section 12b); reconnecting the last device by paging it is not, and no headset tried has needed it.
 - Headset volume (section 9a): not tried yet on the WH-1000XM5 or on a headset that has no volume control. Media keys (play/pause) are not wanted.
 - The sample rate is not a choice; a better resampler than the linear one.
-- A faster Connect. Measured: 43 s (2026-10-18) and 1 min 45 s with a fresh pairing (2026-10-21), mostly paging that gets no answer and the 20 s listen window during which the speaker connects to us. First candidate: shorter first page round (about 2-3 s gain), then a longer or continuous listen window.
+- A faster Connect. Measured with a USB adapter and a known device (2026-10-30): 5-8 s when BlueV connects, 2-3 s when the headset connects itself; the rest is the waits in the AVDTP setup (section 9), which the WH-CH720N's 8 s timeout keeps from being cut. With a fresh pairing it took 1 min 45 s (2026-10-21). On the internal chip it is still about 105 s.
 
 Security
 
@@ -933,17 +934,15 @@ Security
 
 Console and hardware
 
-- Run the transport and USB directory after the move to the SDK's USB structures on the console (external adapter first). Nothing in them is tested on the PC.
+- Run the new transport (`UsbHciTransport` on `UgenDevice`) and the USB directory on the console with the internal chip; the external adapter has run them. The transport's decisions are tested on the PC, `Ps5UsbDirectory` is not.
 - Other adapters: only the Realtek USB family has a firmware uploader (`core/bluetooth/firmware.*`). Broadcom `.hcd` (`0xfc4c`/`0xfc4e`), Intel `.sfi`/`.ddc` and MediaTek would each need their own loader. Broadcom-family sticks with the vendor-specific class (`ff/01/01`) are untested; the descriptor lookup only accepts `e0/01/01`.
 - Longer runs than 21 minutes, other speakers, and the capture running together with Remote Play.
 - The Sony WH-CH720N does not work on the internal chip (it works on a USB adapter); the Creative speaker does. Find out why.
 - Only a PS5 Slim was tested; reports from a PS5 Pro and the fat PS5 are wanted (README, Contributing); other models lay the chip out differently (the `0x82/0x01` layout in the code comments) and the home screen entry's `AppInstallTitleDir` is missing on firmware 12.40.
-- On-screen notifications start with "Debug:". Tried (2026-10-24): the request laid out as 11 ints, `useIconImageUri = 1`, `targetId = -1` and the icon `cxml://psnotification/tex_icon_system`, which is reported to remove the label; the console still showed "Debug:". Find which fields give a plain toast (`src/platform/ps5/notification.cpp`).
+- On-screen notifications start with "Debug:". Different request fields, types and devices did not remove it (2026-10-30); the toast is drawn by the shell's JavaScript, so it is left as it is (cosmetic).
 - Open ideas for the shared chip: read the console's own copy of the events instead of taking them from USB; what interface 3 carries.
 
 Code and tests
 
 - The console adapters that remain (`UgenDevice`, `AvcapLibrary`, `Ps5UsbDirectory`, `Ps5AppInstaller`, the notification and process lookups) only pass calls on and have no host tests; what they do is checked on the console. The decisions of the capture and of the HCI transport are in `core` and are tested.
-- A CI job: host tests (plain, thread, address), the console build and a `clang-format` check.
-- `WithRadioOn.ManyClientsAtOnceGetValidAnswers` failed once in a plain run and one thread-sanitizer run failed once; neither came back in many repeats. Find the cause.
-- Releases are built by hand with `make clean release` (see the README). The source is GPL-3.0-or-later (`LICENSE`), so a release has to offer the source with it (the tag's source archive does). Before the first one, check the SDK's own `LICENSE` in its repository for a linking exception.
+- Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed on `main` (it runs `make release` with the pinned SDK); `make clean release` does the same by hand (see the README). The source is GPL-3.0-or-later (`LICENSE`), so a release has to offer the source with it: the tag in this repository does, cloned with `--recurse-submodules` (GitHub's source archive of a tag leaves the submodules out, so the README points to the clone). The SDK's own `LICENSE` was checked (October 2026): plain GPL-3.0, no linking exception, so the GPL is required, not optional.

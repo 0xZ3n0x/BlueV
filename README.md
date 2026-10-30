@@ -23,6 +23,9 @@ from a simple web page, on the console itself or from a phone or PC on the same 
 - Control page for scanning, connecting, pairing and disconnecting, also in the console's browser
 - Remembers paired devices and accepts them when they connect by themselves
 - Can open the USB adapter by itself when BlueV starts
+- Sets the headset's volume from the page (when the headset reports its volume, over AVRCP)
+- Two sound qualities, Normal and High
+- Can limit the page to the console itself
 - A "BlueV" entry on the home screen that opens the control page
 
 ## What you need
@@ -240,12 +243,22 @@ in the hope that it will be useful, but without any warranty.
 It is under the GPL because of the [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk)
 that builds it: every payload built with it contains the SDK's start-up code, and its headers
 are GPL-3.0-or-later. BlueV itself includes `ps5/kernel.h` (`src/platform/ps5/ps5_api.hpp`)
-and calls the SDK's `kernel_dynlib_*` functions (`avcap_source.cpp`, `ps5_system.cpp`,
+and calls the SDK's `kernel_dynlib_*` functions (`avcap_library.cpp`, `ps5_system.cpp`,
 `ps5_usb_directory.cpp`). The third-party parts keep their own licenses, which work with the GPL:
 
 - `third_party/sbc` (libsbc from BlueZ) is LGPL-2.1-or-later, built unmodified
 - `third_party/googletest` is BSD-3-Clause and is only used for the tests
 - the FreeBSD USB headers the SDK ships (`dev/usb/*.h`, `libusb.h`) are BSD licensed
+
+The SDK's own `LICENSE` is the plain GPL-3.0 with no linking exception (checked in October 2026),
+so a payload built with it has to be offered under the GPL together with its source.
+
+**Source of a release.** The `bluev.elf` of a release is GPL-3.0-or-later. Its source is the
+version tag of the release in this repository (the release workflow builds the file from that tag
+with `make release`): `git clone --recurse-submodules` and check out the tag. The source archive
+that GitHub offers for the tag holds BlueV's own files but not the submodules, so use the clone to
+get libsbc (and GoogleTest, which is not in the file) at the exact commits the tag names.
+Anyone who has the file can ask for that source here.
 
 ## Credits
 
