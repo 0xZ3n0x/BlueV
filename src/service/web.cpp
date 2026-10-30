@@ -75,14 +75,8 @@ const char* reason(int code)
 void reply(int fd, int code, const char* contentType, std::string_view body)
 {
     char head[512];
-    // Any origin may call the API: the console's launcher runs its
-    // extensions in a sandboxed frame whose origin is "null", and they
-    // reach this server on 127.0.0.1.
     const int length = std::snprintf(head, sizeof head,
                                      "HTTP/1.0 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
-                                     "Access-Control-Allow-Origin: *\r\n"
-                                     "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                                     "Access-Control-Allow-Headers: *\r\n"
                                      "Cache-Control: no-store\r\nConnection: close\r\n\r\n",
                                      code, reason(code), contentType, body.size());
 
@@ -455,15 +449,8 @@ HttpResponse HttpServer::route(std::string_view method, std::string_view path, s
 
     HttpResponse response;
 
-    if (method == "OPTIONS")
-    { // CORS preflight
-        response.code = 204;
-    }
-    else
-    {
-        response.code = 405;
-        response.body = message(false, "method not allowed");
-    }
+    response.code = 405;
+    response.body = message(false, "method not allowed");
     return response;
 }
 

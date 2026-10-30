@@ -59,7 +59,7 @@ $(BUILD_DIR)/web_page.h: $(HERE)/web/index.html $(HERE)/tools/embed.py
 	@mkdir -p $(BUILD_DIR)
 	python3 $(HERE)/tools/embed.py $< > $@
 
-$(BUILD_DIR)/icon_png.h: $(HERE)/homebrew/bluev/sce_sys/icon0.png $(HERE)/tools/embed.py
+$(BUILD_DIR)/icon_png.h: $(HERE)/assets/icon0.png $(HERE)/tools/embed.py
 	@mkdir -p $(BUILD_DIR)
 	python3 $(HERE)/tools/embed.py $< icon_png > $@
 
@@ -79,16 +79,6 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)/web_page.h $(BUILD_DIR)/icon_png
 $(TARGET): $(OBJS)
 	@mkdir -p $(BUILD_DIR)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
-
-# The launcher entry: copy this folder to /data/homebrew/ on the console.
-HB_DIR := $(BUILD_DIR)/homebrew/bluev
-
-homebrew: $(TARGET)
-	@mkdir -p $(HB_DIR)/sce_sys
-	cp $(TARGET) $(HB_DIR)/eboot.elf
-	cp $(HERE)/homebrew/bluev/homebrew.js $(HB_DIR)/
-	cp $(HERE)/homebrew/bluev/sce_sys/icon0.png $(HB_DIR)/sce_sys/
-	@echo "launcher entry in $(HB_DIR)"
 
 strip: $(TARGET)
 	$(STRIP) -o $(STRIPPED) $(TARGET)
@@ -111,4 +101,4 @@ clean:
 
 -include $(OBJS:.o=.d)
 
-.PHONY: all homebrew strip release clean
+.PHONY: all strip release clean

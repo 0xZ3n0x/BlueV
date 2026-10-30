@@ -17,7 +17,7 @@ adapters so that every layer runs on a PC under gtest/gmock. Naming: classes
 `PascalCase`, methods `camelCase`, members `m_snake_case`, namespace `bluev`.
 Dependency rule: `app -> service -> core`; `platform -> core/ports`; `core`
 never includes `platform` or `service`. Why it is built this way, and what was
-tried and dropped, is in sections 17 and 18.
+tried and dropped, is in sections 16 and 17.
 
 | Path | Role |
 |---|---|
@@ -762,31 +762,7 @@ service against a gmock radio over real HTTP (including 8 clients firing random
 requests), and the file/log/notification helpers. The PS5 adapters under
 `src/platform/ps5/` are compile-checked by the console `make` only.
 
-## 15. Launcher entry (ps5-payload-websrv)
-
-`homebrew/bluev/` is an extension for the launcher of
-[ps5-payload-websrv](https://github.com/ps5-payload-dev/websrv): `make homebrew`
-collects `eboot.elf`, `homebrew.js` and `sce_sys/icon0.png` in
-`build/homebrew/bluev/`, which is copied to `/data/homebrew/` on the
-console. The launcher prefers `homebrew.js` over `eboot.elf`, takes the tile
-icon from `sce_sys/icon0.png`, and runs the script in a sandboxed frame
-(`allow-scripts allow-modals`: no popups, no navigation, origin `null`).
-
-- The tile starts the payload (`{path, cwd, daemon}`) when `/api/status` does
-  not answer, and otherwise opens a control menu built with `showCarousel`:
-  state, the devices (tap to connect, "Forget this pairing" in the item's
-  options), scan, disconnect, stop. This is the web interface again, inside the
-  console's own launcher.
-- The frame reaches the payload on `http://127.0.0.1:7733`, so the menu works in
-  the console's own browser; from a PC the launcher's loopback address is the
-  PC, use the page on port 7733 there.
-- The server answers every request with `Access-Control-Allow-Origin: *` and
-  answers `OPTIONS` with 204, which the sandboxed origin needs. It also means
-  any web page in a browser on the network can call the unauthenticated API.
-- The icon is `homebrew/bluev/sce_sys/icon0.png` (512x512, full-bleed background; the
-  console rounds the corners itself).
-
-## 16. Home screen entry
+## 15. Home screen entry
 
 When the program starts (before the radio is opened), `AppShortcut::install`
 makes sure the console's home screen has an entry that opens the web interface
@@ -820,9 +796,9 @@ checks the files and the calls to the installer with a fake that behaves like th
 console's (no `AppInstallTitleDir`). On the console the installer accepts the
 directory (logged as `shortcut: the home screen entry opens ...`).
 
-## 17. Design decisions
+## 16. Design decisions
 
-### 17.1 What we chose, and why
+### 16.1 What we chose, and why
 
 | Decision | Why |
 |---|---|
@@ -840,17 +816,17 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | Streaming: as many SBC frames per packet as the MTU allows (at most 8), the queue cut to 50 ms, sending paced to the clock | Low delay without bursts; silence fills the gaps when the capture has nothing |
 | SBC only, joint stereo preferred, bitpool 40 within the device's range, 48 kHz preferred, linear resampling to 44.1 kHz | Every audio device speaks SBC; the parameters are simple and were enough in the soak test (12d) |
 | libsbc is an unmodified submodule; `src/compat/config.h` supplies its build settings | Upstream code stays upstream; it is not tested here |
-| A small HTTP/1.0 server of our own, with a JSON writer; a thread per connection, at most 8, `503` when full; `Access-Control-Allow-Origin: *` | The API is a handful of routes; the launcher frame has the origin `null` and needs CORS; the connection slot is given back before the socket is closed so a client never meets a full server |
-| One control page, embedded in the ELF (`tools/embed.py`) | Nothing else to deploy; the launcher menu stays small (section 15) |
+| A small HTTP/1.0 server of our own, with a JSON writer; a thread per connection, at most 8, `503` when full | The API is a handful of routes; the connection slot is given back before the socket is closed so a client never meets a full server |
+| One control page, embedded in the ELF (`tools/embed.py`) | Nothing else to deploy |
 | Notifications are sent straight from the calling thread (`sceKernelSendNotificationRequest`) | There are only a few per session (start-up, "Streaming to ...", failures); a queue and a worker thread with a 400 ms hold were not worth it. If the console is found to drop messages sent close together, a queue can come back (git history) |
 | Log: a ring of 300 lines for the page and a file flushed once a second, turned over at 512 KB; nothing in the kernel log; time stamps in UTC | The page can show the log without reading a file; the file survives a crash and cannot grow without limit; the console's kernel log stays readable |
 | One copy at a time (`flock` on `/data/bluev/bluev.lock`); a newer copy finds the old one by process name (`thr_set_name`/`sysctl(KERN_PROC_PROC)`) and asks it to quit (`SIGTERM`) | Sending the ELF again replaces the running program; finding it by name works even before its web server is up, unlike probing it over HTTP |
 | A fixed web server port (7733), not a range with a fallback | The home screen entry always names 7733; a fallback port made it silently stop matching. `start()` already retries every 2 s, which also covers the port being briefly held by something else |
-| The home screen entry is registered through the system installer, with a marker file (section 16) | It is retried only when it was not accepted before |
+| The home screen entry is registered through the system installer, with a marker file (section 15) | It is retried only when it was not accepted before |
 | Host build with CMake (plain, thread and address sanitizer), console build with the Makefile | The two builds have different compilers and flags; the host build is where the tests live |
 | `clang-format` (Microsoft style, pointers on the left, braces always) on everything but `third_party` | One style, no review noise |
 
-### 17.2 What we tried or considered and did not choose
+### 16.2 What we tried or considered and did not choose
 
 | Idea | Why not |
 |---|---|
@@ -863,26 +839,25 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | `libusb` for the HCI traffic | Works, with no advantage over ugen, and synchronous reads with timeouts split events (12c) |
 | Interface 3 of the console's chip as a second controller | It refuses the HCI commands (12c) |
 | Starting AVDTP ourselves at once to save the 9 s the speaker waits | Interferes when the speaker drives; see the AVDTP row above |
-| Shorter page rounds and a longer listen window to speed up Connect | Noted and deliberately not applied: the speaker mostly connects to us by itself during the listen window (see 18) |
-| One front end for the launcher menu and the web page | The launcher can only draw its own list (`showCarousel`), not HTML; the home screen entry opens the same page in the console's browser. A menu described by the server (`/api/ui`) was designed and dropped because the page already does everything |
-| A confirmation window before starting the internal radio | Replaced by the warning text only, on the page and in the launcher menu |
+| Shorter page rounds and a longer listen window to speed up Connect | Noted and deliberately not applied: the speaker mostly connects to us by itself during the listen window (see 17) |
+| A launcher menu (an extension for the ps5-payload-websrv launcher) next to the page | It could only draw its own list (`showCarousel`), not HTML, so it did less than the page, and it needed `Access-Control-Allow-Origin: *` for its sandboxed frame. Removed: the page opens from the home screen entry and from any browser, and a payload manager starts the program |
+| A confirmation window before starting the internal radio | Replaced by the warning text only, on the page |
 | Compute the NIDs from the function names (SDK `nid_encode`) | Its implementation is not in the SDK libraries; the 8 NIDs stay as strings, each next to its name |
 | Test `src/platform/ps5/` on the PC | It cannot run there; it is compiled by the console build and checked on the console, with the external adapter |
 | Convert `tools/usbprobe` (C) to C++ | A separate diagnostic payload; not worth it |
 
-## 18. TODO
+## 17. TODO
 
 Product
 
 - Remember settings: the last adapter, starting the radio at boot, reconnecting the last device.
-- Headset volume (section 9a): test setting it on the console and on the WH-1000XM5 and the Creative speaker; a launcher menu entry for volume up/down if wanted. Media keys (play/pause) are not wanted.
+- Headset volume (section 9a): not tried yet on the WH-1000XM5 or on a headset that has no volume control. Media keys (play/pause) are not wanted.
 - Choose the SBC quality and the sample rate; a better resampler than the linear one.
 - A faster Connect. Measured: 43 s (2026-10-18) and 1 min 45 s with a fresh pairing (2026-10-21), mostly paging that gets no answer and the 20 s listen window during which the speaker connects to us. First candidate: shorter first page round (about 2-3 s gain), then a longer or continuous listen window.
-- A launcher menu with the same abilities as the page (external adapter, log) if it is ever wanted.
 
 Security
 
-- The API has no authentication and answers every origin; anyone on the network can control it. Options: listen on the loopback address only (the home screen entry and the launcher need nothing else), a switch for the local network, or a token.
+- The API has no authentication; anyone on the network can control it. Options: listen on the loopback address only (the home screen entry needs nothing else), a switch for the local network, or a token.
 
 Console and hardware
 

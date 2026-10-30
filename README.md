@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="homebrew/bluev/sce_sys/icon0.png" alt="BlueV" width="160">
+  <img src="assets/icon0.png" alt="BlueV" width="160">
 </p>
 
 <h1 align="center">BlueV</h1>
@@ -23,7 +23,6 @@ from a simple web page, on the console itself or from a phone or PC on the same 
 - Control page for scanning, connecting, pairing and disconnecting, also in the console's browser
 - Remembers paired devices and accepts them when they connect by themselves
 - A "BlueV" entry on the home screen that opens the control page
-- Optional launcher entry for [ps5-payload-websrv](https://github.com/ps5-payload-dev/websrv)
 
 ## What you need
 
@@ -46,9 +45,6 @@ from a simple web page, on the console itself or from a phone or PC on the same 
 
    BlueV starts, shows a notification, and adds a **BlueV** entry to the home screen.
    Sending the file again replaces the running copy.
-
-Optional launcher entry: run `make homebrew` and copy `build/homebrew/bluev/` to
-`/data/homebrew/` on the console.
 
 ## Use
 
@@ -166,7 +162,7 @@ I will review every pull request.
 **Code changes.** The tests run on a PC (`tests/run.sh`) and the code is formatted with
 `clang-format`. Please add a test for new behaviour (the fakes in `tests/support/` make a
 Bluetooth controller and a speaker easy to script) and keep `third_party/` untouched. Open
-work is listed in section 18 of `src/ARCHITECTURE.md`. Please do not send changes that read
+work is listed in section 17 of `src/ARCHITECTURE.md`. Please do not send changes that read
 or write the console's kernel memory.
 
 ## Build
@@ -178,7 +174,6 @@ Requirements: the [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk)
 git clone --recurse-submodules <this repository>
 cd <repository>
 make              # build/bluev.elf
-make homebrew     # the launcher entry in build/homebrew/bluev/
 make release      # build/release/bluev.elf and its .sha256, for a release (see below)
 ```
 
@@ -209,7 +204,7 @@ Bluetooth chip is in [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md).
 | `src/` | the program: `core` (Bluetooth and audio, no console code), `service` (web server and state), `platform` (the console and the file system), `app` (`main`) |
 | `tests/` | unit, protocol (fake controller and speaker) and web API tests |
 | `web/` | the control page |
-| `homebrew/` | the launcher entry and the icon |
+| `assets/` | the icon |
 | `tools/` | `usbprobe`, a USB diagnostic payload |
 | `third_party/` | libsbc and googletest (git submodules) |
 
@@ -258,8 +253,7 @@ and calls the SDK's `kernel_dynlib_*` functions (`avcap_source.cpp`, `ps5_system
   showing that this is possible. If you are the author and have questions or concerns, please
   open an issue.
 - [libsbc](https://git.kernel.org/pub/scm/bluetooth/sbc.git) from BlueZ (LGPL), used unmodified
-- [ps5-payload-sdk](https://github.com/ps5-payload-dev) and
-  [ps5-payload-websrv](https://github.com/ps5-payload-dev/websrv)
+- [ps5-payload-sdk](https://github.com/ps5-payload-dev)
 - [GoogleTest](https://github.com/google/googletest) for the tests
 
 BlueV is not affiliated with or endorsed by Sony Interactive Entertainment. PlayStation is
