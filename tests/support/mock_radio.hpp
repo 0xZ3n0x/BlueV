@@ -37,6 +37,13 @@ class MockRadio : public IRadio
     MOCK_METHOD(void, stopAudio, (), (override));
     MOCK_METHOD(bool, stream, (bool capturing), (override));
     MOCK_METHOD(void, requestStop, (), (override));
+    MOCK_METHOD(int, volume, (), (override));
+    MOCK_METHOD(void, setVolume, (int volume), (override));
+
+    MockRadio()
+    {
+        ON_CALL(*this, volume()).WillByDefault(::testing::Return(-1));
+    }
 };
 
 class MockInstaller : public IAppInstaller

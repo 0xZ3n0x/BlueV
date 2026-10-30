@@ -53,10 +53,35 @@ TEST(SdpServer, SearchForTheAudioSourceFindsOneRecord)
 TEST(SdpServer, EveryA2dpRelatedUuidMatches)
 {
     std::uint8_t out[512];
-    for (std::uint16_t uuid : {0x110a, 0x110d, 0x0019, 0x0100, 0x1002})
+    for (std::uint16_t uuid : {0x110a, 0x110d, 0x0019})
     {
         ASSERT_EQ(14, ask(request(0x02, searchFor(uuid)), out)) << std::hex << uuid;
         EXPECT_EQ(1, out[6]);
+    }
+}
+
+TEST(SdpServer, SearchForTheRemoteControlFindsItsOwnRecord)
+{
+    std::uint8_t out[512];
+
+    for (std::uint16_t uuid : {0x110e, 0x0017})
+    {
+        ASSERT_EQ(14, ask(request(0x02, searchFor(uuid)), out)) << std::hex << uuid;
+        EXPECT_EQ(1, out[6]);
+        EXPECT_EQ(0x02, out[12]); // handle 0x00010002
+    }
+}
+
+TEST(SdpServer, SearchForWhatBothShareFindsBothRecords)
+{
+    std::uint8_t out[512];
+
+    for (std::uint16_t uuid : {0x0100, 0x1002})
+    {
+        ASSERT_EQ(18, ask(request(0x02, searchFor(uuid)), out)) << std::hex << uuid;
+        EXPECT_EQ(2, out[6]);
+        EXPECT_EQ(0x01, out[12]);
+        EXPECT_EQ(0x02, out[16]);
     }
 }
 
@@ -106,8 +131,40 @@ TEST(SdpServer, SearchAttributeAnswersOneRecordOrAnEmptyList)
     params[3] = 0x11; // 0x1108 does not match
     params[4] = 0x08;
     const int none = ask(request(0x06, params), out);
-    ASSERT_EQ(10, none);
-    EXPECT_EQ(0x35, out[7]); // an empty list
+    ASSERT_EQ(11, none);
+    EXPECT_EQ(0x36, out[7]); // an empty list
+    EXPECT_EQ(0, out[9]);
+    EXPECT_EQ(0, out[10]);
+}
+
+TEST(SdpServer, SearchAttributeForTheRemoteControlReturnsItsRecord)
+{
+    std::uint8_t out[512];
+    const std::vector<std::uint8_t> params = {0x35, 0x03, 0x19, 0x11, 0x0e, 0xff, 0xff, 0x35,
+                                              0x05, 0x0a, 0x00, 0x00, 0xff, 0xff, 0x00};
+    const int n = ask(request(0x06, params), out);
+
+    ASSERT_GT(n, 20);
+    EXPECT_EQ(0x07, out[0]);
+    const std::string body(reinterpret_cast<char*>(out), static_cast<std::size_t>(n));
+    EXPECT_NE(std::string::npos, body.find(std::string("\x35\x03\x19\x11\x0e", 5))); // class: remote control
+    EXPECT_NE(std::string::npos, body.find(std::string("\x09\x00\x17", 3)));         // l2cap psm 0x17
+    EXPECT_EQ(std::string::npos, body.find(std::string("\x35\x03\x19\x11\x0a", 5))); // not the audio source
+}
+
+TEST(SdpServer, SearchAttributeForBothRecordsListsBoth)
+{
+    std::uint8_t out[512];
+    const std::vector<std::uint8_t> params = {0x35, 0x03, 0x19, 0x10, 0x02, 0xff, 0xff, 0x35,
+                                              0x05, 0x0a, 0x00, 0x00, 0xff, 0xff, 0x00};
+    const int n = ask(request(0x06, params), out);
+
+    ASSERT_GT(n, 40);
+    const std::string body(reinterpret_cast<char*>(out), static_cast<std::size_t>(n));
+    EXPECT_NE(std::string::npos, body.find(std::string("\x35\x03\x19\x11\x0a", 5)));
+    EXPECT_NE(std::string::npos, body.find(std::string("\x35\x03\x19\x11\x0e", 5)));
+    EXPECT_EQ(static_cast<int>(out[8] << 8 | out[9]) + 10,
+              n - 1); // the outer list covers both, then the continuation byte
 }
 
 TEST(SdpServer, ShortAndMalformedRequests)

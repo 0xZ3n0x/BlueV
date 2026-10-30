@@ -6,7 +6,7 @@ namespace bluev
 
 Radio::Radio(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IFirmwareStore& firmware,
              IAudioSource& audio, IClock& clock)
-    : m_bt(transport, bonds, usb, firmware, clock), m_session(m_bt, clock),
+    : m_bt(transport, bonds, usb, firmware, clock), m_session(m_bt, clock), m_avrcp(m_bt),
       m_streamer(m_bt, m_session, audio, clock, {})
 {
 }
@@ -20,6 +20,8 @@ bool Radio::open(const std::string& node)
     }
     m_session.reset();
     m_session.listen();
+    m_avrcp.reset();
+    m_avrcp.listen();
     return true;
 }
 

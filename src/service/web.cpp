@@ -162,6 +162,10 @@ HttpResponse postResponse(Service::PostResult result)
         response.code = 400;
         response.body = message(false, "adapter: internal, or external with dev=ugenX.Y");
         break;
+    case Service::PostResult::BadValue:
+        response.code = 400;
+        response.body = message(false, "volume: a percentage, 0 to 100");
+        break;
     case Service::PostResult::NotAllowed:
         response.code = 409;
         response.body = message(false, "not allowed now");
@@ -438,6 +442,10 @@ HttpResponse HttpServer::route(std::string_view method, std::string_view path, s
         if (path == "/api/radio/off")
         {
             return postResponse(m_service.stopRadio());
+        }
+        if (path == "/api/volume")
+        {
+            return postResponse(m_service.setVolume(queryValue(query, "v")));
         }
         if (path.size() > 5 && path.substr(0, 5) == "/api/")
         {

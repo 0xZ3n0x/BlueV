@@ -75,6 +75,11 @@ pre{margin:0;max-height:300px;overflow:auto;font:12px/1.5 ui-monospace,monospace
     <button id="btnStop" onclick="stopPayload()">Stop BlueV</button>
   </div>
   <div id="stream" class="mut" style="margin-top:8px"></div>
+  <div id="volRow" class="row" style="margin-top:8px;display:none">
+    <span class="mut">Headset volume</span>
+    <input id="vol" type="range" min="0" max="100" step="1" class="grow">
+    <span id="volTxt" class="mut"></span>
+  </div>
 </div>
 
 <div class="card">
@@ -160,6 +165,13 @@ function stopPayload(){
   $('msg').textContent='BlueV has been stopped.';
   $('btnDisc').disabled=true;$('btnScan').disabled=true;$('btnStop').disabled=true;$('btnStart').disabled=true;$('btnRadioOff').disabled=true;
 }
+var volTimer=null,volTouched=0;
+$('vol').oninput=function(){
+  $('volTxt').textContent=this.value+'%';
+  volTouched=Date.now();
+  clearTimeout(volTimer);
+  volTimer=setTimeout(function(){fetch('/api/volume?v='+$('vol').value,{method:'POST'}).catch(function(){})},150);
+};
 function refresh(){
   if(stopped)return;
   fetch('/api/status').then(function(r){return r.json()}).then(function(s){
@@ -189,6 +201,10 @@ function refresh(){
     $('stream').textContent=(s.state==='streaming')
       ? (s.peer.name||s.peer.addr)+' · '+s.stream.rate+' Hz · '+s.stream.pps+' packets/s · queue '+s.stream.queue_ms+' ms'
       : '';
+    // only a headset that reports its volume gets a slider; the others keep their own buttons
+    var hasVol=s.state==='streaming'&&s.volume>=0;
+    $('volRow').style.display=hasVol?'flex':'none';
+    if(hasVol&&Date.now()-volTouched>2500){$('vol').value=s.volume;$('volTxt').textContent=s.volume+'%'}
   }).catch(function(){$('state').textContent='no connection'});
   fetch('/api/devices').then(function(r){return r.json()}).then(drawDevs).catch(function(){});
   fetch('/api/log?since='+since).then(function(r){return r.json()}).then(function(j){

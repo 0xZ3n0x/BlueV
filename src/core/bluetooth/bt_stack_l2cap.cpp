@@ -210,9 +210,16 @@ void BtStack::closeChannel(L2Channel& ch)
 
 void BtStack::bindInbound(std::uint16_t psm, L2Channel& ch, FrameHandler handler)
 {
-    m_inPsm = psm;
-    m_inChannel = &ch;
-    m_inHandler = std::move(handler);
+    // the slot of this PSM, else a free one
+    Inbound* slot = m_inbound[0].psm == psm || m_inbound[0].psm == 0 ? &m_inbound[0] : &m_inbound[1];
+
+    if (m_inbound[1].psm == psm)
+    {
+        slot = &m_inbound[1];
+    }
+    slot->psm = psm;
+    slot->channel = &ch;
+    slot->handler = std::move(handler);
 }
 
 // The device wants a channel to one of our PSMs: SDP is always accepted, the
@@ -223,6 +230,15 @@ void BtStack::onChannelRequest(std::uint8_t id, const std::uint8_t* d)
     const std::uint16_t scid = getLe16(d + 2);
     std::uint16_t our;
     bool sdpIn = false;
+    Inbound* bound = nullptr;
+
+    for (Inbound& in : m_inbound)
+    {
+        if (in.channel != nullptr && in.psm == psm)
+        {
+            bound = &in;
+        }
+    }
 
     if (psm == 0x0001)
     { // SDP: always accept, cid 0x50
@@ -230,10 +246,10 @@ void BtStack::onChannelRequest(std::uint8_t id, const std::uint8_t* d)
         our = 0x50;
         sdpIn = true;
     }
-    else if (m_inChannel == nullptr || m_inPsm != psm)
+    else if (bound == nullptr)
     {
-        // a device keeps asking for the remote control channel every few
-        // seconds; say it twice per link, not every time
+        // a device keeps asking for a channel every few seconds; say it twice
+        // per link, not every time
         if (m_rejectedGen != m_connGen)
         {
             m_rejectedGen = m_connGen;
@@ -241,22 +257,22 @@ void BtStack::onChannelRequest(std::uint8_t id, const std::uint8_t* d)
         }
         if (m_rejectedCount++ < 2)
         {
-            logLine("l2cap: rejected psm %#x%s", psm, psm == 0x17 ? " (remote control, not offered)" : "");
+            logLine("l2cap: rejected psm %#x", psm);
         }
         sendSignal(0x03, id, {0, scid, 2, 0}); // connection response: no channel, PSM denied
         return;
     }
     else
     {
-        m_inChannel->accept(scid);
-        addChannel(*m_inChannel, m_inHandler);
-        our = static_cast<std::uint16_t>(m_inChannel->ourCid);
+        bound->channel->accept(scid);
+        addChannel(*bound->channel, bound->handler);
+        our = static_cast<std::uint16_t>(bound->channel->ourCid);
     }
     sendSignal(0x03, id, {our, scid, 0, 0}); // connection response: successful
     sendSignal(0x04, m_sigId++, {scid, 0});  // configure request, no flags
     if (!sdpIn)
     {
-        logLine("l2cap: accepted inbound psm %#x", m_inPsm);
+        logLine("l2cap: accepted inbound psm %#x", psm);
     }
 }
 

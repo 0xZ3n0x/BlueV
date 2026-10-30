@@ -25,8 +25,8 @@ tried and dropped, is in sections 17 and 18.
 | `src/core/ports/` | interfaces: `IClock`, `ILogSink`, `IHciTransport`, `IBondStore`, `IAudioSource`, `IUsbDirectory`, `IAppInstaller`. An interface exists only where a test needs a fake of something it cannot run (the controller, the console, time, files); the rest are plain classes or `std::function` |
 | `src/core/bluetooth/bt_stack*.cpp` | `BtStack`: controller start/stop, inquiry, paging/pairing/encryption, event and ACL loop, L2CAP, credit flow control, bonds |
 | `src/core/bluetooth/` (rest) | `handleSdpRequest` (SDP), addresses, names, `device_filter` (TV classification, EIR names), `L2capReassembler`, HCI opcodes |
-| `src/core/audio/` | `A2dpSession` (AVDTP), `A2dpStreamer` (capture, resample, SBC, RTP), `avdtp`, `a2dp_params`, `PcmFifo`, `LinearResampler`, `rtp.hpp` |
-| `src/core/radio.*` | `IRadio` (what the service needs) and `Radio` (wires `BtStack` + `A2dpSession` + `A2dpStreamer`) |
+| `src/core/audio/` | `A2dpSession` (AVDTP), `A2dpStreamer` (capture, resample, SBC, RTP), `Avrcp` (the headset's volume, section 9a), `avdtp`, `a2dp_params`, `PcmFifo`, `LinearResampler`, `rtp.hpp` |
+| `src/core/radio.*` | `IRadio` (what the service needs) and `Radio` (wires `BtStack` + `A2dpSession` + `Avrcp` + `A2dpStreamer`) |
 | `src/service/service.*` | `Service`: state machine driven by the web interface; depends on `IRadio`, `IUsbDirectory` and the concrete `HomeScreenShortcut` / `LogBuffer` |
 | `src/service/web.*` | `HttpServer`: control page and JSON API |
 | `src/service/log_buffer.*`, `app_log.*` | log ring + file buffer, the program's `ILogSink` (also sends the on-screen notifications) |
@@ -104,13 +104,14 @@ it comes up once the network does). No authentication: anyone on the local netwo
 | Endpoint | Purpose |
 |---|---|
 | `GET /` | the embedded control page |
-| `GET /api/status` | state, message, current peer, stream numbers (rate, packets/s, queue) |
+| `GET /api/status` | state, message, current peer, the headset's `volume` (percent, -1 when it has none), stream numbers (rate, packets/s, queue) |
 | `GET /api/devices` | scan results plus paired devices, with `bonded`/`connected` flags |
 | `GET /api/log?since=N` | log lines from the ring buffer (300 lines) |
 | `POST /api/scan` | start a 30 s inquiry |
 | `POST /api/connect?addr=AA:BB:CC:DD:EE:FF` | connect to a device (pairs it when no bond exists) |
 | `POST /api/disconnect` | end the stream and drop the link |
 | `POST /api/forget?addr=...` | delete a device's bond files |
+| `POST /api/volume?v=N` | set the headset's volume, N = 0..100 percent; only while streaming to a headset that reports a volume (section 9a) |
 | `POST /api/quit` | stop the service |
 
 State-changing calls are `POST` only. `scan`, `connect` and `forget` are
@@ -311,7 +312,8 @@ connection generation number) that new link is kept for the next session.
   channel id:
   - CID 1: signaling (connect/configure/disconnect/echo/information requests).
     Channels opened by the headset are accepted here, for PSMs bound with
-    `bindInbound` (AVDTP `0x19` is bound while idle, see section 9).
+    `bindInbound` (AVDTP `0x19` and AVCTP `0x17` are bound while idle, see
+    sections 9 and 9a; two PSMs at most, binding a PSM again replaces its channel).
   - CID `0x50`: SDP (`sdp_handle`).
   - Others: the frame handler of the registered channel.
 - A tick runs once a second; the service uses it to publish snapshots and to
@@ -330,10 +332,18 @@ retried; gives up after 14 s), `closeChannel`, `bindInbound`.
 ## 8. SDP (`core/bluetooth/sdp_server.cpp`)
 
 A minimal SDP server so headsets recognise us as an A2DP source: Service Search,
-Service Attribute and Service Search Attribute PDUs. One record (`0x10001`):
-service class A2DP Source (`0x110a`), protocol list (L2CAP/AVDTP), profile
-(`0x110d`), name `BlueV`. A match on the A2DP UUIDs (`0x110a`,
-`0x110d`, `0x0019`, `0x0100`, `0x1002`) counts as found.
+Service Attribute and Service Search Attribute PDUs. Two records:
+
+- `0x10001`: service class A2DP Source (`0x110a`), protocol list (L2CAP/AVDTP),
+  profile (`0x110d`), name `BlueV`. Found by `0x110a`, `0x110d`, `0x0019`,
+  `0x0100` and `0x1002`.
+- `0x10002`: service class A/V Remote Control (`0x110e`), protocol list
+  (L2CAP psm `0x17`/AVCTP 1.4), profile AVRCP 1.4, supported features
+  category 1. We are only the controller, and only for the volume (section
+  9a). Found by `0x110e`, `0x0017`, `0x0100` and `0x1002`.
+
+A pattern matches a record when it names any one of the record's UUIDs, so a
+search for L2CAP or the public browse group finds both records.
 
 ## 9. A2DP setup (`A2dpSession::start`, `A2dpSession::onSignal`)
 
@@ -388,6 +398,61 @@ Loudness allocation when supported, else SNR; **bitpool locked at 40**
 `A2dpSession::stop` sends `CLOSE` and closes the media and signaling channels.
 `a2dp_reset` clears the channels and all headset-driven state between
 sessions.
+
+## 9a. The headset's volume (AVRCP, `core/audio/avrcp.*`)
+
+**Status: written and tested on the PC; the log of a WH-CH720N shows the
+channel, the registration and the changes working. Setting the volume from the
+page has not been run on the console yet. Other headsets are untested.**
+
+What it does: shows the headset's own volume on the page, lets the page set it,
+and announces changes made with the headset's buttons. It is the headset's
+volume only: the console's volume and the captured PCM are never touched. A
+headset that does not report a volume gets no slider and no message and
+keeps its local buttons.
+
+AVRCP absolute volume: we are the controller (SDP record `0x110e`, section 8),
+the headset the target. The AVCTP channel (L2CAP psm `0x17`) is separate from
+A2DP; whatever goes wrong here only means "no volume control", never a lost
+stream.
+
+- `Avrcp::listen` binds psm `0x17` while idle. The CH720N opens the channel
+  itself, about a second after the media channel, once it has searched our
+  SDP records for `0x110c` (not ours) and `0x110e` (ours).
+- `Avrcp::start`, after the A2DP media channel is up: waits 1 s for the headset
+  to open the channel, otherwise opens it. Then it sends `REGISTER_NOTIFICATION`
+  for the event VOLUME_CHANGED. The answer (interim, then `changed` at each
+  change) carries the volume, 0-127; each `changed` is answered by a new
+  registration, because a registration fires once.
+- `Avrcp::service`, from the once-a-second tick: registers if the headset
+  opened the channel late, and sends a volume `setVolume()` asked for
+  (`SET_ABSOLUTE_VOLUME`, which the headset answers `ACCEPTED` with the volume it
+  took). The page's slider can therefore lag by up to a second.
+- `volume()` is -1 until the headset has told its volume; the page and the
+  API treat -1 as "no volume control". It is cleared when the link goes.
+- Nothing is remembered between links: every link asks the headset again, so a
+  refusal that was only a bad moment costs one link at most. A headset that
+  refuses the channel, or rejects or does not implement the registration,
+  stays without a volume for that link (`volume()` -1, no slider, no message).
+  The registration is sent once per link, so a rejection is not asked again.
+- The headset sent commands of its own on the CH720N (`REGISTER_NOTIFICATION`
+  for playback status and track change, `GET_PLAY_STATUS`) as if we were a
+  player. They are logged and answered `NOT_IMPLEMENTED`; the link and the
+  stream stay as they were.
+- `Service::announceVolume`, from the tick: a change of the volume that is not
+  the one the page asked for is shown as an on-screen message, "Headset volume
+  N%". Once a second at most, so a button held down gives the last value. The
+  first value after the link comes up is not announced.
+- Log lines: `avrcp: the headset opened the channel`, `avrcp: channel opened by us`,
+  `avrcp: headset volume N of 127` (when it changes),
+  `avrcp: no volume control on this link (...)`, `avrcp: answer, type T pdu P: <hex>`
+  for anything else.
+
+Frames (`avrcp::buildRegisterVolume`, `buildSetVolume`, `parse`): AVCTP header
+(label, single packet, command or response, profile `0x110e`), then AV/C
+(command type, subunit panel `0x48`, opcode vendor dependent), the Bluetooth
+SIG company id `00 19 58`, the PDU id (`0x31` REGISTER_NOTIFICATION, `0x50`
+SET_ABSOLUTE_VOLUME), packet type and parameter length.
 
 ## 10. Audio streaming loop (`A2dpStreamer::run`)
 
@@ -810,7 +875,7 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 Product
 
 - Remember settings: the last adapter, starting the radio at boot, reconnecting the last device.
-- Media keys and volume (AVRCP): the L2CAP channel for it (psm `0x17`) is refused and the SDP record only describes the audio source.
+- Headset volume (section 9a): test setting it on the console and on the WH-1000XM5 and the Creative speaker; a launcher menu entry for volume up/down if wanted. Media keys (play/pause) are not wanted.
 - Choose the SBC quality and the sample rate; a better resampler than the linear one.
 - A faster Connect. Measured: 43 s (2026-10-18) and 1 min 45 s with a fresh pairing (2026-10-21), mostly paging that gets no answer and the 20 s listen window during which the speaker connects to us. First candidate: shorter first page round (about 2-3 s gain), then a longer or continuous listen window.
 - A launcher menu with the same abilities as the page (external adapter, log) if it is ever wanted.
