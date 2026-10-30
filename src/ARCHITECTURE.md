@@ -285,7 +285,10 @@ logged as `link role: ... we are the master`) the same setup ran 4.5 minutes
 with a game and audio and no loss, so far one run: not proven.
 
 **`encrypt_link`**: waits for authentication (30 s), then for the link to
-encrypt itself (2 s) and forces it with Set Connection Encryption (20 s). A
+encrypt itself (0.5 s for a device we have a key for, 2 s after a new pairing)
+and forces it with Set Connection Encryption (20 s). The WH-CH720N and the Redmi
+Buds never encrypt by themselves, the Creative speaker does within 0.2 s; the
+wait used to be 2 s for all and cost every connection that long (2026-10-30). A
 failed authentication with a stored key deletes that bond. The link's packet
 types are left to the controller: forcing multi-slot types with Change
 Connection Packet Type right after encryption was tried on the Slim and

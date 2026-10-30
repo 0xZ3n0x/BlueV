@@ -132,6 +132,12 @@ bool BtStack::encryptLink()
 {
     std::uint8_t req[3];
 
+    // A device we have a key for does not encrypt the link by itself within a
+    // moment (the WH-CH720N and the Redmi Buds never did, in 2 s of waiting),
+    // so it is asked soon. A new pairing is left the longer time: the controller
+    // starts the encryption itself when the pairing is done.
+    const std::uint32_t encryptionGraceMs = m_key.have ? 500 : 2000;
+
     putLe16(req, m_handle);
     m_authDone = false;
     if (!cmd(hci::kAuthRequested, req, 2))
@@ -160,7 +166,7 @@ bool BtStack::encryptLink()
     }
 
     // wait for the link to encrypt itself; force it if needed
-    wait([this] { return m_encOn || m_disconnected; }, 2000, false);
+    wait([this] { return m_encOn || m_disconnected; }, encryptionGraceMs, false);
     if (!m_encOn && !m_disconnected)
     {
         putLe16(req, m_handle);
