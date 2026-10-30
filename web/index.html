@@ -157,7 +157,7 @@ function startRadio(){
   }).catch(function(){$('radioNote').textContent='Request failed'});
 }
 function stopPayload(){
-  if(!confirm('Stop BlueV? The Bluetooth controller is released. Send the payload again or use the launcher to start it.'))return;
+  if(!confirm('Stop BlueV? The Bluetooth controller is released. Send the payload again to start it.'))return;
   fetch('/api/quit',{method:'POST'}).catch(function(){});
   stopped=true;
   $('state').textContent='Stopped';

@@ -22,7 +22,7 @@ class HttpApi : public ServiceHarness
 };
 } // namespace
 
-TEST_F(HttpApi, ServesThePageAndTheCorsHeaders)
+TEST_F(HttpApi, ServesThePageWithoutCorsHeaders)
 {
     ASSERT_TRUE(startService());
     std::string body;
@@ -31,10 +31,8 @@ TEST_F(HttpApi, ServesThePageAndTheCorsHeaders)
     EXPECT_NE(std::string::npos, body.find("<title>"));
     EXPECT_EQ(200, request("GET", "/index.html", body));
 
-    EXPECT_NE(std::string::npos, fullAnswer("GET /api/status HTTP/1.0\r\n\r\n").find("Access-Control-Allow-Origin: *"));
-    const std::string options = fullAnswer("OPTIONS /api/connect HTTP/1.0\r\n\r\n");
-    EXPECT_EQ(0u, options.find("HTTP/1.0 204"));
-    EXPECT_NE(std::string::npos, options.find("Access-Control-Allow-Methods"));
+    EXPECT_EQ(std::string::npos, fullAnswer("GET /api/status HTTP/1.0\r\n\r\n").find("Access-Control"));
+    EXPECT_EQ(0u, fullAnswer("OPTIONS /api/connect HTTP/1.0\r\n\r\n").find("HTTP/1.0 405"));
 }
 
 TEST_F(HttpApi, ReadyNotificationNamesTheAddress)
