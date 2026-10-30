@@ -34,6 +34,13 @@ class A2dpSession
     // Closes the media and signaling channels (does nothing once the link is lost).
     void stop();
 
+    // The sound quality for the next session (kQualityNormal or kQualityHigh);
+    // from any thread. A session in progress keeps the one it started with.
+    void setQuality(int quality)
+    {
+        m_quality.store(quality);
+    }
+
     // stop request from the service, read by the streaming loop
     void requestStop()
     {
@@ -73,6 +80,7 @@ class A2dpSession
     L2Channel m_sig{"signaling", 0x40};
     L2Channel m_media{"media", 0x42};
     A2dpConfig m_config;
+    std::atomic<int> m_quality{0};
 
     std::uint8_t m_sinkSeid = 0;       // the device's SBC sink endpoint
     std::uint8_t m_label = 0;          // transaction label of the next command

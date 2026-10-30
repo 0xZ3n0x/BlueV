@@ -244,6 +244,24 @@ Service::PostResult Service::setAutostart(std::string_view on)
     return PostResult::Ok;
 }
 
+Service::PostResult Service::setQuality(std::string_view quality)
+{
+    if (quality != "0" && quality != "1")
+    {
+        return PostResult::BadValue;
+    }
+    const int chosen = quality == "1" ? 1 : 0;
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    m_saved.quality = chosen;
+    if (!m_settings.save(m_saved))
+    {
+        logLine("settings: could not save the settings file");
+    }
+    m_radio.setQuality(chosen);
+    return PostResult::Ok;
+}
+
 std::string Service::statusJson()
 {
     Json json;
@@ -265,6 +283,8 @@ std::string Service::statusJson()
         .endObject()
         .key("volume")
         .value(volumePercent(m_radio.volume()))
+        .key("quality")
+        .value(m_saved.quality)
         .key("stream")
         .beginObject()
         .key("rate")
@@ -628,13 +648,14 @@ void Service::closeRadio()
     setState(State::Idle, "radio off");
 }
 
-void Service::autostartRadio()
+void Service::startFromSettings()
 {
     const Settings saved = m_settings.load();
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_saved = saved;
     }
+    m_radio.setQuality(saved.quality);
     if (!saved.autostart)
     {
         return;
@@ -671,7 +692,7 @@ bool Service::run(bool capturing)
         notify("BlueV ready: open its entry on the home screen");
     }
 
-    autostartRadio();
+    startFromSettings();
 
     auto lastServerTry = std::chrono::steady_clock::now();
 

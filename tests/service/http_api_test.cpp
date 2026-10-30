@@ -303,6 +303,27 @@ TEST_F(HttpApi, TheConsolesOwnChipIsNeverStartedAutomatically)
     EXPECT_NE(std::string::npos, status().find("\"autostart\":false"));
 }
 
+TEST_F(HttpApi, TheSoundQualityIsPassedOnAndRemembered)
+{
+    EXPECT_CALL(radio, setQuality(0)).Times(1); // at start, nothing saved yet
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_NE(std::string::npos, status().find("\"quality\":0"));
+    EXPECT_CALL(radio, setQuality(1)).Times(1);
+    EXPECT_EQ(200, request("POST", "/api/quality?v=1", body)) << "also while the radio is off";
+    EXPECT_NE(std::string::npos, status().find("\"quality\":1"));
+    EXPECT_EQ(400, request("POST", "/api/quality?v=2", body));
+    EXPECT_EQ(400, request("POST", "/api/quality", body));
+
+    // a new run of BlueV gives it to the radio again
+    stopService();
+    port = 0;
+    EXPECT_CALL(radio, setQuality(1)).Times(1);
+    ASSERT_TRUE(startService());
+    EXPECT_NE(std::string::npos, status().find("\"quality\":1"));
+}
+
 TEST_F(HttpApi, AFailedStartLeavesTheRadioOffWithTheReason)
 {
     ASSERT_TRUE(startService());

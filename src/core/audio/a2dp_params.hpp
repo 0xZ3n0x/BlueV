@@ -27,11 +27,17 @@ struct A2dpConfig
     std::uint32_t bitpool = 0;
 };
 
+// The sound quality, as the page and the settings file name it: the bitpool
+// asked for (the sink's range still limits it). 53 is the highest bitpool of
+// the "high quality" joint stereo settings in the A2DP specification.
+constexpr int kQualityNormal = 0; // bitpool 40
+constexpr int kQualityHigh = 1;   // bitpool 53
+
 // `caps` is the SBC codec element of the device: byte 1 | byte 2 << 8 |
 // minimum bitpool << 16 | maximum bitpool << 24. Prefers 48 kHz, joint
-// stereo, the longest blocks, 8 subbands, bitpool 40 within the device's
-// range. False, with a log line, when the device takes neither 44.1 nor 48
-// kHz or no stereo mode.
-bool chooseA2dpParams(std::uint32_t caps, A2dpConfig& out);
+// stereo, the longest blocks, 8 subbands, the bitpool of `quality` within the
+// device's range. False, with a log line, when the device takes neither 44.1
+// nor 48 kHz or no stereo mode.
+bool chooseA2dpParams(std::uint32_t caps, int quality, A2dpConfig& out);
 
 } // namespace bluev

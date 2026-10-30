@@ -77,6 +77,9 @@ class Service final
     // ("1" or "0"). Needs the radio on with a USB adapter; the console's own
     // chip is always started by hand.
     PostResult setAutostart(std::string_view on);
+    // The sound quality of the next stream, "0" normal or "1" high; saved for
+    // the next run too. Always accepted.
+    PostResult setQuality(std::string_view quality);
     // The state, the peer, the stream numbers and the radio, as JSON for /api/status.
     std::string statusJson();
     // The last scan plus the paired devices, as JSON for /api/devices.
@@ -144,8 +147,9 @@ class Service final
     void publishDevices();
     void addBondedDevices(std::vector<DeviceInfo>& devices);
     void announceVolume();
-    // At start: opens the radio with the saved USB adapter when asked to.
-    void autostartRadio();
+    // At start: takes the saved settings and opens the radio with the saved USB
+    // adapter when asked to.
+    void startFromSettings();
     // One connection from start to end; `address` null = a device dialled in.
     void runSession(bool capturing, const BdAddr* address);
     // Opens the controller (empty node = the console's chip); false, with the

@@ -56,6 +56,11 @@ pre{margin:0;max-height:300px;overflow:auto;font:12px/1.5 ui-monospace,monospace
     <button id="btnRadioOff" onclick="post('radio/off')" disabled>Turn off</button>
     <span id="radioNote" class="grow mut"></span>
   </div>
+  <div class="row" style="margin-top:6px">
+    <span class="grow">Sound quality</span>
+    <select id="quality" onchange="setQuality()"><option value="0">Normal</option><option value="1">High</option></select>
+  </div>
+  <div class="mut" style="margin-top:2px;font-size:12px">High sends more data; use it only if the sound stays clean. It applies from the next connection.</div>
   <label class="row" id="autoRow" style="margin-top:6px;display:none"><input type="checkbox" id="auto" onchange="setAutostart()">
     <span class="grow">Start this adapter when BlueV starts</span></label>
   <div id="internalNote" class="warn">
@@ -115,6 +120,11 @@ function setAutostart(){
   fetch('/api/autostart?on='+($('auto').checked?1:0),{method:'POST'}).then(function(r){return r.json()}).then(function(j){
     $('radioNote').textContent=j.ok?'':'Error: '+j.message;
     refresh();
+  }).catch(function(){$('radioNote').textContent='Request failed'});
+}
+function setQuality(){
+  fetch('/api/quality?v='+$('quality').value,{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+    $('radioNote').textContent=j.ok?'':'Error: '+j.message;
   }).catch(function(){$('radioNote').textContent='Request failed'});
 }
 function logShown(){return !$('log').hidden}
@@ -199,6 +209,7 @@ function refresh(){
     }
     $('autoRow').style.display=radioOn&&s.radio.adapter==='external'?'':'none';
     $('auto').checked=!!s.radio.autostart;
+    if(document.activeElement!==$('quality'))$('quality').value=String(s.quality||0);
     $('radioBadge').textContent=radioOn?(s.radio.adapter==='external'?'External on':'Internal on'):'Radio off';
     $('radioBadge').className='badge '+(radioOn?'streaming':'');
     var ext=document.querySelector('input[name=ad]:checked').value==='external';

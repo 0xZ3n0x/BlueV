@@ -18,12 +18,14 @@ TEST(SettingsFile, ASavedFileComesBack)
     saved.autostart = true;
     saved.vid = 0x0a12;
     saved.pid = 0x0001;
+    saved.quality = 1;
     ASSERT_TRUE(file.save(saved));
 
     const Settings loaded = file.load();
     EXPECT_TRUE(loaded.autostart);
     EXPECT_EQ(0x0a12, loaded.vid);
     EXPECT_EQ(0x0001, loaded.pid);
+    EXPECT_EQ(1, loaded.quality);
     EXPECT_FALSE(dir.exists("settings.tmp")); // renamed over the file
 }
 
@@ -35,6 +37,17 @@ TEST(SettingsFile, AMissingFileGivesTheDefaults)
     EXPECT_FALSE(loaded.autostart);
     EXPECT_EQ(0, loaded.vid);
     EXPECT_EQ(0, loaded.pid);
+    EXPECT_EQ(0, loaded.quality);
+}
+
+TEST(SettingsFile, AnUnknownQualityIsNormal)
+{
+    TempDir dir;
+    {
+        std::ofstream out(dir.file("settings"));
+        out << "quality=9\n";
+    }
+    EXPECT_EQ(0, SettingsFile(dir.file("settings")).load().quality);
 }
 
 TEST(SettingsFile, UnknownAndDamagedLinesAreIgnored)

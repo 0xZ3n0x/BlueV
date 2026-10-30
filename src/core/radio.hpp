@@ -88,6 +88,8 @@ class IRadio
     virtual int volume() = 0;
     // Asks the headset to take this volume, 0..127. From any thread.
     virtual void setVolume(int volume) = 0;
+    // The sound quality (kQualityNormal or kQualityHigh) of the next stream. From any thread.
+    virtual void setQuality(int quality) = 0;
 };
 
 class Radio final : public IRadio
@@ -203,6 +205,10 @@ class Radio final : public IRadio
     void setVolume(int volume) override
     {
         m_avrcp.setVolume(volume);
+    }
+    void setQuality(int quality) override
+    {
+        m_session.setQuality(quality);
     }
 
   private:
