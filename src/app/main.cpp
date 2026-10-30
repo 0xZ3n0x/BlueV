@@ -11,6 +11,7 @@
 #include <sys/thr.h>
 #include <unistd.h>
 
+#include "core/bluetooth/usb_hci_transport.hpp"
 #include "core/ports/clock.hpp"
 #include "core/ports/log.hpp"
 #include "core/radio.hpp"
@@ -26,7 +27,7 @@
 #include "platform/ps5/process_identity.hpp"
 #include "platform/ps5/ps5_system.hpp"
 #include "platform/ps5/ps5_usb_directory.hpp"
-#include "platform/ps5/ugen_transport.hpp"
+#include "platform/ps5/ugen_device.hpp"
 #include "service/app_log.hpp"
 #include "service/home_screen_shortcut.hpp"
 #include "service/service.hpp"
@@ -102,7 +103,8 @@ int run(bluev::LogBuffer& buffer, int lockFd)
     }
 
     bluev::SystemClock clock;
-    bluev::UgenTransport transport(clock);
+    bluev::UgenDevice usbDevice;
+    bluev::UsbHciTransport transport(usbDevice, clock, bluev::kConsoleBluetoothNode);
     bluev::FileBondStore bonds(kDirBase);
     bluev::FileFirmwareStore firmware(std::string(kDirBase) + "/firmware");
     bluev::Ps5UsbDirectory usb;
