@@ -32,7 +32,7 @@ tried and dropped, is in sections 16 and 17.
 | `src/service/log_buffer.*`, `app_log.*` | log ring + file buffer, the program's `ILogSink` (also sends the on-screen notifications) |
 | `src/service/home_screen_shortcut.*` | the home screen entry (files + `IAppInstaller`) |
 | `src/service/json.hpp` | JSON writer |
-| `src/platform/ps5/` | the only code that knows the console: `UgenDevice` (the ugen USB_FS ioctls), `Ps5UsbDirectory` (the USB device list + libSceUsbd descriptors), `AvcapSource` (libSceAvcap2), `Ps5AppInstaller`, `askOtherInstanceToQuit` (process list lookup), `consoleModelName()`, `sendNotification()` |
+| `src/platform/ps5/` | the only code that knows the console: `UgenDevice` (the ugen USB_FS ioctls), `Ps5UsbDirectory` (the USB device list + libSceUsbd descriptors), `AvcapLibrary` (libSceAvcap2), `Ps5AppInstaller`, `askOtherInstanceToQuit` (process list lookup), `consoleModelName()`, `sendNotification()` |
 | `src/platform/posix/` | `FileBondStore`, `LogFile` (plain files; also used by the tests) |
 | `web/index.html` | the control page, embedded at build time (`tools/embed.py`) |
 | `third_party/sbc/` | BlueZ libsbc 2.2, git submodule, built unmodified (not tested) |
@@ -49,13 +49,13 @@ byte for byte.
 
 ```
 log file -> lock (flock)
-  -> AvcapSource::open   prepare audio capture
+  -> AvcapLibrary::load, AvcapCapture::start   prepare audio capture
   -> Service::run
        HttpServer::start HTTP server thread
        loop: idle / scanning / connecting / streaming, driven by commands
              and by headsets dialing in; the radio (BtStack::start) is
              opened when the user starts it (section 12b)
-  -> AvcapSource::close
+  -> AvcapCapture::close
 ```
 
 - `/data/bluev/bluev.lock` is taken with
@@ -120,19 +120,25 @@ it comes up once the network does). No authentication: by default it listens on 
 State-changing calls are `POST` only. `scan`, `connect` and `forget` are
 refused unless the service is idle.
 
-## 3. Audio capture (`platform/ps5/avcap_source.cpp`)
+## 3. Audio capture (`core/audio/avcap_capture.cpp`, `platform/ps5/avcap_library.cpp`)
 
+- **The split.** `AvcapLibrary` (platform, console only) loads the library, finds the
+  entry points and passes the calls on, building the parameter block of OpenAudio;
+  everything that is decided is in `AvcapCapture` (core) behind `IAvcap2`
+  (`core/ports/avcap.hpp`), which a test plays with `FakeAvcap`
+  (`tests/unit/avcap_capture_test.cpp`).
 - `sceKernelLoadStartModule` loads `/system/common/lib/libSceIpmi.sprx` and
   `libSceAvcap2.sprx`.
 - The `sceAvcap2*` functions are resolved by NID with
   `kernel_dynlib_resolve(pid, handle, NID)` (Initialize, Terminate, OpenAudio,
   Close, Start, Stop, ReadAudio).
-- `AvcapSource::start`: Initialize -> OpenAudio (2 channels, all devices) ->
-  `Start(handle)`. Everything is undone on failure; a changed error code is
+- `AvcapCapture::start`: Initialize -> OpenAudio (2 channels, all devices) ->
+  `Start(handle)`. Everything is undone on failure (a step that fails takes back the
+  ones before it, in the opposite order, and only those that were done); a changed error code is
   logged ("not available yet" is normal when no game or audio exists yet).
-- `AvcapSource::read` returns records of 8-byte (L/R float) frames; `0` means no new
+- `AvcapCapture::read` returns records of 8-byte (L/R float) frames; `0` means no new
   data or a ring overrun (the first 5 are logged), `-1` an error.
-- `AvcapSource::restart` closes and reopens; this is how audio comes back after a
+- `AvcapCapture::restart` closes and reopens; this is how audio comes back after a
   game exits and starts again. Capture is opened once for the whole service
   lifetime and keeps running between streams.
 
@@ -508,7 +514,7 @@ headset's MTU and the ACL size). The loop runs until the link drops, the media
 channel closes, or a stop is requested:
 
 1. **Capture state.** Without capture, the queue is filled with wall-clock
-   silence (so the stream does not stall) and `AvcapSource::restart` is tried
+   silence (so the stream does not stall) and `AvcapCapture::restart` is tried
    every 500 ms. With capture, records are read.
 2. **FIFO** (24000 stereo frames, int16): 48 kHz float is clamped to +-1 and
    scaled by 32767. A 44.1 kHz sink gets linear resampling. A capture error
@@ -937,7 +943,7 @@ Console and hardware
 
 Code and tests
 
-- `AvcapSource` and the other console adapters have no host tests.
+- The console adapters that remain (`UgenDevice`, `AvcapLibrary`, `Ps5UsbDirectory`, `Ps5AppInstaller`, the notification and process lookups) only pass calls on and have no host tests; what they do is checked on the console. The decisions of the capture and of the HCI transport are in `core` and are tested.
 - A CI job: host tests (plain, thread, address), the console build and a `clang-format` check.
 - `WithRadioOn.ManyClientsAtOnceGetValidAnswers` failed once in a plain run and one thread-sanitizer run failed once; neither came back in many repeats. Find the cause.
 - Releases are built by hand with `make clean release` (see the README). The source is GPL-3.0-or-later (`LICENSE`), so a release has to offer the source with it (the tag's source archive does). Before the first one, check the SDK's own `LICENSE` in its repository for a linking exception.
