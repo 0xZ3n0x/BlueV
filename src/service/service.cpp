@@ -137,6 +137,12 @@ Service::PostResult Service::post(std::string_view command, std::string_view add
     }
     m_pending.command = wanted;
     m_pending.address = parsed;
+    if (wanted == Command::Connect)
+    {
+        // an old Disconnect must not end this connection; one that comes after
+        // this point must, even before the radio thread has started it
+        m_disconnectRequested.store(false);
+    }
     return PostResult::Ok;
 }
 
@@ -522,7 +528,10 @@ void Service::runSession(bool capturing, const BdAddr* address)
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
     };
 
-    m_disconnectRequested.store(false); // an old request does not end this session
+    if (address == nullptr)
+    {
+        m_disconnectRequested.store(false); // a device dialled in: an old request does not end this session
+    }
     if (address != nullptr)
     {
         m_radio.resetAudio();
