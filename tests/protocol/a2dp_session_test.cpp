@@ -38,6 +38,8 @@ TEST_F(Session, WeRunTheWholeProcedure)
     EXPECT_EQ((std::vector<std::uint8_t>{1, 2, 3, 6, 7}), speaker.signals); // discover ... start
     EXPECT_TRUE(speaker.started);
     EXPECT_TRUE(sink.has("avdtp: signaling channel opened by us"));
+    EXPECT_TRUE(sink.has("avdtp: > command 0x01 label ")); // Discover, with its bytes
+    EXPECT_TRUE(sink.has("avdtp: < answer 0x01 label "));
     EXPECT_TRUE(sink.has("avdtp: SBC sink 2, capabilities ff ff, bitpool 2-53"));
     EXPECT_TRUE(sink.has("avdtp: streaming SBC 48000 Hz, bitpool 40"));
     EXPECT_EQ(48000u, session.config().rate);
@@ -120,6 +122,20 @@ TEST_F(Session, TheSpeakerDrivesTheProcedureItself)
     EXPECT_TRUE(speaker.signals.empty()); // we sent no command of our own
 }
 
+TEST_F(Session, AGetAllCapabilitiesFromTheSpeakerIsAccepted)
+{
+    // the Redmi Buds ask for this (AVDTP 1.3) and wait when it is refused
+    session.listen();
+    speaker.dialIn(500);
+    speaker.sendCommand(1, 0x0c, {0x04}, 1000);
+    ASSERT_TRUE(session.start(false)) << sink.all();
+
+    ASSERT_EQ(12u, speaker.lastAvdtpReply.size());
+    EXPECT_EQ(0x02, speaker.lastAvdtpReply[0] & 3); // accepted, not rejected
+    EXPECT_EQ(0x0c, speaker.lastAvdtpReply[1]);
+    EXPECT_TRUE(sink.has("avdtp: > accept 0x0c label 1"));
+}
+
 TEST_F(Session, WeStartTheStreamWhenTheSpeakerConfiguredButDoesNotStart)
 {
     session.listen();
@@ -174,10 +190,10 @@ TEST_F(Session, UnknownCommandsFromTheSpeakerAreRejected)
 {
     session.listen();
     speaker.dialIn(100);
-    speaker.sendCommand(5, 0x0c, {}, 1000); // a signal we do not know
+    speaker.sendCommand(5, 0x0b, {}, 1000); // security control, a signal we do not know
     session.start(false);
     EXPECT_EQ(1, speaker.rejectedGeneral);
-    EXPECT_EQ(0x0c, speaker.lastAvdtpReply.size() > 1 ? 0x0c : 0);
+    EXPECT_EQ(0x0b, speaker.lastAvdtpReply.size() > 1 ? speaker.lastAvdtpReply[1] : 0);
 }
 
 TEST_F(Session, StopClosesTheMediaAndSignalingChannels)

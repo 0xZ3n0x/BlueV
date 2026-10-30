@@ -57,11 +57,16 @@ TEST(Avdtp, BuildMessages)
     EXPECT_EQ(0x04, out[2]); // seid 1 not in use
     EXPECT_EQ(0x00, out[3]); // audio, source
 
-    ASSERT_EQ(12u, buildCapabilitiesAccept(7, out));
+    ASSERT_EQ(12u, buildCapabilitiesAccept(7, kGetCapabilities, out));
     EXPECT_EQ(0x72, out[0]);
     EXPECT_EQ(kGetCapabilities, out[1]);
     EXPECT_EQ(0x07, out[4]);  // media codec capability
     EXPECT_EQ(0x35, out[11]); // maximum bitpool 53
+
+    // Get All Capabilities (AVDTP 1.3) gets the same list under its own signal id
+    ASSERT_EQ(12u, buildCapabilitiesAccept(7, kGetAllCapabilities, out));
+    EXPECT_EQ(0x0c, out[1]);
+    EXPECT_EQ(0x35, out[11]);
 }
 
 TEST(Avdtp, ParseSetConfiguration)

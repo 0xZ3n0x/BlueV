@@ -466,6 +466,10 @@ void Service::announceVolume()
 void Service::runSession(bool capturing, const BdAddr* address)
 {
     const char* failure = nullptr;
+    const auto begun = std::chrono::steady_clock::now();
+    const auto secondsSince = [](std::chrono::steady_clock::time_point from) {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+    };
 
     m_disconnectRequested.store(false); // an old request does not end this session
     if (address != nullptr)
@@ -486,6 +490,8 @@ void Service::runSession(bool capturing, const BdAddr* address)
             failure = "the link could not be secured";
         }
     }
+    const double linkSeconds = secondsSince(begun);
+
     if (failure == nullptr)
     {
         setState(State::Connecting, "setting up audio");
@@ -497,6 +503,8 @@ void Service::runSession(bool capturing, const BdAddr* address)
     }
     if (failure == nullptr)
     {
+        logLine("connect: link %.1f s, audio %.1f s, until the stream %.1f s", linkSeconds,
+                secondsSince(begun) - linkSeconds, secondsSince(begun));
         tick();
         setState(State::Streaming, "streaming to %s", m_radio.peerName().c_str());
         m_radio.stream(capturing);
