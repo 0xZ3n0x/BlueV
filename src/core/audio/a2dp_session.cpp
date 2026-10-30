@@ -169,7 +169,7 @@ bool A2dpSession::followPeer()
 {
     logLine("avdtp: the device configured the stream itself (%02x %02x, bitpool %u-%u)", m_peerCaps & 0xff,
             m_peerCaps >> 8 & 0xff, m_peerCaps >> 16 & 0xff, m_peerCaps >> 24);
-    if (!chooseA2dpParams(m_peerCaps, m_config))
+    if (!chooseA2dpParams(m_peerCaps, m_quality.load(), m_config))
     {
         return false;
     }
@@ -252,7 +252,7 @@ bool A2dpSession::driveSetup()
 
     logLine("avdtp: SBC sink %d, capabilities %02x %02x, bitpool %u-%u", m_sinkSeid, caps & 0xff, caps >> 8 & 0xff,
             caps >> 16 & 0xff, caps >> 24);
-    if (!chooseA2dpParams(caps, m_config))
+    if (!chooseA2dpParams(caps, m_quality.load(), m_config))
     {
         return false;
     }

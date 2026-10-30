@@ -122,6 +122,18 @@ TEST_F(Session, TheSpeakerDrivesTheProcedureItself)
     EXPECT_TRUE(speaker.signals.empty()); // we sent no command of our own
 }
 
+TEST_F(Session, HighQualityConfiguresBitpool53)
+{
+    session.setQuality(kQualityHigh);
+    ASSERT_TRUE(session.start(true)) << sink.all();
+
+    EXPECT_EQ(53u, session.config().bitpool);
+    EXPECT_TRUE(sink.has("avdtp: streaming SBC 48000 Hz, bitpool 53"));
+    ASSERT_GE(speaker.configuration.size(), 12u);
+    EXPECT_EQ(53, speaker.configuration[speaker.configuration.size() - 1]); // maximum bitpool in the configuration
+    EXPECT_EQ(53, speaker.configuration[speaker.configuration.size() - 2]); // and the minimum
+}
+
 TEST_F(Session, AGetAllCapabilitiesFromTheSpeakerIsAccepted)
 {
     // the Redmi Buds ask for this (AVDTP 1.3) and wait when it is refused

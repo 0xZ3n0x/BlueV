@@ -39,6 +39,7 @@ class MockRadio : public IRadio
     MOCK_METHOD(void, requestStop, (), (override));
     MOCK_METHOD(int, volume, (), (override));
     MOCK_METHOD(void, setVolume, (int volume), (override));
+    MOCK_METHOD(void, setQuality, (int quality), (override));
 
     MockRadio()
     {

@@ -112,6 +112,7 @@ it comes up once the network does). No authentication: anyone on the local netwo
 | `POST /api/disconnect` | end the stream and drop the link |
 | `POST /api/forget?addr=...` | delete a device's bond files |
 | `POST /api/autostart?on=1\|0` | open the radio with the USB adapter in use when BlueV starts (section 12b); needs the radio on with a USB adapter, `409` otherwise; `on=0` always works; `/api/status` shows `radio.autostart` |
+| `POST /api/quality?v=0\|1` | the sound quality of the next stream, 0 normal (bitpool 40), 1 high (bitpool 53); saved in the settings file; `/api/status` shows `quality` |
 | `POST /api/volume?v=N` | set the headset's volume, N = 0..100 percent; only while streaming to a headset that reports a volume (section 9a) |
 | `POST /api/quit` | stop the service |
 
@@ -748,10 +749,12 @@ controller and starts it:
   from before this change (`bond-<their address>.key`) are not used; the
   device is paired once more.
 
-**Starting at launch** (`Service::autostartRadio`, `service/settings.*`): with
+**Sound quality** (`quality=0|1` in the same file, `POST /api/quality`, the page's "Sound quality" box): 0 asks the headset for SBC bitpool 40 (93-byte frames at 48 kHz joint stereo, about 279 kbit/s), 1 for bitpool 53 (119-byte frames, about 357 kbit/s), in both cases limited to the range the headset offers (a headset that stops at 39 gets 39 either way). It applies from the next connection; `A2dpSession` reads it when it picks the parameters, whether we drive the setup or follow the headset's. The bigger frames mean fewer fit in a packet (two instead of three on the CSR adapter's 310-byte buffers) and more packets per second, which needs more ACL credits: it is on the page as "use it only if the sound stays clean". Normal stays the default; high has not been run on the console yet, so it is untested for dropouts on the internal chip (few credits) and on the USB adapter.
+
+**Starting at launch** (`Service::startFromSettings`, `service/settings.*`): with
 `autostart` ticked on the page (only offered while a USB adapter is in use), the
 file `/data/bluev/settings` holds `autostart=1` and `adapter=<vendor>:<product>`
-(hex). When BlueV starts it looks for that adapter among the USB devices, by
+(hex), next to the `quality` line. When BlueV starts it looks for that adapter among the USB devices, by
 vendor and product because the `ugenX.Y` node changes with the port, and opens
 it as if the user had pressed Start; a paired headset that is then switched on
 connects by itself (about two to three seconds on the headsets tried). If the
@@ -857,7 +860,7 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | AVDTP: wait for the device to start the procedure (1 s if we made the connection, 20 s if it did), then drive it ourselves | Headsets differ: the Sony WH-CH720N hangs up after about 8 s if the host does nothing, the WH-1000XM5 after 2-3 s (was 3 s here, 2026-10-25), the Creative speaker opens its channel later; starting at once collided with a device that drives (link timeout, 2026-10-18) |
 | Flow control: at most 5 unconfirmed packets, a missing completion report counts as done after 31 ms | Limits of 3 packets and 100 ms cap the stream near 40 packets/s and dropped audio (`bt_stack.cpp`) |
 | Streaming: as many SBC frames per packet as the MTU allows (at most 8), the queue cut to 50 ms, sending paced to the clock | Low delay without bursts; silence fills the gaps when the capture has nothing |
-| SBC only, joint stereo preferred, bitpool 40 within the device's range, 48 kHz preferred, linear resampling to 44.1 kHz | Every audio device speaks SBC; the parameters are simple and were enough in the soak test (12d) |
+| SBC only, joint stereo preferred, bitpool 40 ("normal") or 53 ("high", chosen on the page) within the device's range, 48 kHz preferred, linear resampling to 44.1 kHz | Every audio device speaks SBC; the parameters are simple and were enough in the soak test (12d) |
 | libsbc is an unmodified submodule; `src/compat/config.h` supplies its build settings | Upstream code stays upstream; it is not tested here |
 | A small HTTP/1.0 server of our own, with a JSON writer; a thread per connection, at most 8, `503` when full | The API is a handful of routes; the connection slot is given back before the socket is closed so a client never meets a full server |
 | One control page, embedded in the ELF (`tools/embed.py`) | Nothing else to deploy |
@@ -894,9 +897,9 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 
 Product
 
-- Remember settings: the USB adapter and starting the radio at launch are done (section 12b); the SBC quality (bitpool) is still to come, and so is reconnecting the last device by paging it, which no headset tried has needed.
+- Remember settings: the USB adapter, starting the radio at launch and the sound quality are done (section 12b); reconnecting the last device by paging it is not, and no headset tried has needed it.
 - Headset volume (section 9a): not tried yet on the WH-1000XM5 or on a headset that has no volume control. Media keys (play/pause) are not wanted.
-- Choose the SBC quality and the sample rate; a better resampler than the linear one.
+- The sample rate is not a choice; a better resampler than the linear one.
 - A faster Connect. Measured: 43 s (2026-10-18) and 1 min 45 s with a fresh pairing (2026-10-21), mostly paging that gets no answer and the 20 s listen window during which the speaker connects to us. First candidate: shorter first page round (about 2-3 s gain), then a longer or continuous listen window.
 
 Security

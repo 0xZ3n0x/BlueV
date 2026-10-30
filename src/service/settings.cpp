@@ -20,11 +20,15 @@ Settings SettingsFile::load() const
     }
     while (std::fgets(line, sizeof line, file) != nullptr)
     {
-        unsigned flag = 0, vid = 0, pid = 0;
+        unsigned flag = 0, vid = 0, pid = 0, quality = 0;
 
         if (std::sscanf(line, "autostart=%u", &flag) == 1)
         {
             settings.autostart = flag != 0;
+        }
+        else if (std::sscanf(line, "quality=%u", &quality) == 1)
+        {
+            settings.quality = quality == 1 ? 1 : 0;
         }
         else if (std::sscanf(line, "adapter=%4x:%4x", &vid, &pid) == 2)
         {
@@ -46,7 +50,8 @@ bool SettingsFile::save(const Settings& settings) const
     {
         return false;
     }
-    std::fprintf(file, "autostart=%d\nadapter=%04x:%04x\n", settings.autostart ? 1 : 0, settings.vid, settings.pid);
+    std::fprintf(file, "autostart=%d\nadapter=%04x:%04x\nquality=%d\n", settings.autostart ? 1 : 0, settings.vid,
+                 settings.pid, settings.quality);
     const bool written = std::fclose(file) == 0;
 
     return written && std::rename(temporary.c_str(), m_path.c_str()) == 0;

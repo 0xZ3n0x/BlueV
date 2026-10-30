@@ -244,6 +244,22 @@ TEST_F(Stream, AFrameThatDoesNotFitIsRefused)
     EXPECT_TRUE(speaker.media.empty());
 }
 
+TEST_F(Stream, HighQualityStreamsBiggerFramesThatStillFitThePackets)
+{
+    session.setQuality(kQualityHigh);
+    ready();
+    endAfter(1000);
+    ASSERT_TRUE(streamer.run(true)) << sink.all();
+
+    EXPECT_TRUE(sink.has("stream: to Creative, 48000 Hz, bitpool 53"));
+    EXPECT_TRUE(sink.has("sbc: 119-byte frames"));
+    ASSERT_FALSE(speaker.media.empty());
+    for (const auto& packet : speaker.media)
+    {
+        EXPECT_LE(packet.payloadBytes, static_cast<int>(session.media().theirMtu) - 13);
+    }
+}
+
 TEST_F(Stream, ThePacketSizeFollowsTheMtu)
 {
     ready();
