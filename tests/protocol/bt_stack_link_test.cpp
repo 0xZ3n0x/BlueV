@@ -44,6 +44,8 @@ TEST_F(Link, ConnectsToAPairedDeviceAndEncryptsTheLink)
     EXPECT_TRUE(sink.has("connection complete: handle 0x042"));
     EXPECT_TRUE(sink.has("authentication complete"));
     EXPECT_TRUE(sink.has("link encrypted"));
+    EXPECT_TRUE(sink.has("connect: paging "));
+    EXPECT_TRUE(sink.has(" s, security "));
     // the stored key went to the controller
     const SentCommand* reply = controller.lastCommand(kLinkKeyReply);
     ASSERT_NE(nullptr, reply);
@@ -145,6 +147,8 @@ TEST_F(Link, NoAnswerToAuthenticationTakesThirtySeconds)
     EXPECT_FALSE(stack.connectTo(remoteAddress()));
     EXPECT_GE(clock.nowMs() - t0, 30000u);
     EXPECT_TRUE(sink.has("authentication: no answer"));
+    EXPECT_TRUE(sink.has("security 30.")); // the time the failed step took
+    EXPECT_TRUE(sink.has("(failed)"));
 }
 
 TEST_F(Link, PagesFourTimesWhenTheDeviceIsSilent)
@@ -157,6 +161,7 @@ TEST_F(Link, PagesFourTimesWhenTheDeviceIsSilent)
     EXPECT_EQ(4, controller.countCommand(kCreateConnCancel));
     EXPECT_TRUE(sink.has("connection: no answer (try 1)"));
     EXPECT_TRUE(sink.has("connection: no answer (try 4)"));
+    EXPECT_TRUE(sink.has("connect: no link after "));
     // the first try has DM1 only and no role switch, the second the usual
     std::vector<const SentCommand*> pages;
     for (const SentCommand& c : controller.commands)
@@ -278,6 +283,7 @@ TEST_F(Link, AcceptsAPairedDeviceThatDialsInAndAdoptsTheLink)
     ASSERT_TRUE(stack.adoptIncoming()) << sink.all();
     EXPECT_TRUE(sink.has("Creative connected by itself"));
     EXPECT_TRUE(sink.has("link encrypted"));
+    EXPECT_TRUE(sink.has("connect: security "));
 }
 
 TEST_F(Link, IgnoresADeviceThatIsNotPaired)

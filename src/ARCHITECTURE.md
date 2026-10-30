@@ -296,6 +296,23 @@ in most sessions, and with it removed 4 of 4 reconnects were clean.
 `NoInputNoOutput`, user confirmation answered automatically. The link key
 notification writes `bond-<ours>-<theirs>.key` (not saved for TV-like devices).
 
+**Timing in the log**: where the time of a connection goes can be read from
+three lines, each with seconds to one decimal (every log line also carries the
+time of day):
+- `connect: paging N s, security N s` (`BtStack::connectTo`; `(failed)` is added
+  when the security step failed, and `connect: no link after N s` when paging
+  gave up) or, for a device that dialed in, `connect: security N s`. Paging
+  includes the listen windows between the rounds.
+- `connect: link N s, audio N s, until the stream N s` (`Service::runSession`,
+  just before streaming starts). The audio part is the AVDTP setup and, for a
+  device that dialed in, the time it took to start the procedure.
+- The lines of the rounds themselves (`connection: no answer (try N)`) and of
+  AVDTP (section 9) show what happened inside those totals. Every AVDTP
+  signal is logged with its first bytes, ours as `avdtp: > command 0x01 label N: <hex>`
+  and the device's as `avdtp: < command|answer ...` (`unreadable` for a frame
+  that is not a single packet), so a device that stays silent shows as a `>` with
+  no `<` after it.
+
 **Teardown** (`BtStack::disconnect`): disconnects the current handle, cancels any
 pending Create Connection, resets link state and turns page scan back on.
 If the device already dialed in again during teardown (counted with a
@@ -359,10 +376,16 @@ immediately. Inbound commands are answered by `on_signal_frame`:
 | Command | Answer |
 |---|---|
 | Discover | accept, one SBC source endpoint (seid 1) |
-| Get Capabilities | accept, media transport + SBC |
+| Get Capabilities, Get All Capabilities | accept, media transport + SBC (the same list under the signal id asked for) |
 | Set Configuration | accept; the headset's SBC parameters are adopted |
 | Open / Start | accept |
 | anything else | general reject |
+
+Get All Capabilities (`0x0c`, AVDTP 1.3, which our SDP record claims) was
+rejected until 2026-10-30. The WH-CH720N answers a reject by asking Get
+Capabilities instead; the Redmi Buds 4 Lite do not, and stayed silent until we
+gave up after twenty seconds, so a reconnect they started failed every time
+(every time, and the AVDTP trace of section 6 shows the sequence).
 
 When the headset made the connection, `A2dpSession::start` first waits up to twenty
 seconds for its signaling channel. When **we** made the connection it waits

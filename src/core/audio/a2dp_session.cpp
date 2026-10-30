@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "core/audio/avdtp.hpp"
+#include "core/hex.hpp"
 #include "core/ports/log.hpp"
 
 namespace bluev
@@ -53,6 +54,7 @@ int A2dpSession::command(std::uint8_t signal, const std::uint8_t* params, int le
         m_label = (m_label + 1) & 0xf;
         const std::size_t n = avdtp::buildCommand(m_label, signal, params, len, cmd);
         m_responseReady = false;
+        logLine("avdtp: > command %#04x label %d: %s", signal, m_label, hexStart(cmd, static_cast<int>(n)).c_str());
         if (!m_bt.send(m_sig.theirCid, cmd, static_cast<int>(n)))
         {
             return -1;
@@ -304,8 +306,11 @@ void A2dpSession::onSignal(const std::uint8_t* buf, int len)
 
     if (!avdtp::parseHeader(buf, len, h))
     {
+        logLine("avdtp: < unreadable, %d bytes: %s", len, hexStart(buf, len).c_str());
         return;
     }
+    logLine("avdtp: < %s %#04x label %d: %s", h.type == avdtp::kCommand ? "command" : "answer", h.signal, h.label,
+            hexStart(buf, len).c_str());
     if (h.type != avdtp::kCommand)
     {
         if (h.label == m_label)
@@ -322,9 +327,9 @@ void A2dpSession::onSignal(const std::uint8_t* buf, int len)
     {
         n = avdtp::buildDiscoverAccept(h.label, rsp);
     }
-    else if (h.signal == avdtp::kGetCapabilities)
+    else if (h.signal == avdtp::kGetCapabilities || h.signal == avdtp::kGetAllCapabilities)
     {
-        n = avdtp::buildCapabilitiesAccept(h.label, rsp);
+        n = avdtp::buildCapabilitiesAccept(h.label, h.signal, rsp);
     }
     else if (h.signal == avdtp::kSetConfiguration && avdtp::parseSetConfiguration(buf, len, peer))
     {
@@ -345,6 +350,7 @@ void A2dpSession::onSignal(const std::uint8_t* buf, int len)
     { // anything else: general reject
         n = avdtp::buildReject(h.label, h.signal, 0x19, rsp);
     }
+    logLine("avdtp: > %s %#04x label %d", (rsp[0] & 3) == avdtp::kAccept ? "accept" : "reject", h.signal, h.label);
     m_bt.send(m_sig.theirCid, rsp, static_cast<int>(n));
 }
 

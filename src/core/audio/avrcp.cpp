@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core/audio/avrcp.hpp"
 
-#include <cstdio>
 #include <cstring>
-#include <string>
 
 #include "core/bytes.hpp"
+#include "core/hex.hpp"
 #include "core/ports/log.hpp"
 
 namespace bluev::avrcp
@@ -118,23 +117,6 @@ int volumeFromSetAnswer(const Message& message)
 
 namespace bluev
 {
-
-namespace
-{
-// the first bytes of a frame as hex, for the log
-std::string hexStart(const std::uint8_t* data, int length)
-{
-    std::string text;
-    char byte[4];
-
-    for (int i = 0; i < length && i < 24; i++)
-    {
-        std::snprintf(byte, sizeof(byte), "%02x ", data[i]);
-        text += byte;
-    }
-    return text;
-}
-} // namespace
 
 Avrcp::Avrcp(BtStack& bt) : m_bt(bt)
 {

@@ -234,11 +234,19 @@ bool BtStack::connectTo(const BdAddr& peer)
     m_peerMac = addressString(peer);
     logLine("connecting to %s %s%s", addressText(peer).c_str(), m_peerName.c_str(),
             m_key.have ? " (paired before)" : " (new device)");
+    const std::uint64_t began = m_clock.nowMs();
+
     if (!pageDevice(peer, psrm, clock))
     {
+        logLine("connect: no link after %.1f s", static_cast<double>(m_clock.nowMs() - began) / 1000.0);
         return false;
     }
-    return encryptLink();
+    const std::uint64_t paged = m_clock.nowMs();
+    const bool secured = encryptLink();
+
+    logLine("connect: paging %.1f s, security %.1f s%s", static_cast<double>(paged - began) / 1000.0,
+            static_cast<double>(m_clock.nowMs() - paged) / 1000.0, secured ? "" : " (failed)");
+    return secured;
 }
 
 // a paired device dialed in while idle; authenticate and encrypt
@@ -246,7 +254,12 @@ bool BtStack::adoptIncoming()
 {
     m_peerMac = addressString(m_target);
     logLine("%s connected by itself", m_peerName.empty() ? m_peerMac.c_str() : m_peerName.c_str());
-    return encryptLink();
+    const std::uint64_t began = m_clock.nowMs();
+    const bool secured = encryptLink();
+
+    logLine("connect: security %.1f s%s", static_cast<double>(m_clock.nowMs() - began) / 1000.0,
+            secured ? "" : " (failed)");
+    return secured;
 }
 
 void BtStack::disconnect()
