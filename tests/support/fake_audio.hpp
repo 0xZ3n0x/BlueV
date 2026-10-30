@@ -6,8 +6,8 @@
 #include <cmath>
 #include <functional>
 
-#include "core/ports/audio_source.hpp"
 #include "core/audio/a2dp_streamer.hpp"
+#include "core/ports/audio_source.hpp"
 #include "fake_clock.hpp"
 
 namespace bluev::testing

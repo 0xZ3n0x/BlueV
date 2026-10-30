@@ -8,7 +8,6 @@
 #include <mutex>
 #include <string>
 
-
 namespace bluev
 {
 

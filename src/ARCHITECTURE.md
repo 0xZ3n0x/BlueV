@@ -401,9 +401,11 @@ sessions.
 
 ## 9a. The headset's volume (AVRCP, `core/audio/avrcp.*`)
 
-**Status: written and tested on the PC; the log of a WH-CH720N shows the
-channel, the registration and the changes working. Setting the volume from the
-page has not been run on the console yet. Other headsets are untested.**
+**Status: works on the console with the WH-CH720N, the Creative Stage Air V2
+and the Redmi Buds 4 Lite: the slider changes the volume audibly and the
+headset's buttons move the slider and show the message. Not tried on the
+WH-1000XM5, nor on a headset without absolute volume (that path is covered by
+the PC tests only).**
 
 What it does: shows the headset's own volume on the page, lets the page set it,
 and announces changes made with the headset's buttons. It is the headset's
@@ -840,6 +842,7 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 | Interface 3 of the console's chip as a second controller | It refuses the HCI commands (12c) |
 | Starting AVDTP ourselves at once to save the 9 s the speaker waits | Interferes when the speaker drives; see the AVDTP row above |
 | Shorter page rounds and a longer listen window to speed up Connect | Noted and deliberately not applied: the speaker mostly connects to us by itself during the listen window (see 17) |
+| The headset's battery over the hands-free profile (AT commands on RFCOMM, an audio gateway record in SDP) | Tried as a probe on the console (2026-10-30), then dropped. Of three headsets only the Redmi Buds opened the hands-free channel, and only when it connected to us by itself; it reported the battery as `AT+IPHONEACCEV` steps of 10. The WH-CH720N and the Creative speaker never searched for the record. Getting the battery from every headset would need us to open the channel ourselves (an SDP client and an RFCOMM initiator) with no promise that they answer |
 | A launcher menu (an extension for the ps5-payload-websrv launcher) next to the page | It could only draw its own list (`showCarousel`), not HTML, so it did less than the page, and it needed `Access-Control-Allow-Origin: *` for its sandboxed frame. Removed: the page opens from the home screen entry and from any browser, and a payload manager starts the program |
 | A confirmation window before starting the internal radio | Replaced by the warning text only, on the page |
 | Compute the NIDs from the function names (SDK `nid_encode`) | Its implementation is not in the SDK libraries; the 8 NIDs stay as strings, each next to its name |

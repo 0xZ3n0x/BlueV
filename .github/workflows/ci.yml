@@ -46,7 +46,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang-format
-          git ls-files 'src/*.cpp' 'src/*.h' 'tests/*.cpp' 'tests/*.h' \
+          git ls-files 'src/*.cpp' 'src/*.hpp' 'src/*.h' 'tests/*.cpp' 'tests/*.hpp' 'tests/*.h' \
             | grep -v '^src/compat/' \
             | xargs clang-format --dry-run --Werror
 
