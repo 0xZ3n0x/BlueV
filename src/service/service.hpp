@@ -21,6 +21,7 @@
 #include "core/radio.hpp"
 #include "service/home_screen_shortcut.hpp"
 #include "service/log_buffer.hpp"
+#include "service/settings.hpp"
 #include "service/web.hpp"
 
 namespace bluev
@@ -50,13 +51,13 @@ class Service final
         BadValue
     };
 
-    // The caller owns `radio`, `usb`, `shortcut` and `log` and keeps them alive.
+    // The caller owns `radio`, `usb`, `shortcut`, `settings` and `log` and keeps them alive.
     // `page`: the control page. `model`: the console's model name for the log;
     // may be empty. `address`: where the console can be reached on the network,
     // for the "ready" notification; may be empty. `port`: where the web
     // interface listens.
-    Service(IRadio& radio, IUsbDirectory& usb, HomeScreenShortcut& shortcut, LogBuffer& log, std::string_view page,
-            std::string model, std::string address, int port = kDefaultPort);
+    Service(IRadio& radio, IUsbDirectory& usb, HomeScreenShortcut& shortcut, SettingsFile& settings, LogBuffer& log,
+            std::string_view page, std::string model, std::string address, int port = kDefaultPort);
 
     // ---- any thread -------------------------------------------------
     // A command from the web interface: scan, connect, forget (the last two with
@@ -72,6 +73,10 @@ class Service final
     // The headset's volume as a percentage, 0..100, while streaming to a
     // headset that has a volume control.
     PostResult setVolume(std::string_view percent);
+    // Whether the radio is opened with the USB adapter in use when BlueV starts
+    // ("1" or "0"). Needs the radio on with a USB adapter; the console's own
+    // chip is always started by hand.
+    PostResult setAutostart(std::string_view on);
     // The state, the peer, the stream numbers and the radio, as JSON for /api/status.
     std::string statusJson();
     // The last scan plus the paired devices, as JSON for /api/devices.
@@ -139,6 +144,8 @@ class Service final
     void publishDevices();
     void addBondedDevices(std::vector<DeviceInfo>& devices);
     void announceVolume();
+    // At start: opens the radio with the saved USB adapter when asked to.
+    void autostartRadio();
     // One connection from start to end; `address` null = a device dialled in.
     void runSession(bool capturing, const BdAddr* address);
     // Opens the controller (empty node = the console's chip); false, with the
@@ -158,6 +165,7 @@ class Service final
     IRadio& m_radio;
     IUsbDirectory& m_usb;
     HomeScreenShortcut& m_shortcut;
+    SettingsFile& m_settings;
     std::string m_model;
     std::string m_address;
 
@@ -170,7 +178,9 @@ class Service final
     StreamInfo m_stream;
     Pending m_pending;
     bool m_radioOn = false;
-    std::string m_adapterNode; // empty = internal
+    std::string m_adapterNode;                        // empty = internal
+    std::uint16_t m_adapterVid = 0, m_adapterPid = 0; // of the USB adapter in use
+    Settings m_saved;                                 // what the settings file holds
 
     std::atomic<bool> m_quit{false}; // "quit" was posted
     // set by the web threads, honoured by the radio thread

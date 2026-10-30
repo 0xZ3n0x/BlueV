@@ -22,6 +22,7 @@ from a simple web page, on the console itself or from a phone or PC on the same 
 - Works with a USB Bluetooth adapter or with the console's own Bluetooth chip
 - Control page for scanning, connecting, pairing and disconnecting, also in the console's browser
 - Remembers paired devices and accepts them when they connect by themselves
+- Can open the USB adapter by itself when BlueV starts
 - A "BlueV" entry on the home screen that opens the control page
 
 ## What you need
@@ -55,6 +56,9 @@ from a simple web page, on the console itself or from a phone or PC on the same 
 3. Put your speaker or headphones in pairing mode and press **Scan**.
 4. Press **Connect** next to it. The first time takes a few seconds longer because it pairs.
 5. Start a game. The sound comes out of the Bluetooth device.
+
+Tick **Start this adapter when BlueV starts** once the adapter is on, and BlueV opens it by
+itself the next time (the console's own chip is always started by hand).
 
 Next time, switch the device on: paired devices connect by themselves. Use **Disconnect**
 to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit.

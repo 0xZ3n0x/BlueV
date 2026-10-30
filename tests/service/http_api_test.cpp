@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "service/settings.hpp"
 #include "service_harness.hpp"
 
 using namespace bluev;
@@ -212,6 +213,94 @@ TEST_F(HttpApi, AnExternalAdapterIsOpenedByItsNode)
     EXPECT_NE(std::string::npos, status().find("\"adapter\":\"external\""));
     EXPECT_NE(std::string::npos, status().find("\"device\":\"ugen1.2\""));
     EXPECT_TRUE(sink.has("external adapter ugen1.2"));
+}
+
+namespace
+{
+UsbDevice csrAdapter()
+{
+    UsbDevice csr;
+    csr.node = "ugen1.2";
+    csr.vid = 0x0a12;
+    csr.pid = 1;
+    csr.deviceClass = 0xe0;
+    return csr;
+}
+} // namespace
+
+TEST_F(HttpApi, TheUsbAdapterInUseIsOpenedAgainWhenBlueVStarts)
+{
+    usb.devices = {csrAdapter()};
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_EQ(409, request("POST", "/api/autostart?on=1", body)) << "the radio is off";
+    EXPECT_CALL(radio, open("ugen1.2")).WillOnce(Return(true));
+    EXPECT_EQ(200, request("POST", "/api/radio/on?adapter=external&dev=ugen1.2", body));
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":true") != std::string::npos; }, 2000));
+    EXPECT_NE(std::string::npos, status().find("\"autostart\":false"));
+    EXPECT_EQ(200, request("POST", "/api/autostart?on=1", body));
+    EXPECT_NE(std::string::npos, status().find("\"autostart\":true"));
+
+    // a new run of BlueV, the adapter plugged in at another port
+    stopService();
+    port = 0;
+    usb.devices = {csrAdapter()};
+    usb.devices[0].node = "ugen2.3";
+    EXPECT_CALL(radio, open("ugen2.3")).WillOnce(Return(true));
+    ASSERT_TRUE(startService());
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":true") != std::string::npos; }, 2000));
+    EXPECT_NE(std::string::npos, status().find("\"device\":\"ugen2.3\""));
+    EXPECT_TRUE(sink.has("radio: starting with the USB adapter of the last run (0a12:0001)"));
+}
+
+TEST_F(HttpApi, WithoutTheAdapterTheRadioStaysOffAndTheUserIsTold)
+{
+    Settings saved;
+    saved.autostart = true;
+    saved.vid = 0x0a12;
+    saved.pid = 1;
+    ASSERT_TRUE(settings.save(saved));
+    EXPECT_CALL(radio, open(_)).Times(0);
+    ASSERT_TRUE(startService());
+
+    EXPECT_NE(std::string::npos, status().find("\"on\":false"));
+    EXPECT_NE(std::string::npos, status().find("\"autostart\":true")); // still wanted
+    EXPECT_TRUE(sink.has("is not plugged in"));
+}
+
+TEST_F(HttpApi, TurningAutostartOffIsRemembered)
+{
+    usb.devices = {csrAdapter()};
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_CALL(radio, open("ugen1.2")).WillOnce(Return(true));
+    EXPECT_EQ(200, request("POST", "/api/radio/on?adapter=external&dev=ugen1.2", body));
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":true") != std::string::npos; }, 2000));
+    EXPECT_EQ(200, request("POST", "/api/autostart?on=1", body));
+    EXPECT_EQ(200, request("POST", "/api/autostart?on=0", body));
+
+    stopService();
+    port = 0;
+    EXPECT_CALL(radio, open(_)).Times(0);
+    ASSERT_TRUE(startService());
+    EXPECT_NE(std::string::npos, status().find("\"on\":false"));
+    EXPECT_NE(std::string::npos, status().find("\"autostart\":false"));
+}
+
+TEST_F(HttpApi, TheConsolesOwnChipIsNeverStartedAutomatically)
+{
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_CALL(radio, open("")).WillOnce(Return(true));
+    EXPECT_EQ(200, request("POST", "/api/radio/on?adapter=internal", body));
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":true") != std::string::npos; }, 2000));
+    EXPECT_EQ(409, request("POST", "/api/autostart?on=1", body));
+    EXPECT_EQ(400, request("POST", "/api/autostart?on=2", body));
+    EXPECT_EQ(400, request("POST", "/api/autostart", body));
+    EXPECT_NE(std::string::npos, status().find("\"autostart\":false"));
 }
 
 TEST_F(HttpApi, AFailedStartLeavesTheRadioOffWithTheReason)

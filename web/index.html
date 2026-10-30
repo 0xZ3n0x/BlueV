@@ -56,6 +56,8 @@ pre{margin:0;max-height:300px;overflow:auto;font:12px/1.5 ui-monospace,monospace
     <button id="btnRadioOff" onclick="post('radio/off')" disabled>Turn off</button>
     <span id="radioNote" class="grow mut"></span>
   </div>
+  <label class="row" id="autoRow" style="margin-top:6px;display:none"><input type="checkbox" id="auto" onchange="setAutostart()">
+    <span class="grow">Start this adapter when BlueV starts</span></label>
   <div id="internalNote" class="warn">
     <b>Before you start the internal Bluetooth</b>
     <div class="mut" style="margin-top:4px">The console's own Bluetooth chip is shared with your gamepad. While BlueV is running, a gamepad that is switched off and on again, or reconnects, can end up connected but without input until the console is restarted.</div>
@@ -108,6 +110,12 @@ function post(cmd,addr){
     if(!j.ok)$('msg').textContent='Error: '+j.message;
     refresh();
   }).catch(function(){$('msg').textContent='Request failed'});
+}
+function setAutostart(){
+  fetch('/api/autostart?on='+($('auto').checked?1:0),{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+    $('radioNote').textContent=j.ok?'':'Error: '+j.message;
+    refresh();
+  }).catch(function(){$('radioNote').textContent='Request failed'});
 }
 function logShown(){return !$('log').hidden}
 function toggleLog(){
@@ -189,6 +197,8 @@ function refresh(){
         if(!found){var opt=document.createElement('option');opt.value=s.radio.device;opt.textContent='USB Bluetooth adapter';sel.appendChild(opt);sel.value=s.radio.device;if(!listedOnce){listedOnce=true;findAdapters()}}
       }
     }
+    $('autoRow').style.display=radioOn&&s.radio.adapter==='external'?'':'none';
+    $('auto').checked=!!s.radio.autostart;
     $('radioBadge').textContent=radioOn?(s.radio.adapter==='external'?'External on':'Internal on'):'Radio off';
     $('radioBadge').className='badge '+(radioOn?'streaming':'');
     var ext=document.querySelector('input[name=ad]:checked').value==='external';

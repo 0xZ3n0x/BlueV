@@ -130,7 +130,8 @@ void ServiceHarness::setUpDefaultRadio()
 
 bool ServiceHarness::startService(bool capturing)
 {
-    m_service = std::make_unique<Service>(radio, usb, shortcut, log, page, "CFI-2002 B01", address, m_portBase);
+    m_service =
+        std::make_unique<Service>(radio, usb, shortcut, settings, log, page, "CFI-2002 B01", address, m_portBase);
     m_thread = std::thread([this, capturing] { m_service->run(capturing); });
     for (int i = 0; i < 100 && port == 0; i++)
     {

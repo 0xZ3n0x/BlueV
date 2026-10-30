@@ -158,7 +158,7 @@ HttpResponse postResponse(Service::PostResult result)
         break;
     case Service::PostResult::BadValue:
         response.code = 400;
-        response.body = message(false, "volume: a percentage, 0 to 100");
+        response.body = message(false, "bad value (volume: a percentage, 0 to 100; autostart: 0 or 1)");
         break;
     case Service::PostResult::NotAllowed:
         response.code = 409;
@@ -440,6 +440,10 @@ HttpResponse HttpServer::route(std::string_view method, std::string_view path, s
         if (path == "/api/volume")
         {
             return postResponse(m_service.setVolume(queryValue(query, "v")));
+        }
+        if (path == "/api/autostart")
+        {
+            return postResponse(m_service.setAutostart(queryValue(query, "on")));
         }
         if (path.size() > 5 && path.substr(0, 5) == "/api/")
         {

@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include <gtest/gtest.h>
+
+#include <fstream>
+
+#include "service/settings.hpp"
+#include "temp_dir.hpp"
+
+using namespace bluev;
+using namespace bluev::testing;
+
+TEST(SettingsFile, ASavedFileComesBack)
+{
+    TempDir dir;
+    const SettingsFile file(dir.file("settings"));
+    Settings saved;
+
+    saved.autostart = true;
+    saved.vid = 0x0a12;
+    saved.pid = 0x0001;
+    ASSERT_TRUE(file.save(saved));
+
+    const Settings loaded = file.load();
+    EXPECT_TRUE(loaded.autostart);
+    EXPECT_EQ(0x0a12, loaded.vid);
+    EXPECT_EQ(0x0001, loaded.pid);
+    EXPECT_FALSE(dir.exists("settings.tmp")); // renamed over the file
+}
+
+TEST(SettingsFile, AMissingFileGivesTheDefaults)
+{
+    TempDir dir;
+    const Settings loaded = SettingsFile(dir.file("nothing")).load();
+
+    EXPECT_FALSE(loaded.autostart);
+    EXPECT_EQ(0, loaded.vid);
+    EXPECT_EQ(0, loaded.pid);
+}
+
+TEST(SettingsFile, UnknownAndDamagedLinesAreIgnored)
+{
+    TempDir dir;
+    {
+        std::ofstream out(dir.file("settings"));
+        out << "something=else\nautostart=1\nadapter=garbage\n\x01\x02 not a line\nadapter=2357:0604\n";
+    }
+    const Settings loaded = SettingsFile(dir.file("settings")).load();
+
+    EXPECT_TRUE(loaded.autostart);
+    EXPECT_EQ(0x2357, loaded.vid);
+    EXPECT_EQ(0x0604, loaded.pid);
+}
+
+TEST(SettingsFile, SavingIntoAMissingDirectoryFails)
+{
+    TempDir dir;
+
+    EXPECT_FALSE(SettingsFile(dir.file("no/such/dir/settings")).save(Settings{}));
+}
