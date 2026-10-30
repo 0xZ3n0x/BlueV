@@ -653,7 +653,26 @@ TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
     }
     std::string body;
     request("POST", "/api/disconnect", body);
-    EXPECT_TRUE(waitForState("idle", 5000));
+    EXPECT_TRUE(waitForState("idle", 5000)) << status();
+}
+
+// A Disconnect that comes right after a Connect must not be lost: the
+// connection may not have started yet, and it must end as soon as it has.
+// A connection that was not ended keeps the service busy, so the next Connect
+// is refused until the wait runs out.
+TEST_F(WithRadioOn, ADisconnectRightAfterAConnectIsNotLost)
+{
+    std::string body;
+    const std::string connect = std::string("/api/connect?addr=") + kSpeakerAddress;
+
+    for (int i = 0; i < 25; i++)
+    {
+        int code = 0;
+
+        ASSERT_TRUE(waitFor([&] { return (code = request("POST", connect, body)) == 200; }, 3000))
+            << "round " << i << ": " << status();
+        EXPECT_EQ(200, request("POST", "/api/disconnect", body));
+    }
 }
 
 // Finding and asking an older copy to quit is no longer HTTP-based (a new
