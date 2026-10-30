@@ -1,47 +1,36 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Raw HCI over FreeBSD's ugen (USB generic) driver.
-//
-// A Bluetooth controller is a node under /dev: the console's own chip is
-// ugen0.2, an adapter in a USB port has its own (ugen1.2 and so on). The
-// console's chip is opened beside the system's own Bluetooth stack, which keeps
-// using it. Either is driven with USB_FS ioctls:
+// HCI over a USB Bluetooth controller (class e0/01/01 or the layout of the
+// console's own chip), on top of an IUsbDevice:
 //
 //   transfers 0..47   async event reads
 //   transfers 48..63  async ACL reads
 //   transfer  64      ACL out
 //
-// HCI commands go out as control transfers. Completed reads are split into
-// individual HCI packets and land in two software rings. The traffic of the
-// system's own stack on the console's chip arrives here too and is left to the
-// layer above to ignore.
-//
-// The kernel writes into the buffers of armed transfers, so an instance must
-// not move or die while the device is open (close() stops everything).
+// HCI commands go out as control requests. Completed reads are split into
+// individual HCI packets and land in two queues. The traffic of the system's
+// own stack on the console's chip arrives here too and is left to the layer
+// above to ignore.
 #pragma once
 
 #include <cstdint>
 #include <string>
 
-#include <dev/usb/usb.h>
-#include <dev/usb/usb_ioctl.h>
-#include <sys/ioctl.h>
-#include <sys/types.h>
-
 #include "core/bluetooth/hci_packet_queue.hpp"
 #include "core/ports/clock.hpp"
 #include "core/ports/hci_transport.hpp"
-#include "platform/ps5/ps5_usb_directory.hpp"
+#include "core/ports/usb_device.hpp"
 
 namespace bluev
 {
 
-class UgenTransport final : public IHciTransport
+class UsbHciTransport final : public IHciTransport
 {
   public:
-    explicit UgenTransport(IClock& clock);
-    ~UgenTransport() override;
-    UgenTransport(const UgenTransport&) = delete;
-    UgenTransport& operator=(const UgenTransport&) = delete;
+    // `consoleNode`: the node used when select() names none (the console's own chip).
+    UsbHciTransport(IUsbDevice& device, IClock& clock, const char* consoleNode);
+    ~UsbHciTransport() override;
+    UsbHciTransport(const UsbHciTransport&) = delete;
+    UsbHciTransport& operator=(const UsbHciTransport&) = delete;
 
     void select(const char* node, const HciLayout& layout) override;
     bool open() override;
@@ -55,24 +44,23 @@ class UgenTransport final : public IHciTransport
     std::string describe(const char* why) override;
 
   private:
-    static constexpr int kTransfers = 65;
     static constexpr int kEventFirst = 0, kEventLast = 47; // inclusive
     static constexpr int kAclFirst = 48, kAclLast = 63;
     static constexpr int kAclOut = 64;
-    static constexpr int kXferBuf = 0x44c;
     static constexpr int kEventBuf = 0x104;
 
     std::uint32_t reap();
     void onTransferComplete(int t);
     bool openTransfer(int transfer, std::uint8_t endpoint, std::uint32_t length);
     int openTransfers(int first, int last, std::uint8_t endpoint, std::uint32_t length);
-    void closeFd();
-    bool startTransfer(int t);
+    void closeDevice();
     void armReads(int first, int count, std::uint32_t length);
 
+    IUsbDevice& m_device;
     IClock& m_clock;
-    int m_fd = -1;
-    std::string m_node = kConsoleBluetoothNode;
+    bool m_open = false;
+    std::string m_consoleNode;
+    std::string m_node;
     HciLayout m_layout{0, 0x82, 0x81, 0x01}; // until select(): how the console's chip is laid out on most units
     std::uint32_t m_eventLength = kEventBuf; // buffer of the "event" transfers
 
@@ -84,11 +72,7 @@ class UgenTransport final : public IHciTransport
     unsigned m_dgComplete = 0, m_dgData = 0, m_dgEmpty = 0, m_dgError = 0, m_dgStartError = 0;
     unsigned m_dgCommands = 0, m_dgEventData = 0, m_dgAclData = 0;
 
-    usb_fs_endpoint m_eps[kTransfers]; // what the kernel reads and fills in, see USB_FS_INIT
-    std::uint8_t m_buf[kTransfers][kXferBuf];
-    std::uint8_t* m_bufPtr[kTransfers];
-    std::uint32_t m_bufLen[kTransfers];
-    std::uint32_t m_pending[kTransfers];
+    bool m_pending[kUsbTransfers] = {}; // started and not yet complete
     int m_eventReads = 0;
     int m_aclReads = 0;
     HciPacketQueue m_events;

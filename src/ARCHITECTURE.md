@@ -24,7 +24,7 @@ tried and dropped, is in sections 16 and 17.
 | `src/app/main.cpp` | composition root: lock file, builds the real objects, runs the service |
 | `src/core/ports/` | interfaces: `IClock`, `ILogSink`, `IHciTransport`, `IBondStore`, `IAudioSource`, `IUsbDirectory`, `IAppInstaller`. An interface exists only where a test needs a fake of something it cannot run (the controller, the console, time, files); the rest are plain classes or `std::function` |
 | `src/core/bluetooth/bt_stack*.cpp` | `BtStack`: controller start/stop, inquiry, paging/pairing/encryption, event and ACL loop, L2CAP, credit flow control, bonds |
-| `src/core/bluetooth/` (rest) | `handleSdpRequest` (SDP), addresses, names, `device_filter` (TV classification, EIR names), `L2capReassembler`, HCI opcodes |
+| `src/core/bluetooth/` (rest) | `UsbHciTransport` (HCI over USB: the reads, commands and queues, on top of `IUsbDevice`), `HciPacketQueue`, `handleSdpRequest` (SDP), addresses, names, `device_filter` (TV classification, EIR names), `L2capReassembler`, HCI opcodes |
 | `src/core/audio/` | `A2dpSession` (AVDTP), `A2dpStreamer` (capture, resample, SBC, RTP), `Avrcp` (the headset's volume, section 9a), `avdtp`, `a2dp_params`, `PcmFifo`, `LinearResampler`, `rtp.hpp` |
 | `src/core/radio.*` | `IRadio` (what the service needs) and `Radio` (wires `BtStack` + `A2dpSession` + `Avrcp` + `A2dpStreamer`) |
 | `src/service/service.*` | `Service`: state machine driven by the web interface; depends on `IRadio`, `IUsbDirectory` and the concrete `HomeScreenShortcut` / `LogBuffer` |
@@ -32,7 +32,7 @@ tried and dropped, is in sections 16 and 17.
 | `src/service/log_buffer.*`, `app_log.*` | log ring + file buffer, the program's `ILogSink` (also sends the on-screen notifications) |
 | `src/service/home_screen_shortcut.*` | the home screen entry (files + `IAppInstaller`) |
 | `src/service/json.hpp` | JSON writer |
-| `src/platform/ps5/` | the only code that knows the console: `UgenTransport` (raw HCI over ugen), `Ps5UsbDirectory` (the USB device list + libSceUsbd descriptors), `AvcapSource` (libSceAvcap2), `Ps5AppInstaller`, `askOtherInstanceToQuit` (process list lookup), `consoleModelName()`, `sendNotification()` |
+| `src/platform/ps5/` | the only code that knows the console: `UgenDevice` (the ugen USB_FS ioctls), `Ps5UsbDirectory` (the USB device list + libSceUsbd descriptors), `AvcapSource` (libSceAvcap2), `Ps5AppInstaller`, `askOtherInstanceToQuit` (process list lookup), `consoleModelName()`, `sendNotification()` |
 | `src/platform/posix/` | `FileBondStore`, `LogFile` (plain files; also used by the tests) |
 | `web/index.html` | the control page, embedded at build time (`tools/embed.py`) |
 | `third_party/sbc/` | BlueZ libsbc 2.2, git submodule, built unmodified (not tested) |
@@ -136,7 +136,7 @@ refused unless the service is idle.
   game exits and starts again. Capture is opened once for the whole service
   lifetime and keeps running between streams.
 
-## 4. HCI transport (`platform/ps5/ugen_transport.cpp`)
+## 4. HCI transport (`core/bluetooth/usb_hci_transport.cpp`, `platform/ps5/ugen_device.cpp`)
 
 The controller is `/dev/ugen0.2`. 65 transfers are set up with the FreeBSD
 `USB_FS_*` ioctls:
@@ -162,7 +162,7 @@ else, opening, commands, events and ACL, goes through ugen. If the descriptors
 cannot be read, an adapter gets the standard layout and the console's chip the
 detection by behaviour below.
 
-`UgenTransport::detectRoles` (the fallback) runs once at startup (from
+`UsbHciTransport::detectRoles` (the fallback) runs once at startup (from
 `BtStack::start`): it opens with the fat
 layout, sends `Read Buffer Size` (`0x1005`) every 1.5 s and watches on which IN
 pipe the Command Complete arrives. If it arrives on the second pipe the layout
@@ -171,20 +171,33 @@ is the Slim one: the device is closed, the standard layout (`0x81`, `0x82`,
 process; nothing is re-detected per connection.
 
 - HCI **commands** go out as control transfers (`USB_FS_SETUP`,
-  `bmRequestType=0x20`) in `UgenTransport::command`.
-- `UgenTransport::pump(timeout)` restarts idle reads and `reap()` collects finished
+  `bmRequestType=0x20`) in `UsbHciTransport::command`.
+- `UsbHciTransport::pump(timeout)` restarts idle reads and `reap()` collects finished
   transfers. Consecutive packets inside one transfer are split into two
   queues (`HciPacketQueue` in `core/bluetooth/`, events and ACL, 32 slots each);
   the oldest packet is dropped when a queue is full. The queue and the test for
-  the Command Complete that role detection waits for hold no kernel call, so
-  they are tested on the PC (`tests/unit/hci_packet_queue_test.cpp`); what stays
-  in `UgenTransport` is the ioctls and the transfer table.
-- `UgenTransport::sendAcl` uses a single output transfer and waits up to 1 s for the
+  the Command Complete that role detection waits for hold no kernel call
+  (`tests/unit/hci_packet_queue_test.cpp`).
+- **The split between `UsbHciTransport` and `UgenDevice`.** Everything the
+  transport decides is in `core` and runs on the PC: how many reads are opened
+  (48 events, 16 ACL; a transfer that will not open ends the loop, and fewer reads
+  are enough as long as there is one of each), when an idle read is started (at the
+  top of every `pump`, so a read that completes is started again by the next
+  `pump`, not before), what an error or an empty read counts as (counted, nothing
+  queued), the 1 s wait for the single output transfer, the order of closing
+  (stop every transfer that is running, then take the table down). Only the
+  calls to the kernel are in `UgenDevice`, behind `IUsbDevice`
+  (`core/ports/usb_device.hpp`): the table of 65 transfers with a 0x44c byte buffer
+  each, `USB_FS_START/STOP/COMPLETE`, the control request, and the wait (`usleep`).
+  A test plays the kernel with `FakeUsbDevice` (`tests/support/`), finishing
+  transfers by hand and moving the clock when the transport waits
+  (`tests/protocol/usb_hci_transport_test.cpp`).
+- `UsbHciTransport::sendAcl` uses a single output transfer and waits up to 1 s for the
   previous one.
 - The system's own traffic passes through the same controller, so replies to
   other parties' commands are counted and the first 50 are logged, not
   processed.
-- Diagnostics: per-endpoint counters (`UgenTransport::describe`), logged when
+- Diagnostics: per-endpoint counters (`UsbHciTransport::describe`), logged when
   the transport closes.
 
 ## 5. Controller setup (`BtStack::start`)
@@ -924,7 +937,6 @@ Console and hardware
 
 Code and tests
 
-- Make `UgenTransport` testable by putting the ioctls behind a small interface, so that the ring and the packet splitting run on the PC.
 - `AvcapSource` and the other console adapters have no host tests.
 - A CI job: host tests (plain, thread, address), the console build and a `clang-format` check.
 - `WithRadioOn.ManyClientsAtOnceGetValidAnswers` failed once in a plain run and one thread-sanitizer run failed once; neither came back in many repeats. Find the cause.
