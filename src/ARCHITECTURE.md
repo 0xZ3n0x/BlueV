@@ -69,8 +69,8 @@ log file -> lock (flock)
   for the lock. Only once it has the lock (an older copy is gone or there
   never was one) does this copy call `thr_set_name` on itself — a lookup
   never has two processes to choose between while it is still running.
-- Files in `/data/bluev/` (`main.cpp`, `FileBondStore`): `bluev.log`,
-  `bluev.lock`, and one `bond-<ours>-<theirs>.key` (23 bytes: address 6, link
+- Files in `/data/bluev/` (`main.cpp`, `FileBondStore`, `SettingsFile`): `bluev.log`,
+  `bluev.lock`, `settings` (section 12b), and one `bond-<ours>-<theirs>.key` (23 bytes: address 6, link
   key 16, key type 1) plus `bond-<theirs>.name` per paired device (section 12b).
 - Start-up order is the log, the lock, the capture,
   `Service::run`; shutdown is the reverse (the HTTP server stops and waits for
@@ -111,6 +111,7 @@ it comes up once the network does). No authentication: anyone on the local netwo
 | `POST /api/connect?addr=AA:BB:CC:DD:EE:FF` | connect to a device (pairs it when no bond exists) |
 | `POST /api/disconnect` | end the stream and drop the link |
 | `POST /api/forget?addr=...` | delete a device's bond files |
+| `POST /api/autostart?on=1\|0` | open the radio with the USB adapter in use when BlueV starts (section 12b); needs the radio on with a USB adapter, `409` otherwise; `on=0` always works; `/api/status` shows `radio.autostart` |
 | `POST /api/volume?v=N` | set the headset's volume, N = 0..100 percent; only while streaming to a headset that reports a volume (section 9a) |
 | `POST /api/quit` | stop the service |
 
@@ -747,6 +748,20 @@ controller and starts it:
   from before this change (`bond-<their address>.key`) are not used; the
   device is paired once more.
 
+**Starting at launch** (`Service::autostartRadio`, `service/settings.*`): with
+`autostart` ticked on the page (only offered while a USB adapter is in use), the
+file `/data/bluev/settings` holds `autostart=1` and `adapter=<vendor>:<product>`
+(hex). When BlueV starts it looks for that adapter among the USB devices, by
+vendor and product because the `ugenX.Y` node changes with the port, and opens
+it as if the user had pressed Start; a paired headset that is then switched on
+connects by itself (about two to three seconds on the headsets tried). If the
+adapter is not plugged in the radio stays off and a message says so. The
+console's own chip is never started this way: its start is by hand, with the
+warning of section 12. BlueV does not page the last headset itself; the
+headsets tried all connect to us on their own. The file is written beside
+itself and renamed, so a crash leaves the old one whole; a missing or damaged
+file means the defaults (nothing is started).
+
 `POST /api/radio/off` stops the radio again. Scan and Connect are refused
 (409) while it is off; Forget only touches files and still works.
 
@@ -879,7 +894,7 @@ directory (logged as `shortcut: the home screen entry opens ...`).
 
 Product
 
-- Remember settings: the last adapter, starting the radio at boot, reconnecting the last device.
+- Remember settings: the USB adapter and starting the radio at launch are done (section 12b); the SBC quality (bitpool) is still to come, and so is reconnecting the last device by paging it, which no headset tried has needed.
 - Headset volume (section 9a): not tried yet on the WH-1000XM5 or on a headset that has no volume control. Media keys (play/pause) are not wanted.
 - Choose the SBC quality and the sample rate; a better resampler than the linear one.
 - A faster Connect. Measured: 43 s (2026-10-18) and 1 min 45 s with a fresh pairing (2026-10-21), mostly paging that gets no answer and the 20 s listen window during which the speaker connects to us. First candidate: shorter first page round (about 2-3 s gain), then a longer or continuous listen window.

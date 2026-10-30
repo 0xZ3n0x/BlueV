@@ -48,10 +48,10 @@ bool validNode(std::string_view node)
 
 } // namespace
 
-Service::Service(IRadio& radio, IUsbDirectory& usb, HomeScreenShortcut& shortcut, LogBuffer& log, std::string_view page,
-                 std::string model, std::string address, int port)
-    : m_radio(radio), m_usb(usb), m_shortcut(shortcut), m_model(std::move(model)), m_address(std::move(address)),
-      m_server(*this, usb, log, page, port)
+Service::Service(IRadio& radio, IUsbDirectory& usb, HomeScreenShortcut& shortcut, SettingsFile& settings,
+                 LogBuffer& log, std::string_view page, std::string model, std::string address, int port)
+    : m_radio(radio), m_usb(usb), m_shortcut(shortcut), m_settings(settings), m_model(std::move(model)),
+      m_address(std::move(address)), m_server(*this, usb, log, page, port)
 {
     m_radio.setStreamObserver(
         [this](int rate, int queueMs, int pps, long packets) { publishStream(rate, queueMs, pps, packets); });
@@ -215,6 +215,35 @@ Service::PostResult Service::setVolume(std::string_view percent)
     return PostResult::Ok;
 }
 
+Service::PostResult Service::setAutostart(std::string_view on)
+{
+    if (on != "0" && on != "1")
+    {
+        return PostResult::BadValue;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (on == "1")
+    {
+        if (!m_radioOn)
+        {
+            return PostResult::RadioOff;
+        }
+        if (m_adapterNode.empty() || m_adapterVid == 0)
+        {
+            return PostResult::NotAllowed; // the console's own chip is started by hand
+        }
+        m_saved.vid = m_adapterVid;
+        m_saved.pid = m_adapterPid;
+    }
+    m_saved.autostart = on == "1";
+    if (!m_settings.save(m_saved))
+    {
+        logLine("settings: could not save the settings file");
+    }
+    return PostResult::Ok;
+}
+
 std::string Service::statusJson()
 {
     Json json;
@@ -255,6 +284,8 @@ std::string Service::statusJson()
         .value(m_adapterNode.empty() ? "internal" : "external")
         .key("device")
         .value(m_adapterNode)
+        .key("autostart")
+        .value(m_saved.autostart)
         .key("foreign_requests")
         .value(m_radio.foreignRequests())
         .endObject()
@@ -544,7 +575,9 @@ bool Service::openRadio(const std::string& node)
 
     // what this is running on, for the log: a console of another model may
     // have another chip
-    if (m_usb.nodeInfo(which, usb))
+    const bool known = m_usb.nodeInfo(which, usb);
+
+    if (known)
     {
         logLine("radio: console %s, %s adapter %s %04x:%04x (USB class %02x/%02x/%02x)",
                 !model.empty() ? model.c_str() : "(model unknown)", node.empty() ? "internal" : "external", which,
@@ -574,6 +607,8 @@ bool Service::openRadio(const std::string& node)
         std::lock_guard<std::mutex> lock(m_mutex);
         m_radioOn = true;
         m_adapterNode = node;
+        m_adapterVid = known && !node.empty() ? usb.vid : 0;
+        m_adapterPid = known && !node.empty() ? usb.pid : 0;
     }
     setState(State::Idle, "ready");
     return true;
@@ -593,6 +628,31 @@ void Service::closeRadio()
     setState(State::Idle, "radio off");
 }
 
+void Service::autostartRadio()
+{
+    const Settings saved = m_settings.load();
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_saved = saved;
+    }
+    if (!saved.autostart)
+    {
+        return;
+    }
+    for (const UsbDevice& adapter : m_usb.adapters())
+    {
+        if (adapter.vid == saved.vid && adapter.pid == saved.pid)
+        {
+            logLine("radio: starting with the USB adapter of the last run (%04x:%04x)", saved.vid, saved.pid);
+            openRadio(adapter.node);
+            publishDevices();
+            return;
+        }
+    }
+    logLine("radio: the USB adapter of the last run (%04x:%04x) is not plugged in", saved.vid, saved.pid);
+    notify("BlueV: the saved USB adapter is not plugged in");
+}
+
 bool Service::run(bool capturing)
 {
     m_serverUp = m_server.start();
@@ -610,6 +670,8 @@ bool Service::run(bool capturing)
     {
         notify("BlueV ready: open its entry on the home screen");
     }
+
+    autostartRadio();
 
     auto lastServerTry = std::chrono::steady_clock::now();
 

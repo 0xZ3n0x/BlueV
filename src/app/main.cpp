@@ -30,6 +30,7 @@
 #include "service/app_log.hpp"
 #include "service/home_screen_shortcut.hpp"
 #include "service/service.hpp"
+#include "service/settings.hpp"
 #include "web_page.h"
 
 // The version comes from the VERSION file, through the build.
@@ -43,6 +44,7 @@ namespace
 constexpr const char* kDirBase = "/data/bluev";
 constexpr const char* kLogPath = "/data/bluev/bluev.log";
 constexpr const char* kLockPath = "/data/bluev/bluev.lock";
+constexpr const char* kSettingsPath = "/data/bluev/settings";
 // What this process calls itself (thr_set_name), and so what it looks for
 // when checking whether a copy of it is already running.
 constexpr const char* kProcessName = "bluev.elf";
@@ -112,7 +114,8 @@ int run(bluev::LogBuffer& buffer, int lockFd)
     // The home screen entry that opens the web interface.
     shortcut.install(bluev::kDefaultPort);
 
-    bluev::Service service(radio, usb, shortcut, buffer,
+    bluev::SettingsFile settings(kSettingsPath);
+    bluev::Service service(radio, usb, shortcut, settings, buffer,
                            std::string_view(reinterpret_cast<const char*>(web_page), web_page_len),
                            bluev::consoleModelName(), bluev::localIpv4Address());
 

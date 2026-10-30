@@ -19,6 +19,7 @@
 #include "service/home_screen_shortcut.hpp"
 #include "service/log_buffer.hpp"
 #include "service/service.hpp"
+#include "service/settings.hpp"
 #include "temp_dir.hpp"
 
 namespace bluev::testing
@@ -65,6 +66,8 @@ class ServiceHarness : public ::testing::Test
     NiceInstaller installer; // behind the home screen entry
     TempDir shortcutRoot;
     HomeScreenShortcut shortcut{installer, "icon", shortcutRoot.path()};
+    TempDir settingsRoot;
+    SettingsFile settings{settingsRoot.file("settings")};
     std::string page = "<!doctype html><title>BlueV</title>";
     int port = 0;
 
