@@ -27,6 +27,7 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 
+#include "core/bluetooth/hci_packet_queue.hpp"
 #include "core/ports/clock.hpp"
 #include "core/ports/hci_transport.hpp"
 #include "platform/ps5/ps5_usb_directory.hpp"
@@ -60,25 +61,12 @@ class UgenTransport final : public IHciTransport
     static constexpr int kAclOut = 64;
     static constexpr int kXferBuf = 0x44c;
     static constexpr int kEventBuf = 0x104;
-    static constexpr int kRingSlots = 32;
-
-    // one software ring of HCI packets
-    struct Ring
-    {
-        std::uint8_t buf[kRingSlots][kXferBuf];
-        std::uint32_t len[kRingSlots];
-        int head = 0;
-        int count = 0;
-    };
 
     std::uint32_t reap();
     void onTransferComplete(int t);
-    static void queuePackets(Ring& ring, const std::uint8_t* buf, std::uint32_t len, std::uint32_t hdr);
-    static void ringPush(Ring& ring, const std::uint8_t* data, std::uint32_t length);
     bool openTransfer(int transfer, std::uint8_t endpoint, std::uint32_t length);
     int openTransfers(int first, int last, std::uint8_t endpoint, std::uint32_t length);
     void closeFd();
-    static int ringPop(Ring& ring, std::uint8_t* out, int max);
     bool startTransfer(int t);
     void armReads(int first, int count, std::uint32_t length);
 
@@ -103,8 +91,8 @@ class UgenTransport final : public IHciTransport
     std::uint32_t m_pending[kTransfers];
     int m_eventReads = 0;
     int m_aclReads = 0;
-    Ring m_events;
-    Ring m_acl;
+    HciPacketQueue m_events;
+    HciPacketQueue m_acl;
 };
 
 } // namespace bluev
