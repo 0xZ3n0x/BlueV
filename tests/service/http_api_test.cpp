@@ -371,6 +371,31 @@ TEST_F(HttpApi, TheChoiceOfWhoCanOpenThePageIsRemembered)
     EXPECT_TRUE(listensOn("127.0.0.1", port));
 }
 
+// A client that asks and then resets the connection must not take the
+// program down with a SIGPIPE when the answer is written.
+TEST_F(HttpApi, AClientThatHangsUpDoesNotEndTheProgram)
+{
+    ASSERT_TRUE(startService());
+
+    for (int i = 0; i < 30; i++)
+    {
+        const int fd = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in where{};
+        linger reset{1, 0}; // closing sends a reset
+        const char ask[] = "GET /api/log?since=0 HTTP/1.0\r\n\r\n";
+
+        where.sin_family = AF_INET;
+        where.sin_port = htons(static_cast<std::uint16_t>(port));
+        inet_pton(AF_INET, "127.0.0.1", &where.sin_addr);
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &reset, sizeof reset);
+        ASSERT_EQ(0, connect(fd, reinterpret_cast<sockaddr*>(&where), sizeof where));
+        ASSERT_EQ(static_cast<ssize_t>(sizeof ask - 1), send(fd, ask, sizeof ask - 1, 0));
+        close(fd);
+    }
+    std::string body;
+    EXPECT_EQ(200, request("GET", "/api/status", body));
+}
+
 TEST_F(HttpApi, TheSoundQualityIsPassedOnAndRemembered)
 {
     EXPECT_CALL(radio, setQuality(0)).Times(1); // at start, nothing saved yet
