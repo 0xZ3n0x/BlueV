@@ -73,8 +73,8 @@ to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit
   off and on can leave it connected but without input until the console restarts.
   Switch the gamepad on **before** you press Start and leave it alone. A USB adapter does
   not have this problem.
-- Connecting takes about 10 seconds with a USB adapter and can take over a minute with
-  the internal chip.
+- Connecting takes about 10 seconds with a USB adapter and about 15 to 30 seconds with the
+  internal chip.
 - The control page has no password. By default anyone on your network can open it, so use
   it on a network you trust. On a shared network, set **Who can open this page** to
   **Only this console**; the page then opens only from the BlueV entry on the console's
@@ -83,8 +83,8 @@ to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit
 - BlueV uses SBC, the codec every Bluetooth audio device supports. It does not send
   microphone audio.
 - Tested on a PS5 Slim only. With a USB adapter, a Creative Stage Air V2 and Sony WH-CH720N
-  headphones work. With the internal chip the Creative works, but the WH-CH720N could not be
-  made to work (see [Contributing](#contributing)).
+  headphones work. With the internal chip the Creative works, and the WH-CH720N works but
+  often needs a few tries to connect.
 
 ## Realtek adapters
 
@@ -158,20 +158,19 @@ are welcome too, including the ones that do not work. Only the Realtek family ha
 firmware uploader so far; Broadcom (`.hcd`), Intel (`.sfi`/`.ddc`) and MediaTek dongles
 that boot from ROM are not handled yet.
 
-**Try other speakers and headphones, especially on the internal chip.** With the internal
-chip the Creative Stage Air V2 works, but I could not get the Sony WH-CH720N to work. It
-works with a USB adapter. If you can test it, or other headphones, on the internal chip, please
-share the log.
+**Try other speakers and headphones, especially on the internal chip.** The Creative Stage
+Air V2 works there, and the Sony WH-CH720N works but often needs a few tries. If you test
+other ones on the internal chip, please share the log.
 
 **Improve the internal chip support.** The internal chip is shared with the console's own
-Bluetooth stack, which makes it the hard part (see [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md),
-section 12, for what is known and what was tried). Ideas and fixes there are very welcome.
+Bluetooth stack, which makes it the hard part (see [`docs/shared-chip.md`](docs/shared-chip.md)
+for what is known and what was tried). Ideas and fixes there are very welcome.
 I will review every pull request.
 
 **Code changes.** The tests run on a PC (`tests/run.sh`) and the code is formatted with
 `clang-format`. Please add a test for new behaviour (the fakes in `tests/support/` make a
 Bluetooth controller and a speaker easy to script) and keep `third_party/` untouched. Open
-work is listed in section 17 of `src/ARCHITECTURE.md`. Please do not send changes that read
+work is listed in [`docs/todo.md`](docs/todo.md). Please do not send changes that read
 or write the console's kernel memory.
 
 ## Build
@@ -206,12 +205,13 @@ cmake --preset asan && cmake --build --preset asan && ctest --preset asan
 ## For developers
 
 How BlueV works, how the code is organised and what was learned about the console's
-Bluetooth chip is in [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md).
+Bluetooth chip is in [`docs/`](docs/README.md).
 
 | Folder | What is in it |
 |---|---|
 | `src/` | the program: `core` (Bluetooth and audio, no console code), `service` (web server and state), `platform` (the console and the file system), `app` (`main`) |
 | `tests/` | unit, protocol (fake controller and speaker) and web API tests |
+| `docs/` | how the program works and what was learned about the console |
 | `web/` | the control page |
 | `assets/` | the icon |
 | `tools/` | `usbprobe`, a USB diagnostic payload |
@@ -221,13 +221,13 @@ Bluetooth chip is in [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md).
 
 (General information, not legal advice.)
 
-- BlueV is not affiliated with or endorsed by Sony Interactive Entertainment. PlayStation is a
-  trademark of Sony Interactive Entertainment Inc.
+- BlueV is not affiliated with or endorsed by Sony Interactive Entertainment. PlayStation, PS5
+  and DualSense are trademarks of Sony Interactive Entertainment Inc.
 - BlueV contains no exploit and no copy protection circumvention. It needs a console on which you
   already run payloads.
 - This repository contains no Sony code, binaries or decrypted system libraries. It has the
-  names of system functions, their NIDs, file paths and the data layouts the program needs, found
-  by running software on a console, to make it work with other Bluetooth devices.
+  names of system functions, their NIDs, file paths and the data layouts the program needs,
+  checked by running software on a console, to make it work with other Bluetooth devices.
 - Running homebrew may go against Sony's terms for your console, and what the law says about it
   differs from country to country. Check what applies to you; use is at your own risk.
 
@@ -275,5 +275,5 @@ Anyone who has the file can ask for that source here.
 - [ps5-payload-sdk](https://github.com/ps5-payload-dev)
 - [GoogleTest](https://github.com/google/googletest) for the tests
 
-BlueV is not affiliated with or endorsed by Sony Interactive Entertainment. PlayStation is
-a trademark of Sony Interactive Entertainment Inc. Use it at your own risk.
+BlueV is not affiliated with or endorsed by Sony Interactive Entertainment. PlayStation, PS5
+and DualSense are trademarks of Sony Interactive Entertainment Inc. Use it at your own risk.

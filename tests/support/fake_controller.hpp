@@ -117,6 +117,7 @@ class FakeController final : public IHciTransport
     } remote;
     std::vector<InquiryDevice> inquiryDevices;
     std::uint32_t inquiryDurationMs = 3000;
+    std::uint8_t scanSetting = 2; // what Read Scan Enable answers
 
     // ---- what the test reads ----
     std::vector<SentCommand> commands;

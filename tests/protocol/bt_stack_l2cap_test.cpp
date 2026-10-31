@@ -39,6 +39,18 @@ class L2cap : public BtFixture
         ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
         controller.aclOut.clear();
     }
+    void connectedOnTheConsolesChip()
+    {
+        bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
+        startInternal();
+        ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+        controller.aclOut.clear();
+    }
+    // answers the connection request; the configure traffic is up to the test
+    void answerConnection(const Sig& s)
+    {
+        controller.l2cap(1, {0x03, s.id, 8, 0, 0x40, 0x01, s.data[2], s.data[3], 0, 0, 0, 0});
+    }
 
     // the remote answers connection and configuration requests the way a
     // speaker does; `theirCid` is the cid it puts on the channel
@@ -178,6 +190,117 @@ TEST_F(L2cap, NoAnswerTimesOutAfterTenSeconds)
     EXPECT_TRUE(sink.has("l2cap: signaling connection timed out"));
 }
 
+TEST_F(L2cap, AnAdapterRepeatsItsConfigureRequestWithANewId)
+{
+    connected();
+    controller.onAclOut = [&](const Bytes& pkt) {
+        Sig s;
+        if (signalingOf(pkt, s) && s.code == 0x02)
+        {
+            answerConnection(s);
+        }
+    };
+    L2Channel ch("signaling", 0x40);
+    EXPECT_FALSE(stack.openChannel(ch, 0x19, nullptr));
+
+    std::vector<std::uint8_t> ids;
+    for (const Sig& s : sentSignaling())
+    {
+        if (s.code == 0x04)
+        {
+            ids.push_back(s.id);
+        }
+    }
+    ASSERT_EQ(3u, ids.size()); // at 0, 6 and 12 s of 14
+    EXPECT_NE(ids[0], ids[1]);
+    EXPECT_NE(ids[1], ids[2]);
+}
+
+TEST_F(L2cap, TheConsolesChipRepeatsItsConfigureRequestWithTheSameId)
+{
+    connectedOnTheConsolesChip();
+    controller.onAclOut = [&](const Bytes& pkt) {
+        Sig s;
+        if (signalingOf(pkt, s) && s.code == 0x02)
+        {
+            answerConnection(s);
+        }
+    };
+    L2Channel ch("signaling", 0x40);
+    EXPECT_FALSE(stack.openChannel(ch, 0x19, nullptr));
+
+    std::vector<std::uint8_t> ids;
+    for (const Sig& s : sentSignaling())
+    {
+        if (s.code == 0x04)
+        {
+            ids.push_back(s.id);
+        }
+    }
+    ASSERT_EQ(4u, ids.size()); // at 0, 4, 8 and 12 s of 14
+    EXPECT_EQ(ids[0], ids[1]);
+    EXPECT_EQ(ids[0], ids[3]);
+}
+
+TEST_F(L2cap, TheConsolesChipTakesItsConfigurationAsAcceptedWhenTheDeviceConfigured)
+{
+    connectedOnTheConsolesChip();
+    // the device's own request arrives, the answer to ours goes to the console
+    controller.onAclOut = [&](const Bytes& pkt) {
+        Sig s;
+        if (signalingOf(pkt, s) && s.code == 0x02)
+        {
+            answerConnection(s);
+            controller.l2cap(1, {0x04, 0x31, 8, 0, 0x40, 0x00, 0, 0, 1, 2, 0x4f, 0x01});
+        }
+    };
+    L2Channel ch("signaling", 0x40);
+    const auto t0 = clock.nowMs();
+    ASSERT_TRUE(stack.openChannel(ch, 0x19, nullptr)) << sink.all();
+
+    EXPECT_TRUE(ch.up);
+    EXPECT_TRUE(ch.configured);
+    EXPECT_EQ(1, countSent(0x04));
+    EXPECT_LT(clock.nowMs() - t0, 5000u);
+    EXPECT_TRUE(sink.has("no configure response seen"));
+}
+
+TEST_F(L2cap, TheConsolesChipOpensAChannelAgainWhenTheDevicesConfigureNeverCame)
+{
+    connectedOnTheConsolesChip();
+    int connections = 0;
+    controller.onAclOut = [&](const Bytes& pkt) {
+        Sig s;
+        if (!signalingOf(pkt, s))
+        {
+            return;
+        }
+        if (s.code == 0x02)
+        {
+            answerConnection(s);
+            if (++connections == 2)
+            { // the second time its configure request reaches us
+                controller.l2cap(1, {0x04, 0x31, 8, 0, 0x40, 0x00, 0, 0, 1, 2, 0x4f, 0x01});
+            }
+        }
+        if (s.code == 0x04)
+        {
+            controller.l2cap(1, {0x05, s.id, 6, 0, 0x40, 0x00, 0, 0, 0, 0});
+        }
+        if (s.code == 0x06)
+        {
+            controller.l2cap(1, {0x07, s.id, 4, 0, s.data[0], s.data[1], s.data[2], s.data[3]});
+        }
+    };
+    L2Channel ch("signaling", 0x40);
+    ASSERT_TRUE(stack.openChannel(ch, 0x19, nullptr)) << sink.all();
+
+    EXPECT_TRUE(ch.configured);
+    EXPECT_EQ(2, countSent(0x02));
+    EXPECT_EQ(1, countSent(0x06));
+    EXPECT_TRUE(sink.has("l2cap: signaling: opening it again"));
+}
+
 TEST_F(L2cap, ASilentPeerAfterConnectContinuesAfterAGracePeriod)
 {
     connected();
@@ -201,6 +324,8 @@ TEST_F(L2cap, ASilentPeerAfterConnectContinuesAfterAGracePeriod)
     ASSERT_TRUE(stack.openChannel(ch, 0x19, nullptr));
     EXPECT_TRUE(sink.has("no configure request from the peer, continuing anyway"));
     EXPECT_FALSE(ch.configured);
+    EXPECT_EQ(0, countSent(0x06));      // an adapter does not open it again
+    EXPECT_FALSE(sink.has("l2cap: >")); // nor does it log every signal
 }
 
 TEST_F(L2cap, FramesOnAnOpenChannelReachItsHandler)

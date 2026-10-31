@@ -39,6 +39,34 @@ TEST_F(BtFixture, TheConsolesOwnChipIsNeverReset)
     EXPECT_TRUE(sink.has("console chip ugen0.2: Bluetooth interface 0"));
 }
 
+TEST_F(BtFixture, TheConsolesChipKeepsItsNameClassAndLinks)
+{
+    controller.scanSetting = 3;
+    stack.useAdapter("");
+    ASSERT_TRUE(stack.start());
+    stack.stop();
+
+    EXPECT_FALSE(controller.sawCommand(kWriteLocalName));
+    EXPECT_FALSE(controller.sawCommand(kWriteClassOfDevice));
+    EXPECT_EQ(0, controller.countCommand(kDisconnect)); // handles 1..8 can be the gamepad's
+    EXPECT_TRUE(controller.sawCommand(kSetEventMask));
+    for (const SentCommand& c : controller.commands)
+    {
+        if (c.opcode == kWriteScanEnable)
+        {
+            EXPECT_EQ(3, c.params[0]); // only ever the console's own setting
+        }
+    }
+}
+
+TEST_F(BtFixture, PageScanFoundOffOnTheConsolesChipIsTurnedOn)
+{
+    controller.scanSetting = 0; // a killed copy can leave it like this
+    stack.useAdapter("");
+    ASSERT_TRUE(stack.start());
+    EXPECT_EQ(2, controller.lastCommand(kWriteScanEnable)->params[0]);
+}
+
 TEST_F(BtFixture, DropsLeftoverLinksOnStartAndStop)
 {
     startExternal();

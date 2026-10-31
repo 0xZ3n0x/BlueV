@@ -1,6 +1,6 @@
 # BlueV: rules for Claude Code
 
-`src/ARCHITECTURE.md` explains how the program is built and what was learned about the console. Read the section you are touching before changing it, and keep it true: when code changes, change the text that describes it in the same change.
+`docs/` explains how the program is built and what was learned about the console; `docs/README.md` is the index. Read the part you are touching before changing it, and keep it true: when code changes, change the text that describes it in the same change.
 
 Everything in the repo is in English: code, identifiers, comments, tests, docs, log messages, commit messages and pull request text.
 
@@ -17,7 +17,7 @@ The codebase is being de-engineered step by step. Do not add layers.
 
 - An interface exists only where a test fakes something it cannot run (the controller, the console, time, files). Judge a new one by "is there a real fake in a test?". Otherwise use a plain function, `std::function` or a concrete class.
 - Prefer early returns. Code only `main.cpp` uses goes into `main.cpp` or a small file under `platform/ps5`.
-- Do not add options, wrappers or helpers for a single caller, and do not add error handling for cases that cannot happen.
+- Do not add options or wrappers for a single caller, and do not add error handling for cases that cannot happen. A small helper with one caller is fine when it makes the code easier to read.
 - No personal data in code, comments, tests, docs, logs or commit messages: no real names, e-mail addresses, home directory paths, user names, device serials, Bluetooth addresses of real devices or the addresses of someone's own network. Use made-up values in tests and examples (`192.168.1.20`, `AA:BB:CC:DD:EE:FF`). Only the copyright holder line in `README.md` and `LICENSE` names a person.
 - Comments follow the surrounding code: short, plain English, explaining why or what the bytes mean, not narrating the code.
 

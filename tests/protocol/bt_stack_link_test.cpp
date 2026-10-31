@@ -226,6 +226,55 @@ TEST_F(Link, AnExistingLinkIsCleanedAndTriedAgain)
     EXPECT_EQ("BlueV: turn the device off and on, then try again", sink.notes().back());
 }
 
+TEST_F(Link, TheConsolesChipPausesItsScanOnlyForThePage)
+{
+    bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
+    controller.scanSetting = 3;
+    startInternal();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    std::vector<int> order;
+    for (const SentCommand& c : controller.commands)
+    {
+        if (c.opcode == kWriteScanEnable)
+        {
+            order.push_back(c.params[0]);
+        }
+        if (c.opcode == kCreateConn)
+        {
+            order.push_back(-1);
+        }
+    }
+    EXPECT_EQ((std::vector<int>{0, -1, 3}), order);
+}
+
+TEST_F(Link, TheConsolesChipListensWithItsScanOnBetweenPages)
+{
+    bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
+    controller.remote.page = FakeController::Remote::Page::Silent;
+    startInternal();
+    EXPECT_FALSE(stack.connectTo(remoteAddress()));
+
+    EXPECT_EQ(4, controller.countCommand(kCreateConn));
+    EXPECT_EQ(2, controller.lastCommand(kWriteScanEnable)->params[0]);
+}
+
+TEST_F(Link, AnAdapterLeavesPageScanAloneWhilePaging)
+{
+    bondedAndStarted();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    EXPECT_FALSE(controller.sawCommand(kWriteScanEnable));
+}
+
+TEST_F(Link, TheConsolesChipDropsNoOtherLinkWhenOneExists)
+{
+    bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
+    startInternal();
+    controller.remote.page = FakeController::Remote::Page::AlreadyConnected;
+    EXPECT_FALSE(stack.connectTo(remoteAddress()));
+    EXPECT_FALSE(controller.sawCommand(kDisconnect));
+}
+
 TEST_F(Link, DisconnectSendsTheRequestAndLeavesPageScanOn)
 {
     bondedAndStarted();
