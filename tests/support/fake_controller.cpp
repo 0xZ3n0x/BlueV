@@ -184,7 +184,7 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
         complete(opcode, {0, 0x00, 0x20});
         break;
     case kReadScanEnable:
-        complete(opcode, {0, 0x02});
+        complete(opcode, {0, scanSetting});
         break;
     case kInquiry: {
         status(opcode, 0);

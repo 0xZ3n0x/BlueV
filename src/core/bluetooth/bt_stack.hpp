@@ -127,6 +127,7 @@ class BtStack
         return m_devices;
     }
     void setScan(int mode); // 0 off, 1 inquiry, 2 page, 3 both
+    void restoreScan();     // what paired devices connect by: see the definition
 
     // ---- bonds ----
     bool hasBond(const BdAddr& peer);
@@ -145,6 +146,11 @@ class BtStack
     bool linkLost() const
     {
         return m_disconnected;
+    }
+    // the console's chip, where a packet for us can go to the console instead
+    bool sharedChip() const
+    {
+        return !m_external;
     }
     void disconnect();
     void linkReset(); // forget the link state and the target
@@ -285,6 +291,7 @@ class BtStack
     };
     Request requestChannel(L2Channel& channel, std::uint16_t psm);
     bool configureChannel(L2Channel& channel);
+    bool reopenChannel(L2Channel& channel, std::uint16_t psm);
     void dispatch(std::uint32_t cid, const std::uint8_t* data, int length);
     void addChannel(L2Channel& channel, FrameHandler handler);
     L2Channel* channelByTheirs(std::uint16_t cid);
@@ -299,6 +306,7 @@ class BtStack
     std::string m_node; // empty = the console's chip
     HciLayout m_layout;
     bool m_external = false;
+    int m_systemScan = 0;            // the scan setting found on the console's chip, 0 unknown
     bool m_layoutKnown = false;      // the endpoints are known, no detection needed
     bool m_internalStandard = false; // detected once on the console's chip
     std::string m_startError;

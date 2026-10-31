@@ -4,6 +4,7 @@
 
 #include "core/bluetooth/bt_stack.hpp"
 #include "core/bytes.hpp"
+#include "core/hex.hpp"
 #include "core/ports/log.hpp"
 
 namespace bluev
@@ -92,6 +93,10 @@ bool BtStack::sendSignal(std::uint8_t code, std::uint8_t id, std::initializer_li
         putLe16(p, field);
         p += 2;
     }
+    if (!m_external)
+    {
+        logLine("l2cap: > %s", hexStart(pkt, static_cast<int>(p - pkt)).c_str());
+    }
     return send(1, pkt, static_cast<int>(p - pkt));
 }
 
@@ -134,10 +139,14 @@ BtStack::Request BtStack::requestChannel(L2Channel& ch, std::uint16_t psm)
 }
 
 // Keeps sending configure requests until the channel is up and the device has
-// configured its side too.
+// configured its side too. On the console's chip the answer can be slow or go
+// to the console: the request is repeated with the same id (a new id reads as a
+// second configuration), not at all once the device has sent its own, and then
+// ours is taken as accepted.
 bool BtStack::configureChannel(L2Channel& ch)
 {
     std::uint64_t cfgDeadline = 0;
+    std::uint8_t cfgId = 0;
     const std::uint64_t deadline = m_clock.nowMs() + 14000;
     std::uint64_t upSince = 0;
 
@@ -148,6 +157,12 @@ bool BtStack::configureChannel(L2Channel& ch)
         {
             return true;
         }
+        if (!m_external && !ch.up && ch.configured && cfgDeadline != 0 && m_clock.nowMs() >= cfgDeadline)
+        {
+            logLine("l2cap: %s: no configure response seen, the device configured, taking ours as accepted", ch.name);
+            ch.up = true;
+            continue;
+        }
         // some headsets never send their own configure request; go on anyway
         // after a grace period
         if (ch.up)
@@ -156,7 +171,7 @@ bool BtStack::configureChannel(L2Channel& ch)
             {
                 upSince = m_clock.nowMs();
             }
-            else if (m_clock.nowMs() - upSince >= 8000)
+            else if (m_clock.nowMs() - upSince >= (m_external ? 8000u : 3000u))
             {
                 logLine("l2cap: %s: no configure request from the peer, continuing anyway", ch.name);
                 return true;
@@ -167,14 +182,15 @@ bool BtStack::configureChannel(L2Channel& ch)
             logLine("l2cap: %s configuration did not finish", ch.name);
             return false;
         }
-        if (!ch.up && m_clock.nowMs() >= cfgDeadline)
+        if (!ch.up && m_clock.nowMs() >= cfgDeadline && (m_external || !ch.configured || cfgDeadline == 0))
         {
+            cfgId = (m_external || cfgDeadline == 0) ? m_sigId++ : cfgId;
             // configure request: our channel, no flags, option MTU (type 1, length 2)
-            if (!sendSignal(0x04, m_sigId++, {ch.theirCid, 0, 0x0201, 672}))
+            if (!sendSignal(0x04, cfgId, {ch.theirCid, 0, 0x0201, 672}))
             {
                 return false;
             }
-            cfgDeadline = m_clock.nowMs() + 6000;
+            cfgDeadline = m_clock.nowMs() + (m_external ? 6000 : 4000);
         }
         poll(100);
     }
@@ -187,13 +203,34 @@ bool BtStack::openChannel(L2Channel& ch, std::uint16_t psm, FrameHandler handler
     switch (requestChannel(ch, psm))
     {
     case Request::Accepted:
-        return configureChannel(ch);
+        if (!configureChannel(ch))
+        {
+            return false;
+        }
+        return m_external || ch.configured || reopenChannel(ch, psm);
     case Request::OpenedByPeer:
         return true;
     case Request::Failed:
         break;
     }
     return false;
+}
+
+// The device's configure request went to the console, so the channel stays half
+// open on its side and it ignores what we send. Asking for it again, once, makes
+// the device send a new one.
+bool BtStack::reopenChannel(L2Channel& ch, std::uint16_t psm)
+{
+    logLine("l2cap: %s: opening it again", ch.name);
+    closeChannel(ch);
+    ch.closed = false;
+    if (m_disconnected)
+    {
+        return false;
+    }
+    const Request again = requestChannel(ch, psm);
+
+    return again == Request::OpenedByPeer || (again == Request::Accepted && configureChannel(ch));
 }
 
 void BtStack::closeChannel(L2Channel& ch)
@@ -415,6 +452,10 @@ void BtStack::signaling(const std::uint8_t* cmd, int len)
         if (off + 4 + clen > len)
         {
             break;
+        }
+        if (!m_external)
+        {
+            logLine("l2cap: < %s", hexStart(cmd + off, 4 + clen).c_str());
         }
         // the fixed part of each command the code below reads, or answers with
         if (clen >= minimumLength(code))

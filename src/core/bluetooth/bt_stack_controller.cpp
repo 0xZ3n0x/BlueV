@@ -27,7 +27,10 @@ const std::uint8_t kClassOfDevice[3] = {0x04, 0x01, 0x00};
 
 void BtStack::dropStaleLinks()
 {
-    setScan(0);
+    if (m_external)
+    {
+        setScan(0);
+    }
 
     if (m_handle != 0 && !m_disconnected)
     {
@@ -246,11 +249,13 @@ void BtStack::logControllerSettings()
                 : m_cc[6] == 1 ? "inquiry scan"
                 : m_cc[6] == 2 ? "page scan"
                                : "inquiry and page scan");
+        m_systemScan = m_cc[6];
     }
 }
 
 // what we need from the controller: all events, simple pairing, extended
-// inquiry results, an audio device class, our name, and no scanning yet
+// inquiry results, an audio device class, our name, and no scanning yet. The
+// console's chip keeps its class, name and scan setting: they are its stack's.
 void BtStack::configureController()
 {
     std::uint8_t name[248];
@@ -259,6 +264,10 @@ void BtStack::configureController()
     hciSync(hci::kSetEventMask, kEventMask, 8);
     hciSync(hci::kWriteSimplePairing, &kSimplePairingOn, 1);
     hciSync(hci::kWriteInquiryMode, &kInquiryModeExtended, 1);
+    if (!m_external)
+    {
+        return;
+    }
     hciSync(hci::kWriteClassOfDevice, kClassOfDevice, 3);
 
     std::memset(name, 0, sizeof name);
@@ -270,6 +279,7 @@ void BtStack::configureController()
 bool BtStack::start()
 {
     m_startError.clear();
+    m_systemScan = 0;
     if (!openTransport())
     {
         return false;
@@ -294,18 +304,25 @@ bool BtStack::start()
     logControllerSettings();
     configureController();
     dropStaleLinks();
-    setScan(2); // page scan (so we stay findable)
+    restoreScan(); // page scan (so we stay findable)
     return true;
 }
 
 void BtStack::stop()
 {
     dropStaleLinks();
-    // dropStaleLinks leaves scanning off; the system needs page scan on so
-    // that paired controllers can reconnect to the console
-    setScan(2);
+    // the system needs page scan on so that paired controllers can reconnect
+    // to the console
+    restoreScan();
     m_transport.close();
     m_localKnown = false;
+}
+
+// Page scan on an adapter. The console's chip gets back the setting its stack
+// had; page scan found off is what a killed copy leaves, so it is turned on.
+void BtStack::restoreScan()
+{
+    setScan(!m_external && m_systemScan >= 2 ? m_systemScan : 2);
 }
 
 void BtStack::setScan(int mode)

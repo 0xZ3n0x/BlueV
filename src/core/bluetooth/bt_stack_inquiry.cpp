@@ -106,7 +106,18 @@ int BtStack::scan(std::uint32_t timeoutMs)
 {
     m_devices.clear();
     logLine("scan: %u s", timeoutMs / 1000);
+    // the console's own inquiry scan takes the time an inquiry needs; page scan
+    // stays, a gamepad can always reach the console
+    const bool pauseInquiryScan = !m_external && (m_systemScan & 1) != 0;
+    if (pauseInquiryScan)
+    {
+        setScan(m_systemScan & 2);
+    }
     runInquiry(timeoutMs);
+    if (pauseInquiryScan)
+    {
+        restoreScan();
+    }
     logLine("scan: %d device(s)", static_cast<int>(m_devices.size()));
     if (m_devices.empty() && m_external && m_family != FirmwareFamily::Unknown && m_family != FirmwareFamily::Csr &&
         !firmwareUploadSupported(m_family))

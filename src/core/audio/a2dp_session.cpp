@@ -44,12 +44,17 @@ void A2dpSession::reset()
 }
 
 // send one AVDTP signaling command and wait for its answer; the type of the
-// answer (2 = accept) or -1
+// answer (2 = accept) or -1. On the console's chip an answer can go to the
+// console, so it is asked again sooner, and a step refused when asked again
+// counts as done: the first request was carried out and only its answer lost.
 int A2dpSession::command(std::uint8_t signal, const std::uint8_t* params, int len)
 {
     std::uint8_t cmd[2 + 62];
+    const bool shared = m_bt.sharedChip();
+    const int attempts = shared ? 4 : 2;
+    const std::uint32_t waitMs = shared ? 3000 : 8000;
 
-    for (int attempt = 0; attempt < 2; attempt++)
+    for (int attempt = 0; attempt < attempts; attempt++)
     {
         m_label = (m_label + 1) & 0xf;
         const std::size_t n = avdtp::buildCommand(m_label, signal, params, len, cmd);
@@ -59,9 +64,18 @@ int A2dpSession::command(std::uint8_t signal, const std::uint8_t* params, int le
         {
             return -1;
         }
-        if (m_bt.wait([this] { return m_responseReady; }, 8000))
+        if (m_bt.wait([this] { return m_responseReady; }, waitMs))
         {
-            return m_response[0] & 3;
+            const int type = m_response[0] & 3;
+            const bool changesState =
+                signal == avdtp::kSetConfiguration || signal == avdtp::kOpen || signal == avdtp::kStart;
+
+            if (shared && attempt > 0 && changesState && type == avdtp::kReject)
+            {
+                logLine("avdtp: signal %#04x refused when repeated, taking the first as done", signal);
+                return avdtp::kAccept;
+            }
+            return type;
         }
         if (m_bt.linkLost())
         {
@@ -248,6 +262,11 @@ bool A2dpSession::driveSetup()
     {
         return false;
     }
+    // its commands can be slow on the console's chip: it may have started meanwhile
+    if (m_bt.sharedChip() && m_peerConfigured)
+    {
+        return followPeer();
+    }
     const std::uint8_t sink = static_cast<std::uint8_t>(m_sinkSeid << 2);
 
     logLine("avdtp: SBC sink %d, capabilities %02x %02x, bitpool %u-%u", m_sinkSeid, caps & 0xff, caps >> 8 & 0xff,
@@ -273,9 +292,19 @@ bool A2dpSession::driveSetup()
 
     if (command(avdtp::kSetConfiguration, cfg, 12) != 2)
     {
+        if (m_bt.sharedChip() && m_peerConfigured)
+        {
+            return followPeer();
+        }
         logLine("avdtp: configuration refused (rsp %02x %02x %02x %02x, sent %02x %02x)", m_response[0], m_response[1],
                 m_response[2], m_response[3], cfg[8], cfg[9]);
         return false;
+    }
+    // when the answer to Open is lost the media channel comes before we know, and
+    // must not land on the signaling channel
+    if (m_bt.sharedChip())
+    {
+        m_bt.bindInbound(kAvdtpPsm, m_media, ignoreMedia);
     }
     if (command(avdtp::kOpen, &sink, 1) != 2)
     {
@@ -344,6 +373,11 @@ void A2dpSession::onSignal(const std::uint8_t* buf, int len)
     else if (h.signal == avdtp::kOpen || h.signal == avdtp::kStart)
     {
         (h.signal == avdtp::kOpen ? m_peerOpened : m_peerStarted) = true;
+        // its media channel follows at once, and must not land on the signaling one
+        if (h.signal == avdtp::kOpen && m_bt.sharedChip())
+        {
+            m_bt.bindInbound(kAvdtpPsm, m_media, ignoreMedia);
+        }
         n = avdtp::buildAccept(h.label, h.signal, rsp);
     }
     else

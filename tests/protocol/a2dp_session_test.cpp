@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <algorithm>
+
 #include "bt_fixture.hpp"
 #include "core/audio/a2dp_session.hpp"
 #include "fake_speaker.hpp"
@@ -27,6 +29,19 @@ class Session : public BtFixture
 
     FakeSpeaker speaker;
     A2dpSession session;
+};
+
+class SessionOnTheConsolesChip : public Session
+{
+  protected:
+    void SetUp() override
+    {
+        bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
+        startInternal();
+        speaker.attach();
+        ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+        controller.aclOut.clear();
+    }
 };
 
 } // namespace
@@ -157,6 +172,74 @@ TEST_F(Session, WeStartTheStreamWhenTheSpeakerConfiguredButDoesNotStart)
     EXPECT_EQ((std::vector<std::uint8_t>{7}), speaker.signals) << sink.all();
     EXPECT_TRUE(speaker.started);
     EXPECT_TRUE(sink.has("(the device drove it, started=1)"));
+}
+
+TEST_F(Session, AnAdapterTakesARefusalOfARepeatAsARefusal)
+{
+    speaker.loseAnswerTo = 3;
+    speaker.refuseRepeats = true;
+    const auto t0 = clock.nowMs();
+    EXPECT_FALSE(session.start(true));
+    EXPECT_TRUE(sink.has("avdtp: configuration refused"));
+    EXPECT_GE(clock.nowMs() - t0, 8000u); // waited the full 8 s before asking again
+}
+
+TEST_F(SessionOnTheConsolesChip, ASpeakerThatStartsWhileWeAskIsFollowed)
+{
+    speaker.configuresAfterCapabilities = true;
+    ASSERT_TRUE(session.start(true)) << sink.all();
+
+    EXPECT_TRUE(sink.has("avdtp: the device configured the stream itself"));
+    EXPECT_EQ(0, std::count(speaker.signals.begin(), speaker.signals.end(), 3));
+}
+
+TEST_F(SessionOnTheConsolesChip, ARefusalBecauseTheSpeakerStartedIsFollowed)
+{
+    speaker.configuresWhenConfigured = true;
+    ASSERT_TRUE(session.start(true)) << sink.all();
+
+    EXPECT_TRUE(sink.has("avdtp: the device configured the stream itself"));
+    EXPECT_FALSE(sink.has("avdtp: configuration refused"));
+}
+
+TEST_F(Session, AnAdapterDoesNotFollowASpeakerThatStartsWhileWeAsk)
+{
+    speaker.configuresAfterCapabilities = true;
+    session.start(true);
+
+    EXPECT_FALSE(sink.has("avdtp: the device configured the stream itself"));
+    EXPECT_EQ(1, std::count(speaker.signals.begin(), speaker.signals.end(), 3));
+}
+
+TEST_F(SessionOnTheConsolesChip, ALostAnswerIsAskedAgain)
+{
+    speaker.loseAnswerTo = 6;
+    ASSERT_TRUE(session.start(true)) << sink.all();
+    EXPECT_EQ((std::vector<std::uint8_t>{1, 2, 3, 6, 6, 7}), speaker.signals);
+}
+
+TEST_F(SessionOnTheConsolesChip, ARefusalOfARepeatMeansTheFirstWasCarriedOut)
+{
+    speaker.loseAnswerTo = 3;
+    speaker.refuseRepeats = true;
+    ASSERT_TRUE(session.start(true)) << sink.all();
+    EXPECT_TRUE(sink.has("refused when repeated, taking the first as done"));
+    EXPECT_TRUE(speaker.started);
+}
+
+TEST_F(SessionOnTheConsolesChip, ARefusalAtTheFirstAskingIsARefusal)
+{
+    speaker.refuseConfiguration = true;
+    EXPECT_FALSE(session.start(true));
+    EXPECT_TRUE(sink.has("avdtp: configuration refused"));
+}
+
+TEST_F(SessionOnTheConsolesChip, ASpeakerThatNeverAnswersFailsAfterFourTries)
+{
+    speaker.silentAvdtp = true;
+    EXPECT_FALSE(session.start(true));
+    EXPECT_TRUE(sink.has("avdtp: signal 0x01 unanswered"));
+    EXPECT_EQ(4u, speaker.signals.size());
 }
 
 TEST_F(Session, ASpeakerThatDialsInWhileWeWaitIsAccepted)

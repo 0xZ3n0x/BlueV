@@ -35,10 +35,14 @@ class FakeSpeaker
     // the SBC element it offers: byte 1 | byte 2 << 8 | min pool << 16 | max pool << 24
     std::uint32_t sbcCaps = 0x3502ffff;
     bool refuseConfiguration = false;
-    bool opensMediaItself = true;   // after Open, it connects the media channel
-    bool driveSendsStart = true;    // when it drives, it also sends Start
-    bool silentAvdtp = false;       // no answer to AVDTP commands
-    bool reportsCompletions = true; // "number of completed packets" for every packet
+    bool opensMediaItself = true;             // after Open, it connects the media channel
+    bool driveSendsStart = true;              // when it drives, it also sends Start
+    bool silentAvdtp = false;                 // no answer to AVDTP commands
+    std::uint8_t loseAnswerTo = 0;            // the first answer to this signal does not reach us
+    bool configuresAfterCapabilities = false; // it starts driving while we ask
+    bool configuresWhenConfigured = false;    // same, and refuses our Set Configuration
+    bool refuseRepeats = false;               // a second Set Configuration, Open or Start is refused
+    bool reportsCompletions = true;           // "number of completed packets" for every packet
     std::uint16_t sigCid = 0x0140, mediaCid = 0x0141;
     std::uint16_t mtu = 672;
 

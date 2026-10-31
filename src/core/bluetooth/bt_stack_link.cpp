@@ -39,11 +39,23 @@ bool BtStack::pageAttempts(std::uint8_t* req)
     for (int attempt = 1; attempt <= 4; attempt++)
     {
         setPageVariant(req, attempt);
-        if (!cmd(hci::kCreateConn, req, kCreateConnLength))
+        // the console's page scan leaves a page almost no radio time on the
+        // chip, so it is off for the page and on again for the listening below
+        if (!m_external)
+        {
+            setScan(0);
+        }
+        const bool sent = cmd(hci::kCreateConn, req, kCreateConnLength);
+        const bool answered = sent && wait([this] { return m_connDone; }, 4000);
+        if (!m_external)
+        {
+            restoreScan();
+        }
+        if (!sent)
         {
             return false;
         }
-        if (wait([this] { return m_connDone; }, 4000))
+        if (answered)
         {
             return true;
         }
@@ -283,11 +295,11 @@ void BtStack::disconnect()
     {
         // the device dialed in again while we were tearing down: that link is
         // the next session, keep it
-        setScan(2);
+        restoreScan();
         return;
     }
     resetLinkState();
-    setScan(2);
+    restoreScan();
 }
 
 } // namespace bluev

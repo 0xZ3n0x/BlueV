@@ -49,6 +49,11 @@ void BtStack::resetCredits()
 
 void BtStack::dropAllLinks(std::uint32_t pauseMs)
 {
+    // on the console's chip these handles can be the gamepad's
+    if (!m_external)
+    {
+        return;
+    }
     for (int h = 1; h <= 8; h++)
     {
         sendDisconnect(static_cast<std::uint16_t>(h));
