@@ -93,18 +93,39 @@ keeps Audio/Video class devices and takes the name from EIR data when present.
 `is_junk` marks TVs and soundbars (minor class, name list); this is only an
 "other device" hint in the UI and never influences a choice.
 
+On the console's chip the console's stack writes its own event mask while it
+works, which switches the inquiry results off, so `runInquiry` sends ours again
+before every scan there (an adapter keeps the one from the start), and again
+after 3 s without a result. The Command Status of the Inquiry is waited for, and
+a "command not allowed now", "rejected, limited resources" or "busy" (0x0c,
+0x0d, 0x3a, the console is inquiring or paging) is retried after a second, up to
+six tries; any other status ends the scan. A scan that ends without a single
+result event says so in the log, so an empty list can be told from a masked
+controller.
+
+A device that answers without a name in its EIR data (the Sony headsets do) is
+named with a Remote Name Request after the scan (`fetchNames`): the four
+unnamed devices with the strongest signal, 2 s each, cancelled when no answer
+comes. Without that the list holds only its address.
+
 **Outbound** (`BtStack::connectTo`): selects the device's bond (`setBond`), then
 `page_device`: up to 4 rounds of a 4 s Create Connection followed by a 20 s
 window in which the device may connect to us instead. Packet types and role
 switch alternate between rounds (all types / DM1 only). A late "ACL already
 exists" (`0x0b`) is first given time to complete as our own link before any
-cleanup. Then `encrypt_link`.
+cleanup. Then `encrypt_link`. A headset that was just paired does not answer
+AVDTP on that link (Discover and configure stay unanswered until it times out),
+so on the console's chip a fresh pairing drops the link and dials once more with
+the saved key (`connect: paired, dialling again for the audio link`); an adapter
+does not.
 
 **On the console's chip** the stack's own scanning competes with us for radio time,
 so page and inquiry scan are off for each 4 s Create Connection and back on for the
-listen window (a device can only reach us with page scan on), and a scan pauses
-inquiry scan only, so a gamepad can still reach the console. A copy killed during
-that pause leaves page scan off until the next start. Adapters are left as they were.
+listen window (a device can only reach us with page scan on). A scan turns both
+off as well: the console's page scan runs at nearly full duty there and leaves
+an inquiry almost no radio time, so a gamepad cannot reach the console for those
+seconds. A copy killed during a pause leaves page scan off until the next start.
+Adapters are left as they were.
 
 **Inbound** (`BtStack::poll`, connection request): only devices that
 have a bond file are accepted (as the **master** of the link, see below); others

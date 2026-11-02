@@ -5,6 +5,7 @@
 // passes in pump(): the clock jumps to the next scheduled event.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -115,9 +116,22 @@ class FakeController final : public IHciTransport
         bool encrypts = true;   // encryption change after authentication
         std::uint16_t handle = 0x0042;
     } remote;
+    int authSilentTries = 0;       // accepted Authentication Requests that get no pairing answer
+    int authCollisionTries = 0;    // Authentication Requests answered "LMP transaction collision"
+    int encryptionSilentTries = 0; // accepted encryption requests that leave the link clear
     std::vector<InquiryDevice> inquiryDevices;
     std::uint32_t inquiryDurationMs = 3000;
     std::uint8_t scanSetting = 2; // what Read Scan Enable answers
+    int inquiryBusyTries = 0;     // the first Inquiry commands answer 0x0c (the console is using the controller)
+    // names for Remote Name Request, by address; unknown addresses fail
+    std::map<BdAddr, std::string> remoteNames;
+    std::uint32_t nameRequestDelayMs = 100;
+    // What the console's stack does to the shared chip: it writes its own event
+    // mask, which turns the inquiry results off.
+    void loseEventMask()
+    {
+        m_eventMask.fill(0);
+    }
 
     // ---- what the test reads ----
     std::vector<SentCommand> commands;
@@ -188,7 +202,15 @@ class FakeController final : public IHciTransport
     FakeClock& m_clock;
     std::deque<Bytes> m_events, m_acl;
     std::vector<Scheduled> m_scheduled;
+    std::array<std::uint8_t, 8> m_eventMask = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
     bool m_linkUp = false;
+
+    // Bit 47 is the Extended Inquiry Result (0x2f); the plain result events
+    // (0x02/0x22) are gated on it too, which is enough to test the mask.
+    bool inquiryResultsOn() const
+    {
+        return (m_eventMask[5] & 0x80) != 0;
+    }
 };
 
 } // namespace bluev::testing

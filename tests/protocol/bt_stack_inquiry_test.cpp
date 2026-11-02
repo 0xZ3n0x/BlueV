@@ -47,7 +47,7 @@ TEST_F(BtFixture, ScanIsCancelledAtTheTimeout)
     EXPECT_TRUE(controller.sawCommand(kInquiryCancel));
 }
 
-TEST_F(BtFixture, TheConsolesChipPausesOnlyItsInquiryScanForAScan)
+TEST_F(BtFixture, TheConsolesChipTurnsBothScansOffForAScan)
 {
     controller.inquiryDevices = {device(0x41, "Creative")};
     controller.scanSetting = 3;
@@ -62,7 +62,60 @@ TEST_F(BtFixture, TheConsolesChipPausesOnlyItsInquiryScanForAScan)
             written.push_back(c.params[0]);
         }
     }
-    EXPECT_EQ((std::vector<int>{2, 3}), written); // page scan stays on throughout
+    EXPECT_EQ((std::vector<int>{0, 3}), written); // the page scan is back after the scan
+}
+
+TEST_F(BtFixture, TheEventMaskIsPutBackAgainDuringAQuietScan)
+{
+    // the console can write its mask again after ours: silence in the scan
+    // means it is put back rather than waiting out the whole 30 s
+    controller.inquiryDevices = {device(0x41, "Creative")};
+    controller.inquiryDurationMs = 8000;
+    startInternal();
+    stack.scan(10000);
+    EXPECT_TRUE(sink.has("event mask was written")) << sink.all();
+    EXPECT_GE(controller.countCommand(kSetEventMask), 3) << sink.all(); // the start of the scan and two more
+}
+
+TEST_F(BtFixture, ADeviceWithoutANameIsNamedAfterTheScan)
+{
+    const InquiryDevice xm5 = device(0x41, "");
+
+    controller.inquiryDevices = {xm5};
+    controller.remoteNames[xm5.address] = "WH-1000XM5";
+    startInternal();
+    EXPECT_EQ(1, stack.scan(10000));
+    ASSERT_EQ(1u, stack.devices().size());
+    EXPECT_EQ("WH-1000XM5", stack.devices()[0].name);
+    EXPECT_TRUE(sink.has("is 'WH-1000XM5'"));
+}
+
+TEST_F(BtFixture, ANameThatNeverComesIsCancelled)
+{
+    const InquiryDevice xm5 = device(0x41, "");
+
+    controller.inquiryDevices = {xm5};
+    controller.remoteNames[xm5.address] = "WH-1000XM5";
+    controller.nameRequestDelayMs = 10000; // past the wait
+    startInternal();
+    stack.scan(10000);
+    EXPECT_TRUE(controller.sawCommand(kRemoteNameRequestCancel));
+    ASSERT_EQ(1u, stack.devices().size());
+    EXPECT_TRUE(stack.devices()[0].name.empty());
+}
+
+TEST_F(BtFixture, AtMostFourNamesAreFetched)
+{
+    for (std::uint8_t i = 0; i < 6; i++)
+    {
+        const InquiryDevice d = device(static_cast<std::uint8_t>(0x41 + i), "");
+
+        controller.inquiryDevices.push_back(d);
+        controller.remoteNames[d.address] = "Headset";
+    }
+    startInternal();
+    EXPECT_EQ(6, stack.scan(10000));
+    EXPECT_EQ(4, controller.countCommand(kRemoteNameRequest));
 }
 
 TEST_F(BtFixture, AScanOnAnAdapterDoesNotTouchItsScanSetting)
@@ -71,6 +124,59 @@ TEST_F(BtFixture, AScanOnAnAdapterDoesNotTouchItsScanSetting)
     startExternal();
     stack.scan(10000);
     EXPECT_FALSE(controller.sawCommand(kWriteScanEnable));
+}
+
+TEST_F(BtFixture, AScanPutsTheEventMaskBackOnTheConsoleChip)
+{
+    // the console's stack wrote its own mask: no inquiry results until ours is
+    // sent again
+    controller.inquiryDevices = {device(0x41, "WH-1000XM5")};
+    startInternal();
+    controller.loseEventMask();
+    EXPECT_EQ(1, stack.scan(10000));
+    EXPECT_TRUE(controller.sawCommand(kSetEventMask));
+    ASSERT_EQ(1u, stack.devices().size());
+    EXPECT_EQ("WH-1000XM5", stack.devices()[0].name);
+}
+
+TEST_F(BtFixture, AScanOnAnAdapterDoesNotRewriteTheEventMask)
+{
+    controller.inquiryDevices = {device(0x41, "Creative")};
+    startExternal();
+    stack.scan(10000);
+    EXPECT_FALSE(controller.sawCommand(kSetEventMask));
+}
+
+TEST_F(BtFixture, AnInquiryTheConsoleHoldsIsTriedAgain)
+{
+    controller.inquiryDevices = {device(0x41, "WH-1000XM5")};
+    controller.inquiryBusyTries = 2;
+    startInternal();
+    EXPECT_EQ(1, stack.scan(10000));
+    EXPECT_EQ(3, controller.countCommand(kInquiry));
+    EXPECT_EQ(2, sink.count("scan: inquiry refused"));
+    ASSERT_EQ(1u, stack.devices().size());
+    EXPECT_EQ("WH-1000XM5", stack.devices()[0].name);
+}
+
+TEST_F(BtFixture, AnInquiryThatStaysRefusedGivesUp)
+{
+    controller.inquiryDevices = {device(0x41, "WH-1000XM5")};
+    controller.inquiryBusyTries = 20;
+    startInternal();
+    EXPECT_EQ(0, stack.scan(30000));
+    EXPECT_EQ(6, controller.countCommand(kInquiry));
+    EXPECT_TRUE(sink.has("scan: the inquiry did not start"));
+}
+
+TEST_F(BtFixture, AScanWithoutResultEventsSaysSo)
+{
+    controller.inquiryDevices = {device(0x41, "WH-1000XM5")};
+    controller.failingOpcodes = {kSetEventMask}; // the mask cannot be put back
+    startInternal();
+    controller.loseEventMask();
+    EXPECT_EQ(0, stack.scan(10000));
+    EXPECT_TRUE(sink.has("scan: no inquiry result came back"));
 }
 
 TEST_F(BtFixture, ANewScanStartsFromAnEmptyList)

@@ -60,6 +60,7 @@ bool BtStack::isOurLink(const std::uint8_t* e) const
 // signal strength in the last byte of each.
 void BtStack::onInquiryResults(const std::uint8_t* e, bool withRssi)
 {
+    m_inqResults++;
     for (int i = 0; i < e[0]; i++)
     {
         onInquiryRecord(e + 1 + i * 14, withRssi ? static_cast<std::int8_t>(e[14 + i * 14]) : -128, nullptr, 0);
@@ -174,6 +175,9 @@ void BtStack::handleEvent(const std::uint8_t* evt, int n)
     case 0x06:
         onAuthenticationComplete(e);
         break;
+    case 0x07: // remote name request complete
+        onRemoteNameComplete(e, n);
+        break;
     case 0x08:
         onEncryptionChange(e);
         break;
@@ -199,6 +203,7 @@ void BtStack::handleEvent(const std::uint8_t* evt, int n)
         onInquiryResults(e, true);
         break;
     case 0x2f: // extended inquiry result
+        m_inqResults++;
         onInquiryRecord(e + 1, static_cast<std::int8_t>(e[14]), e + 15, n - 0x11);
         break;
     case 0x31:
@@ -341,13 +346,16 @@ void BtStack::onEncryptionChange(const std::uint8_t* e)
     logLine("encryption change: %s, %s", hciStatusName(e[0]), e[3] ? "on" : "off");
 }
 
-void BtStack::noteForeignReply(std::uint16_t op, unsigned status)
+bool BtStack::noteForeignReply(std::uint16_t op, unsigned status)
 {
-    if (!replyIsOurs(op) && m_systemReplies < 50)
+    const bool ours = replyIsOurs(op);
+
+    if (!ours && m_systemReplies < 50)
     {
         m_systemReplies++;
         logLine("the console's own command answered: %s (%#06x), status %#04x", hciOpcodeName(op), op, status);
     }
+    return ours;
 }
 
 void BtStack::onCommandComplete(const std::uint8_t* evt, int n)
@@ -369,8 +377,23 @@ void BtStack::onCommandStatus(const std::uint8_t* e)
 {
     const std::uint16_t op = getLe16(e + 2);
     const std::uint32_t status = e[0];
+    const bool ours = noteForeignReply(op, e[0]);
 
-    noteForeignReply(op, e[0]);
+    if (op == hci::kInquiry && ours)
+    {
+        m_inqStatusDone = true;
+        m_inqStatus = static_cast<int>(status);
+    }
+    if (op == hci::kRemoteNameRequest && ours)
+    {
+        m_nameStatusDone = true;
+        m_nameStatus = static_cast<int>(status);
+    }
+    if (op == hci::kSetConnEncryption && ours)
+    {
+        m_encCmdDone = true;
+        m_encCmdStatus = static_cast<int>(status);
+    }
     if (status != 0)
     {
         if (op == hci::kAuthRequested)
@@ -423,6 +446,25 @@ void BtStack::onCompletedPackets(const std::uint8_t* e, int n)
     }
 }
 
+// Remote Name Request Complete: status, address, name.
+void BtStack::onRemoteNameComplete(const std::uint8_t* e, int n)
+{
+    const int length = n - 9;
+
+    if (addressFrom(e + 1) != m_namePeer)
+    {
+        return;
+    }
+    m_nameDone = true;
+    m_nameStatus = e[0];
+    if (e[0] != 0 || length < 1)
+    {
+        return;
+    }
+    m_name.assign(reinterpret_cast<const char*>(e + 7), static_cast<std::size_t>(length));
+    m_name.resize(std::strlen(m_name.c_str())); // a name ends at an embedded NUL
+}
+
 void BtStack::onLinkKeyNotification(const std::uint8_t* e)
 {
     bool junk = false;
@@ -456,7 +498,7 @@ void BtStack::onLinkKeyNotification(const std::uint8_t* e)
         logLine("link key: cannot write the key of %s", addressText(m_key.peer).c_str());
         return;
     }
-    logLine("paired with %s, key saved", addressText(m_key.peer).c_str());
+    logLine("paired with %s, key type %u, key saved", addressText(m_key.peer).c_str(), m_key.type);
 }
 
 void BtStack::handleAcl(const std::uint8_t* acl, int n)
