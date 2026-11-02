@@ -26,9 +26,9 @@ std::vector<std::uint8_t> searchFor(std::uint16_t uuid, std::uint8_t max = 2)
     return {0x35, 0x03, 0x19, static_cast<std::uint8_t>(uuid >> 8), static_cast<std::uint8_t>(uuid), 0x00, max, 0x00};
 }
 
-int ask(const std::vector<std::uint8_t>& req, std::uint8_t* out, int cap = 512)
+int ask(const std::vector<std::uint8_t>& req, std::uint8_t* out, int cap = 512, bool* searchedAvrcpTarget = nullptr)
 {
-    return handleSdpRequest(req.data(), static_cast<std::uint32_t>(req.size()), out, cap);
+    return handleSdpRequest(req.data(), static_cast<std::uint32_t>(req.size()), out, cap, searchedAvrcpTarget);
 }
 
 } // namespace
@@ -96,6 +96,26 @@ TEST(SdpServer, SearchForTheRemoteControlTargetFindsItsOwnRecord)
     EXPECT_EQ(1, out[6]);
     EXPECT_EQ(0x04, out[12]); // handle 0x00010004
     EXPECT_TRUE(sink.has("service search -> 1 record"));
+}
+
+TEST(SdpServer, ATargetSearchIsReported)
+{
+    std::uint8_t out[512];
+    bool searched = false;
+
+    ASSERT_GT(ask(request(0x02, searchFor(0x110c)), out, 512, &searched), 0);
+    EXPECT_TRUE(searched); // the headset is about to open the volume channel
+
+    searched = false;
+    ASSERT_GT(ask(request(0x02, searchFor(0x110a)), out, 512, &searched), 0);
+    EXPECT_FALSE(searched);
+
+    searched = false;
+    ASSERT_GT(
+        ask(request(0x06, {0x35, 0x03, 0x19, 0x11, 0x0c, 0xff, 0xff, 0x35, 0x05, 0x0a, 0x00, 0x00, 0xff, 0xff, 0x00}),
+            out, 512, &searched),
+        0);
+    EXPECT_TRUE(searched); // a search+attributes request counts too
 }
 
 TEST(SdpServer, SearchForThePublicBrowseGroupFindsEveryRecord)

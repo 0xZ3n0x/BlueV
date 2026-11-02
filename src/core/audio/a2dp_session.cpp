@@ -44,43 +44,27 @@ void A2dpSession::reset()
 }
 
 // send one AVDTP signaling command and wait for its answer; the type of the
-// answer (2 = accept) or -1. On the console's chip an answer can go to the
-// console, so it is asked again sooner, and a step refused when asked again
-// counts as done: the first request was carried out and only its answer lost.
+// answer (2 = accept) or -1. One attempt only: on the shared chip an answer can
+// go to the console, and pretending a lost answer was an accept is what makes a
+// broken stream; a failed setup is settled by connecting again instead.
 int A2dpSession::command(std::uint8_t signal, const std::uint8_t* params, int len)
 {
     std::uint8_t cmd[2 + 62];
     const bool shared = m_bt.sharedChip();
-    const int attempts = shared ? 4 : 2;
-    const std::uint32_t waitMs = shared ? 3000 : 8000;
+    const std::uint32_t waitMs = shared ? 4000 : 10000;
 
-    for (int attempt = 0; attempt < attempts; attempt++)
+    m_label = (m_label + 1) & 0xf;
+    const std::size_t n = avdtp::buildCommand(m_label, signal, params, len, cmd);
+
+    m_responseReady = false;
+    logLine("avdtp: > command %#04x label %d: %s", signal, m_label, hexStart(cmd, static_cast<int>(n)).c_str());
+    if (!m_bt.send(m_sig.theirCid, cmd, static_cast<int>(n)))
     {
-        m_label = (m_label + 1) & 0xf;
-        const std::size_t n = avdtp::buildCommand(m_label, signal, params, len, cmd);
-        m_responseReady = false;
-        logLine("avdtp: > command %#04x label %d: %s", signal, m_label, hexStart(cmd, static_cast<int>(n)).c_str());
-        if (!m_bt.send(m_sig.theirCid, cmd, static_cast<int>(n)))
-        {
-            return -1;
-        }
-        if (m_bt.wait([this] { return m_responseReady; }, waitMs))
-        {
-            const int type = m_response[0] & 3;
-            const bool changesState =
-                signal == avdtp::kSetConfiguration || signal == avdtp::kOpen || signal == avdtp::kStart;
-
-            if (shared && attempt > 0 && changesState && type == avdtp::kReject)
-            {
-                logLine("avdtp: signal %#04x refused when repeated, taking the first as done", signal);
-                return avdtp::kAccept;
-            }
-            return type;
-        }
-        if (m_bt.linkLost())
-        {
-            break;
-        }
+        return -1;
+    }
+    if (m_bt.wait([this] { return m_responseReady; }, waitMs))
+    {
+        return m_response[0] & 3;
     }
     logLine("avdtp: signal %#04x unanswered", signal);
     return -1;
@@ -111,19 +95,24 @@ bool A2dpSession::openSignaling(bool initiatedByUs, bool& openedByUs)
 
     openedByUs = false;
 
-    // Many headsets open the AVDTP signaling channel themselves when they
-    // reconnect; give them a moment before opening it ourselves. When we made
-    // the connection the wait is short: some headsets hang up if the host has
-    // not started anything (the Sony WH-CH720N after about eight seconds, the
-    // WH-1000XM5 after two to three), while others (the Creative speaker)
-    // only open the channel after that. If our own attempt fails the headset
-    // still gets the rest of the twenty seconds.
+    // A device that dialled in drives: it opens the signaling channel itself,
+    // and a request sent at the same time is refused with "no resources" (the
+    // 2026-11-02 log shows that refusal ending link after link). Give it up to
+    // ten seconds; only when we made the connection is the wait short, because
+    // the WH-CH720N hangs up if the host starts nothing.
     m_bt.bindInbound(kAvdtpPsm, m_sig, onFrame);
-    m_bt.wait(signalingUp, initiatedByUs ? 1000 : 20000);
+    m_bt.wait(signalingUp, initiatedByUs ? 1000 : 10000);
     if (m_sig.connDone && signalingUp())
     {
         logLine("avdtp: the device opened the signaling channel");
         return true;
+    }
+    if (!initiatedByUs && m_sig.connDone)
+    {
+        // its channel came but not its configure; a second request on the same
+        // PSM is refused, so the session is settled by connecting again
+        logLine("l2cap: signaling channel did not finish configuring");
+        return false;
     }
     if (m_bt.openChannel(m_sig, kAvdtpPsm, onFrame))
     {
@@ -174,6 +163,10 @@ bool A2dpSession::start(bool initiatedByUs)
     {
         return false;
     }
+    // The signaling channel is up, so the next PSM 0x19 the headset opens is the
+    // media one. Binding it before the setup keeps that channel from landing on
+    // the signaling one (seen 2026-11-02).
+    m_bt.bindInbound(kAvdtpPsm, m_media, ignoreMedia);
     waitForPeerSetup(openedByUs);
     return m_peerConfigured ? followPeer() : driveSetup();
 }
@@ -188,9 +181,21 @@ bool A2dpSession::followPeer()
         return false;
     }
 
-    // it opens the media channel towards us; wait for that, and for its Start
-    m_bt.wait([this] { return m_peerOpened; }, 6000);
+    // It may open the media channel towards us, or configure the stream and
+    // leave the transport to us (the 2026-11-02 log shows both). Bind the media
+    // channel first: the signaling one is already up, so the next 0x19 is it.
     m_bt.bindInbound(kAvdtpPsm, m_media, ignoreMedia);
+    m_bt.wait([this] { return m_peerOpened || m_media.theirCid != 0; }, 3000);
+    if (!m_peerOpened && m_media.theirCid == 0)
+    {
+        const std::uint8_t sep = static_cast<std::uint8_t>(m_peerSeid << 2);
+
+        if (command(avdtp::kOpen, &sep, 1) != 2)
+        {
+            logLine("avdtp: open refused");
+            return false;
+        }
+    }
     m_bt.wait([this] { return m_media.up && m_media.configured; }, 6000);
     if (!(m_media.up && m_media.configured))
     {
@@ -200,24 +205,30 @@ bool A2dpSession::followPeer()
     m_bt.wait([this] { return m_peerStarted; }, 300);
     if (!m_peerStarted)
     {
-        m_peerStarted = sendStart(m_peerSeid);
+        if (!sendStart(m_peerSeid))
+        {
+            return false;
+        }
+        m_peerStarted = true;
     }
     logLine("avdtp: streaming SBC %d Hz, bitpool %d (the device drove it, started=%d)", m_config.rate, m_config.bitpool,
             m_peerStarted);
     return true;
 }
 
-// Sends Start for the endpoint `seidByte` (seid << 2). A device that refuses is
-// streamed to anyway.
+// Sends Start for the endpoint `seidByte` (seid << 2). A refused or unanswered
+// Start means the headset is not streaming; the setup fails and is tried again
+// from the page instead of sending audio into a dead endpoint.
 bool A2dpSession::sendStart(std::uint8_t seidByte)
 {
     const int status = command(avdtp::kStart, &seidByte, 1);
 
     if (status != 2)
     {
-        logLine("avdtp: start status %d, streaming anyway", status);
+        logLine("avdtp: start refused (status %d)", status);
+        return false;
     }
-    return status == 2;
+    return true;
 }
 
 // Asks the device what it has and picks its first SBC sink (m_sinkSeid, and the
@@ -290,14 +301,23 @@ bool A2dpSession::driveSetup()
                                   static_cast<std::uint8_t>(m_config.bitpool),
                                   static_cast<std::uint8_t>(m_config.bitpool)};
 
-    if (command(avdtp::kSetConfiguration, cfg, 12) != 2)
+    const int configured = command(avdtp::kSetConfiguration, cfg, 12);
+
+    if (configured != 2)
     {
         if (m_bt.sharedChip() && m_peerConfigured)
         {
             return followPeer();
         }
-        logLine("avdtp: configuration refused (rsp %02x %02x %02x %02x, sent %02x %02x)", m_response[0], m_response[1],
-                m_response[2], m_response[3], cfg[8], cfg[9]);
+        if (configured < 0)
+        {
+            logLine("avdtp: configuration unanswered");
+        }
+        else
+        {
+            logLine("avdtp: configuration refused (rsp %02x %02x %02x %02x, sent %02x %02x)", m_response[0],
+                    m_response[1], m_response[2], m_response[3], cfg[8], cfg[9]);
+        }
         return false;
     }
     // when the answer to Open is lost the media channel comes before we know, and
@@ -306,22 +326,42 @@ bool A2dpSession::driveSetup()
     {
         m_bt.bindInbound(kAvdtpPsm, m_media, ignoreMedia);
     }
-    if (command(avdtp::kOpen, &sink, 1) != 2)
+    const int opened = command(avdtp::kOpen, &sink, 1);
+
+    if (opened != 2)
     {
-        logLine("avdtp: open refused");
+        logLine(opened < 0 ? "avdtp: open unanswered" : "avdtp: open refused");
         return false;
     }
 
-    // the headset opens the media channel towards us; open it ourselves when it does not
+    // the headset opens the media channel towards us; open it ourselves when it
+    // does not. If it did open it, wait for its own configure instead of asking
+    // for the channel again (that request is refused and used to land the second
+    // channel on the signaling one).
     m_bt.bindInbound(kAvdtpPsm, m_media, ignoreMedia);
-    m_bt.wait([this] { return m_media.up; }, 1500);
-    if (!(m_media.connDone && m_media.up && m_media.configured) && !m_bt.openChannel(m_media, kAvdtpPsm, ignoreMedia))
+    m_bt.wait([this] { return m_media.connDone; }, 1500);
+    if (!m_media.connDone)
     {
-        return false;
+        if (!m_bt.openChannel(m_media, kAvdtpPsm, ignoreMedia, true))
+        {
+            return false;
+        }
+    }
+    else if (!(m_media.up && m_media.configured))
+    {
+        m_bt.wait([this] { return (m_media.up && m_media.configured) || m_bt.linkLost(); }, 4000);
+        if (!(m_media.up && m_media.configured))
+        {
+            logLine("avdtp: the media channel did not configure");
+            return false;
+        }
     }
     m_bt.wait([] { return false; }, 300); // let the channel settle
 
-    sendStart(sink);
+    if (!sendStart(sink))
+    {
+        return false;
+    }
     logLine("avdtp: streaming SBC %d Hz, bitpool %d", m_config.rate, m_config.bitpool);
     return true;
 }

@@ -181,7 +181,8 @@ int seqHeader(const std::uint8_t* p, std::uint32_t avail, std::uint32_t* elen)
 
 // Which of our records does the search pattern name? Bit i of *mask is set
 // when kRecords[i] has one of its UUIDs. False when the pattern is malformed.
-bool patternMatches(const std::uint8_t* pat, std::uint32_t len, int* consumed, unsigned* mask)
+bool patternMatches(const std::uint8_t* pat, std::uint32_t len, int* consumed, unsigned* mask,
+                    bool* searchedAvrcpTarget)
 {
     std::uint32_t plen = 0;
     const std::uint32_t hdr = static_cast<std::uint32_t>(seqHeader(pat, len, &plen));
@@ -230,6 +231,12 @@ bool patternMatches(const std::uint8_t* pat, std::uint32_t len, int* consumed, u
             }
         }
         *mask |= named;
+        if (uuid == 0x110c && searchedAvrcpTarget != nullptr)
+        {
+            // the headset searched our AVRCP target: it is about to open the
+            // volume channel itself, so we should not race it
+            *searchedAvrcpTarget = true;
+        }
         if (elen == 0x10)
         {
             const std::uint8_t* u = e + ehdr;
@@ -356,12 +363,12 @@ int matchedRecords(unsigned mask)
 }
 
 // Service Search: the handles of the records the pattern names.
-int serviceSearch(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* out)
+int serviceSearch(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* out, bool* searchedAvrcpTarget)
 {
     int consumed = 0;
     unsigned mask = 0;
 
-    if (!patternMatches(req + 5, plen, &consumed, &mask))
+    if (!patternMatches(req + 5, plen, &consumed, &mask, searchedAvrcpTarget))
     {
         return errorResponse(out, req);
     }
@@ -424,12 +431,13 @@ int serviceAttribute(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* 
 
 // Service Search Attribute: the attributes of each record the pattern names,
 // in one list; an empty list when it names none.
-int serviceSearchAttribute(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* out, int outcap)
+int serviceSearchAttribute(const std::uint8_t* req, std::uint32_t plen, std::uint8_t* out, int outcap,
+                           bool* searchedAvrcpTarget)
 {
     int consumed = 0;
     unsigned mask = 0;
 
-    if (!patternMatches(req + 5, plen, &consumed, &mask) || consumed + 2 > static_cast<int>(plen))
+    if (!patternMatches(req + 5, plen, &consumed, &mask, searchedAvrcpTarget) || consumed + 2 > static_cast<int>(plen))
     {
         return errorResponse(out, req);
     }
@@ -466,7 +474,8 @@ int serviceSearchAttribute(const std::uint8_t* req, std::uint32_t plen, std::uin
 
 } // namespace
 
-int handleSdpRequest(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_t* out, int outcap)
+int handleSdpRequest(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_t* out, int outcap,
+                     bool* searchedAvrcpTarget)
 {
     if (static_cast<int>(reqlen) < 5 || outcap < 64)
     {
@@ -482,11 +491,11 @@ int handleSdpRequest(const std::uint8_t* req, std::uint32_t reqlen, std::uint8_t
     switch (req[0])
     {
     case 0x02:
-        return serviceSearch(req, plen, out);
+        return serviceSearch(req, plen, out, searchedAvrcpTarget);
     case 0x04:
         return serviceAttribute(req, plen, out, outcap);
     case 0x06:
-        return serviceSearchAttribute(req, plen, out, outcap);
+        return serviceSearchAttribute(req, plen, out, outcap, searchedAvrcpTarget);
     default:
         logLine("sdp: unhandled PDU %#04x", req[0]);
         return errorResponse(out, req);

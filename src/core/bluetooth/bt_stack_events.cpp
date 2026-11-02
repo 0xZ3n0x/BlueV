@@ -389,11 +389,6 @@ void BtStack::onCommandStatus(const std::uint8_t* e)
         m_nameStatusDone = true;
         m_nameStatus = static_cast<int>(status);
     }
-    if (op == hci::kSetConnEncryption && ours)
-    {
-        m_encCmdDone = true;
-        m_encCmdStatus = static_cast<int>(status);
-    }
     if (status != 0)
     {
         if (op == hci::kAuthRequested)
@@ -539,7 +534,8 @@ void BtStack::handleAcl(const std::uint8_t* acl, int n)
         else if (cid == 0x50)
         {
             std::uint8_t out[512];
-            const int r = handleSdpRequest(payload, static_cast<std::uint32_t>(len), out, 512);
+            const int r =
+                handleSdpRequest(payload, static_cast<std::uint32_t>(len), out, 512, &m_peerSearchedAvrcpTarget);
 
             if (r > 0 && m_sdp.theirCid != 0)
             {

@@ -152,6 +152,12 @@ class BtStack
     {
         return !m_external;
     }
+    // The peer searched our AVRCP target record on this link: it is about to
+    // open the volume channel itself, so we should not race it.
+    bool peerSearchedAvrcpTarget() const
+    {
+        return m_peerSearchedAvrcpTarget;
+    }
     void disconnect();
     void linkReset(); // forget the link state and the target
     // HCI connection handle of the link, 0 when there is none.
@@ -174,7 +180,10 @@ class BtStack
     }
 
     // ---- L2CAP (bt_stack_l2cap.cpp) ----
-    bool openChannel(L2Channel& channel, std::uint16_t psm, FrameHandler handler, int busyTries = 15);
+    // `requirePeerConfigure`: do not treat the channel as usable without the
+    // device's own configure request (the A2DP media channel on the console's
+    // chip, where such a channel carries no audio).
+    bool openChannel(L2Channel& channel, std::uint16_t psm, FrameHandler handler, bool requirePeerConfigure = false);
     void closeChannel(L2Channel& channel);
     // accept an inbound connection to `psm` on `channel`; binding a PSM again
     // replaces the channel (at most two PSMs)
@@ -232,9 +241,6 @@ class BtStack
     // Writes the all-events mask. On the console's chip the console's stack
     // writes its own while it works, so it is put back before every scan.
     void setEventMask(int attempts = 5);
-    // Turns Simple Pairing on again; the console's stack can switch it off on
-    // the shared chip, which would leave a new device to a PIN.
-    void setSimplePairing();
     // Turns scanning off and disconnects the link we hold, if any.
     void dropStaleLinks();
 
@@ -300,9 +306,8 @@ class BtStack
         Accepted,
         OpenedByPeer
     };
-    Request requestChannel(L2Channel& channel, std::uint16_t psm, int busyTries);
-    bool configureChannel(L2Channel& channel);
-    bool reopenChannel(L2Channel& channel, std::uint16_t psm);
+    Request requestChannel(L2Channel& channel, std::uint16_t psm);
+    bool configureChannel(L2Channel& channel, bool requirePeerConfigure);
     void dispatch(std::uint32_t cid, const std::uint8_t* data, int length);
     void addChannel(L2Channel& channel, FrameHandler handler);
     L2Channel* channelByTheirs(std::uint16_t cid);
@@ -356,10 +361,9 @@ class BtStack
     int m_authStatus = 0;
     bool m_encOn = false;
     int m_encStatus = 0;
-    bool m_encCmdDone = false; // the Command Status of our Set Connection Encryption arrived
-    int m_encCmdStatus = 0;
     unsigned m_connGen = 0; // counts successful connections
     std::atomic<long> m_foreignRequests{0};
+    bool m_peerSearchedAvrcpTarget = false; // on this link, for the volume channel
 
     // inquiry
     std::vector<BtDevice> m_devices;

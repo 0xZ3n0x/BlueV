@@ -49,15 +49,17 @@ Capabilities instead; the Redmi Buds 4 Lite do not, and stayed silent until we
 gave up after twenty seconds, so a reconnect they started failed every time
 (every time, and the AVDTP trace of [section 6](bluetooth.md#6-connections-and-pairing-corebluetoothbt_stack_linkcpp-bt_stack_inquirycpp) shows the sequence).
 
-When the headset made the connection, `A2dpSession::start` first waits up to twenty
-seconds for its signaling channel. When **we** made the connection it waits
+When the headset made the connection, `A2dpSession::start` first waits up to ten
+seconds for its signaling channel: it opens it itself, and a request sent at the
+same time is refused with "no resources" (the 2026-11-02 log shows that refusal
+ending link after link). When **we** made the connection it waits
 one: the Sony WH-CH720N hangs up about eight seconds after a connection the
 host made if the host starts nothing, the WH-1000XM5 after two to three, and
 the Creative speaker only opens the channel after that. After the second we
 open the channel ourselves
 (`avdtp: signaling channel opened by us`), take over after 1.5 s of silence
-instead of four, and fall back to waiting for the headset if our own attempt
-fails. With this both devices connect from our side in about ten seconds (an
+instead of four, and fall back to waiting up to 17 s for the headset if our own
+attempt fails. With this both devices connect from our side in about ten seconds (an
 external adapter) and the stream starts at 48 kHz.
 
 `start` waits for the headset's Set Configuration (as long as the headset
@@ -65,15 +67,20 @@ keeps sending commands, however slowly; it is left to us only after four silent
 seconds, and never waited for longer than twenty: its pause between commands has
 been seen to reach two seconds, and a fixed four second window made both sides
 configure at once), derives the encoder
-parameters from it with `chooseA2dpParams`, waits for the Open and the media
-channel (inbound, up to 6 s), then waits 300 ms for a Start from the headset
-and sends `START` itself if none came.
+parameters from it with `chooseA2dpParams`, waits 3 s for the headset's Open and
+sends the Open itself when it does not come (the 2026-11-02 log shows the headset
+configuring the stream and waiting for us), waits for the media channel
+(inbound, up to 6 s), then waits 300 ms for a Start from the headset
+and sends `START` itself if none came. PSM `0x19` is bound to the media channel
+as soon as the signaling one is up, so a headset that opens its media channel
+early cannot land it on the signaling channel.
 
 **Source-driven** (used when the headset starts nothing
 within 4 s): open the signaling channel, `DISCOVER`, `GET_CAPABILITIES` for the
 sinks, `chooseA2dpParams`, `SET_CONFIGURATION`, `OPEN`, media channel (the
-headset opens it within 1.5 s, otherwise we do), 300 ms, `START` (an
-unfavourable answer still lets streaming be attempted).
+headset opens it within 1.5 s, otherwise we do), 300 ms, `START`. Start must be
+accepted: an unfavourable answer ends the setup instead of streaming into a
+dead endpoint.
 
 `chooseA2dpParams(caps, quality)`: 48 kHz preferred, else 44.1 kHz; Joint Stereo
 preferred, else Stereo; blocks 16 > 12 > 8 > 4; 8 sub-bands when supported;
@@ -88,10 +95,12 @@ sessions.
 AVDTP answers that never reached us: Open and Start came back only when asked again,
 8 s later, and a repeated Set Configuration was refused with `0x13` (in use), which
 ended that try. An ACL packet goes to the console about one time in 17 with our 16
-reads. So on this chip `A2dpSession::command` asks after 3 s, four times, and a
-repeated Set Configuration, Open or Start that is refused counts as done (read as:
-the first was carried out and its answer lost, which that log does not prove). An
-adapter still waits 8 s, twice, and takes a refusal as a refusal.
+reads. `A2dpSession::command` therefore asks once and waits (4 s on this chip, 10 s
+on an adapter); an answer that never comes ends the setup. It is not asked again
+and a lost answer is never read as an accept: the runs that did that are the runs
+whose stream was broken (`reports missing` rising with every packet). A failed
+setup is settled by connecting again (the page then says `audio setup failed;
+press Connect again`).
 
 The headset can also start the setup while we are asking it (seen in the same run: it
 sent Set Configuration and Open during our Get Capabilities, and ours was refused with
@@ -101,13 +110,20 @@ on the signaling channel, which is still the one bound for that PSM. For the sam
 reason our own Open binds the media channel before it is sent: a device opens the
 channel even when the answer to Open goes to the console.
 
+**A media channel without the headset's configure carries no audio.** The
+WH-1000XM5 run of 2026-11-02 showed `no configure request from the peer,
+continuing anyway` followed by `reports missing` 516 in 534 packets: every media
+frame was dropped on the headset's side. On the console's chip `openChannel` is
+therefore asked to require the device's own configure for the media channel, and
+the setup fails (for another Connect) instead of streaming into it. An adapter
+keeps the old behaviour.
+
 ## 9a. The headset's volume (AVRCP, `core/audio/avrcp.*`)
 
-**Status: works on the console with the WH-CH720N, the Creative Stage Air V2
-and the Redmi Buds 4 Lite: the slider changes the volume audibly and the
-headset's buttons move the slider and show the message. Not tried on the
-WH-1000XM5, nor on a headset without absolute volume (that path is covered by
-the PC tests only).**
+**Status: works on the console with the WH-CH720N, the Creative Stage Air V2,
+the Redmi Buds 4 Lite and the WH-1000XM5: the slider changes the volume audibly
+and the headset's buttons move the slider and show the message. Not tried on a
+headset without absolute volume (that path is covered by the PC tests only).**
 
 What it does: shows the headset's own volume on the page, lets the page set it,
 and announces changes made with the headset's buttons. It is the headset's
@@ -115,19 +131,26 @@ volume only: the console's volume and the captured PCM are never touched. A
 headset that does not report a volume gets no slider and no message and
 keeps its local buttons.
 
-AVRCP absolute volume: we are the controller (SDP record `0x110e`, [section 8](bluetooth.md#8-sdp-corebluetoothsdp_servercpp)),
+AVRCP absolute volume: we are the controller (SDP records `0x110e` and `0x110f`, [section 8](bluetooth.md#8-sdp-corebluetoothsdp_servercpp)),
 the headset the target. The AVCTP channel (L2CAP psm `0x17`) is separate from
 A2DP; whatever goes wrong here only means "no volume control", never a lost
 stream.
 
-- `Avrcp::listen` binds psm `0x17` while idle. The CH720N opens the channel
-  itself, about a second after the media channel, once it has searched our
-  SDP records for `0x110c` (not ours) and `0x110e` (ours).
-- `Avrcp::start`, after the A2DP media channel is up: waits 1 s for the headset
-  to open the channel, otherwise opens it. Then it sends `REGISTER_NOTIFICATION`
-  for the event VOLUME_CHANGED. The answer (interim, then `changed` at each
-  change) carries the volume, 0-127; each `changed` is answered by a new
-  registration, because a registration fires once.
+- `Avrcp::listen` binds psm `0x17` while idle. Headsets open the channel
+  themselves a few seconds after they have searched our SDP records for
+  `0x110c` (ours now, [section 8](bluetooth.md#8-sdp-corebluetoothsdp_servercpp)) and `0x110e` (ours).
+- `Avrcp::start`, after the A2DP media channel is up: notes that the link is
+  ready and returns at once, so the stream is never held up. The headset searches
+  our `0x110c` and `0x110e` records and opens the channel itself a few seconds
+  later. While that search has been seen on the link (the SDP server notes it),
+  neither `start()` nor `service()` asks for the channel: the request is refused
+  with "no resources" and can stop the headset from opening its own (2026-11-02).
+  Without a search, `service()` asks once after six ticks (about 6 s). The volume
+  registration (`REGISTER_NOTIFICATION` for VOLUME_CHANGED) is
+  sent as soon as the channel is up; its answer carries the volume 0-127, and
+  each `changed` is answered by a new registration because a registration fires
+  once. A headset that never opens it and refuses ours gives no volume on that
+  link; nothing is retried, and the next link asks again.
 - `Avrcp::service`, from the once-a-second tick: registers if the headset
   opened the channel late, and sends a volume `setVolume()` asked for
   (`SET_ABSOLUTE_VOLUME`, which the headset answers `ACCEPTED` with the volume it

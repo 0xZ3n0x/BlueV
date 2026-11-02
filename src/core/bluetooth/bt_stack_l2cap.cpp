@@ -100,35 +100,20 @@ bool BtStack::sendSignal(std::uint8_t code, std::uint8_t id, std::initializer_li
     return send(1, pkt, static_cast<int>(p - pkt));
 }
 
-// Asks for the channel until the device answers; a busy device is asked again
-// shortly.
+// Asks for the channel once. A headset answers it or refuses it, and a refusal
+// does not clear up within the link (measured: 15 tries over 30 s all refused),
+// so a failed setup is settled by dialling the device again, not by waiting.
 BtStack::Request BtStack::requestChannel(L2Channel& ch, std::uint16_t psm)
 {
-    int retries = 0;
-
-    for (;;)
+    ch.connDone = false;
+    if (!sendSignal(0x02, m_sigId++, {psm, ch.ourCid})) // connection request
     {
-        ch.connDone = false;
-        if (!sendSignal(0x02, m_sigId++, {psm, ch.ourCid})) // connection request
-        {
-            return Request::Failed;
-        }
-        if (!wait([&ch] { return ch.connDone; }, 10000))
-        {
-            logLine("l2cap: %s connection timed out", ch.name);
-            return Request::Failed;
-        }
-        if (ch.result != 4 || retries++ >= 6)
-        {
-            break;
-        }
-        // "no resources": the peer is still busy, ask again shortly
-        logLine("l2cap: %s: peer busy, asking again", ch.name);
-        poll(2000);
-        if (ch.up && ch.configured)
-        {
-            return Request::OpenedByPeer;
-        }
+        return Request::Failed;
+    }
+    if (!wait([&ch] { return ch.connDone; }, 10000))
+    {
+        logLine("l2cap: %s connection timed out", ch.name);
+        return Request::Failed;
     }
     if (ch.result != 0)
     {
@@ -142,8 +127,9 @@ BtStack::Request BtStack::requestChannel(L2Channel& ch, std::uint16_t psm)
 // configured its side too. On the console's chip the answer can be slow or go
 // to the console: the request is repeated with the same id (a new id reads as a
 // second configuration), not at all once the device has sent its own, and then
-// ours is taken as accepted.
-bool BtStack::configureChannel(L2Channel& ch)
+// ours is taken as accepted. `requirePeerConfigure` makes a missing device
+// configure a failure instead (the A2DP media channel there).
+bool BtStack::configureChannel(L2Channel& ch, bool requirePeerConfigure)
 {
     std::uint64_t cfgDeadline = 0;
     std::uint8_t cfgId = 0;
@@ -171,8 +157,13 @@ bool BtStack::configureChannel(L2Channel& ch)
             {
                 upSince = m_clock.nowMs();
             }
-            else if (m_clock.nowMs() - upSince >= (m_external ? 8000u : 3000u))
+            else if (m_clock.nowMs() - upSince >= (m_external ? 8000u : 4000u))
             {
+                if (requirePeerConfigure && !m_external)
+                {
+                    logLine("l2cap: %s: the device did not configure its side", ch.name);
+                    return false;
+                }
                 logLine("l2cap: %s: no configure request from the peer, continuing anyway", ch.name);
                 return true;
             }
@@ -196,41 +187,23 @@ bool BtStack::configureChannel(L2Channel& ch)
     }
 }
 
-bool BtStack::openChannel(L2Channel& ch, std::uint16_t psm, FrameHandler handler)
+bool BtStack::openChannel(L2Channel& ch, std::uint16_t psm, FrameHandler handler, bool requirePeerConfigure)
 {
     addChannel(ch, std::move(handler));
 
     switch (requestChannel(ch, psm))
     {
     case Request::Accepted:
-        if (!configureChannel(ch))
-        {
-            return false;
-        }
-        return m_external || ch.configured || reopenChannel(ch, psm);
+        // The device's own configure request can be stolen by the console. On
+        // most channels it is still usable; the A2DP media channel is not (see
+        // `requirePeerConfigure`), so there it is a failed setup.
+        return configureChannel(ch, requirePeerConfigure);
     case Request::OpenedByPeer:
         return true;
     case Request::Failed:
         break;
     }
     return false;
-}
-
-// The device's configure request went to the console, so the channel stays half
-// open on its side and it ignores what we send. Asking for it again, once, makes
-// the device send a new one.
-bool BtStack::reopenChannel(L2Channel& ch, std::uint16_t psm)
-{
-    logLine("l2cap: %s: opening it again", ch.name);
-    closeChannel(ch);
-    ch.closed = false;
-    if (m_disconnected)
-    {
-        return false;
-    }
-    const Request again = requestChannel(ch, psm);
-
-    return again == Request::OpenedByPeer || (again == Request::Accepted && configureChannel(ch));
 }
 
 void BtStack::closeChannel(L2Channel& ch)
@@ -350,6 +323,7 @@ void BtStack::onConfigureRequest(std::uint8_t id, const std::uint8_t* d, std::ui
     }
     sendSignal(0x05, id, {ch->theirCid, 0, 0}); // configure response: successful
     ch->configured = true;
+    ch->up = true; // it configures the channel, so it takes it
 }
 
 void BtStack::onConfigureResponse(const std::uint8_t* d)

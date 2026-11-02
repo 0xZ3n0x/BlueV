@@ -58,6 +58,8 @@ from a simple web page, on the console itself or from a phone or PC on the same 
    (Using the internal chip? Read the warning on the page first.)
 3. Put your speaker or headphones in pairing mode and press **Scan**.
 4. Press **Connect** next to it. The first time takes a few seconds longer because it pairs.
+   On the internal chip a fresh pairing sometimes needs one more **Connect** press, because
+   the link it was just paired on cannot carry audio.
 5. Start a game. The sound comes out of the Bluetooth device.
 
 Tick **Start this adapter when BlueV starts** once the adapter is on, and BlueV opens it by
@@ -73,8 +75,10 @@ to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit
   off and on can leave it connected but without input until the console restarts.
   Switch the gamepad on **before** you press Start and leave it alone. A USB adapter does
   not have this problem.
-- Connecting takes about 10 seconds with a USB adapter and about 15 to 30 seconds with the
-  internal chip.
+- Connecting takes about 10 seconds with a USB adapter. On the internal chip the page is
+  short now; the audio setup still takes a few seconds, and a packet lost to the console
+  during it ends the setup instead of streaming a broken link (the page then asks for another
+  **Connect**).
 - The control page has no password. By default anyone on your network can open it, so use
   it on a network you trust. On a shared network, set **Who can open this page** to
   **Only this console**; the page then opens only from the BlueV entry on the console's
@@ -83,8 +87,8 @@ to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit
 - BlueV uses SBC, the codec every Bluetooth audio device supports. It does not send
   microphone audio.
 - Tested on a PS5 Slim only. With a USB adapter, a Creative Stage Air V2 and Sony WH-CH720N
-  headphones work. With the internal chip the Creative works, and the WH-CH720N works but
-  often needs a few tries to connect.
+  headphones work. With the internal chip the Creative works, the Sony WH-1000XM5 works,
+  and the WH-CH720N works but often needs a few tries to connect.
 
 ## Realtek adapters
 
@@ -134,6 +138,9 @@ BT400) are left alone.
   [Realtek adapters](#realtek-adapters); **Start** reports the exact file it wants.
 - **No sound:** check that the page shows *Streaming*, and that the game is making sound
   (BlueV streams what the console plays).
+- **"Audio setup failed; press Connect again":** a packet was lost while the headset was
+  setting up the audio channel. The link is fine and the pairing is kept; press **Connect**
+  once more. BlueV no longer streams a half-set-up channel that would play with gaps.
 - **Logs:** the *Log* card on the control page, or the file `/data/bluev/bluev.log` on the
   console. The file is kept small: at 512 KB it becomes `bluev.log.1` (replacing the one
   before), so the two files together stay below 1 MB. BlueV does not write to the console's
@@ -159,8 +166,8 @@ firmware uploader so far; Broadcom (`.hcd`), Intel (`.sfi`/`.ddc`) and MediaTek 
 that boot from ROM are not handled yet.
 
 **Try other speakers and headphones, especially on the internal chip.** The Creative Stage
-Air V2 works there, and the Sony WH-CH720N works but often needs a few tries. If you test
-other ones on the internal chip, please share the log.
+Air V2 and the Sony WH-1000XM5 work there, and the Sony WH-CH720N works but often needs a
+few tries. If you test other ones on the internal chip, please share the log.
 
 **Improve the internal chip support.** The internal chip is shared with the console's own
 Bluetooth stack, which makes it the hard part (see [`docs/shared-chip.md`](docs/shared-chip.md)
