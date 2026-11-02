@@ -9,12 +9,11 @@
 #include <string_view>
 
 #include "core/ports/app_installer.hpp"
-#include "core/ports/shortcut.hpp"
 
 namespace bluev
 {
 
-class HomeScreenShortcut final : public IShortcut
+class HomeScreenShortcut
 {
   public:
     static constexpr const char* kTitleId = "BLUV00001";
@@ -29,10 +28,10 @@ class HomeScreenShortcut final : public IShortcut
     // Makes sure the entry exists and points at `port`. Nothing is done when
     // the files are already as they should be and the installer accepted them
     // before. False when the files cannot be written or the installer fails.
-    bool install(int port) override;
+    bool install(int port);
     // Unregisters the entry and deletes its files. The result is the installer's:
     // false when the system did not accept the removal (the files go anyway).
-    bool remove() override;
+    bool remove();
 
     // what goes into param.json for `port`
     static std::string paramJson(int port);

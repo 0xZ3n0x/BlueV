@@ -32,12 +32,21 @@ constexpr int kBacklog = 16;
 constexpr std::size_t kMaxRequest = 2048;  // bytes of a request that are read; more is cut
 constexpr std::size_t kMaxLogBytes = 8192; // most log text one /api/log answer carries
 
+// Writing to a client that has gone must give an error, not the SIGPIPE that
+// ends the whole program: MSG_NOSIGNAL where there is one, else (macOS) the
+// SO_NOSIGPIPE option of the socket, set in serve().
+#ifdef MSG_NOSIGNAL
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+constexpr int kSendFlags = 0;
+#endif
+
 // Sends everything, or stops quietly when the client has gone.
 void sendAll(int fd, const char* data, std::size_t size)
 {
     while (size > 0)
     {
-        ssize_t sent = send(fd, data, size, 0);
+        ssize_t sent = send(fd, data, size, kSendFlags);
 
         if (sent <= 0)
         {
@@ -75,14 +84,8 @@ const char* reason(int code)
 void reply(int fd, int code, const char* contentType, std::string_view body)
 {
     char head[512];
-    // Any origin may call the API: the console's launcher runs its
-    // extensions in a sandboxed frame whose origin is "null", and they
-    // reach this server on 127.0.0.1.
     const int length = std::snprintf(head, sizeof head,
                                      "HTTP/1.0 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
-                                     "Access-Control-Allow-Origin: *\r\n"
-                                     "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                                     "Access-Control-Allow-Headers: *\r\n"
                                      "Cache-Control: no-store\r\nConnection: close\r\n\r\n",
                                      code, reason(code), contentType, body.size());
 
@@ -140,44 +143,50 @@ std::string queryValue(std::string_view query, std::string_view key)
     return {};
 }
 
-// One request to the server on this machine; the whole answer is read.
-bool localRequest(int port, const char* request, std::string& answer)
+// The answer to a command posted to the service.
+HttpResponse postResponse(Service::PostResult result)
 {
-    timeval timeout{2, 0};
-    sockaddr_in address{};
-    bool ok = false;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    HttpResponse response;
 
-    if (fd < 0)
+    switch (result)
     {
-        return false;
+    case Service::PostResult::Ok:
+        response.body = message(true, "ok");
+        break;
+    case Service::PostResult::Busy:
+        response.code = 409;
+        response.body = message(false, "busy");
+        break;
+    case Service::PostResult::BadAddress:
+        response.code = 400;
+        response.body = message(false, "bad address");
+        break;
+    case Service::PostResult::BadAdapter:
+        response.code = 400;
+        response.body = message(false, "adapter: internal, or external with dev=ugenX.Y");
+        break;
+    case Service::PostResult::BadValue:
+        response.code = 400;
+        response.body = message(
+            false,
+            "bad value (volume: a percentage, 0 to 100; autostart: 0 or 1; quality: 0 or 1; network: lan or local)");
+        break;
+    case Service::PostResult::NotAllowed:
+        response.code = 409;
+        response.body = message(false, "not allowed now");
+        break;
+    case Service::PostResult::RadioOff:
+        response.code = 409;
+        response.body = message(false, "the radio is off: start it first");
+        break;
     }
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = htons(static_cast<std::uint16_t>(port));
-    if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0)
-    {
-        char chunk[512];
-        ssize_t got;
-
-        send(fd, request, std::strlen(request), 0);
-        answer.clear();
-        while (answer.size() < 4096 && (got = recv(fd, chunk, sizeof chunk, 0)) > 0)
-        {
-            answer.append(chunk, static_cast<std::size_t>(got));
-        }
-        ok = !answer.empty();
-    }
-    close(fd);
-    return ok;
+    return response;
 }
 
 } // namespace
 
-HttpServer::HttpServer(Service& service, IUsbDirectory& usb, ILogReader& log, std::string_view page, Options options)
-    : m_service(service), m_usb(usb), m_log(log), m_page(page), m_options(options)
+HttpServer::HttpServer(Service& service, IUsbDirectory& usb, LogBuffer& log, std::string_view page, int port)
+    : m_service(service), m_usb(usb), m_log(log), m_page(page), m_wantedPort(port)
 {
 }
 
@@ -186,39 +195,33 @@ HttpServer::~HttpServer()
     stop();
 }
 
-// Binds the first free port of the range. Called again after a failure, which
-// is how the server comes up once the network does.
+// Binds the configured port. Called again after a failure, which is how the
+// server comes up once the network does (or once whatever was holding the
+// port lets go of it).
 bool HttpServer::start()
 {
-    for (int port = m_options.firstPort; port <= m_options.lastPort; port++)
-    {
-        sockaddr_in address{};
-        int one = 1;
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in address{};
+    int one = 1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
 
-        if (fd < 0)
-        {
-            return false;
-        }
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = htonl(INADDR_ANY);
-        address.sin_port = htons(static_cast<std::uint16_t>(port));
-        if (bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0 && listen(fd, kBacklog) == 0)
-        {
-            m_listenFd = fd;
-            m_port = port;
-            break;
-        }
-        close(fd);
-    }
-    if (m_listenFd < 0)
+    if (fd < 0)
     {
         return false;
     }
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(m_localOnly.load() ? INADDR_LOOPBACK : INADDR_ANY);
+    address.sin_port = htons(static_cast<std::uint16_t>(m_wantedPort));
+    if (bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0 || listen(fd, kBacklog) != 0)
+    {
+        close(fd);
+        return false;
+    }
+    m_listenFd = fd;
+    m_port = m_wantedPort;
     m_stopping.store(false);
     m_acceptThread = std::thread([this] { acceptLoop(); });
-    logLine("web: listening on port %d", m_port.load());
+    logLine("web: listening on port %d%s", m_port.load(), m_localOnly.load() ? " (this console only)" : "");
     return true;
 }
 
@@ -238,8 +241,8 @@ void HttpServer::stop()
     m_port = 0;
 
     // wait for the requests still being served (each has a 3 s timeout)
-    ScopedLock lock(m_idleMutex);
-    waitFor(m_idle, m_idleMutex, std::chrono::seconds(5), [this] { return m_active.load() == 0; });
+    std::unique_lock<std::mutex> lock(m_idleMutex);
+    m_idle.wait_for(lock, std::chrono::seconds(5), [this] { return m_active.load() == 0; });
 }
 
 // Take a slot for a new connection; false when all are in use. A single
@@ -262,7 +265,7 @@ void HttpServer::finishConnection()
 {
     // Notify with the lock held: stop() may destroy this object as soon as
     // it sees the count reach zero, so nothing may touch it afterwards.
-    ScopedLock lock(m_idleMutex);
+    std::lock_guard<std::mutex> lock(m_idleMutex);
     m_active.fetch_sub(1);
     m_idle.notify_all();
 }
@@ -307,6 +310,11 @@ void HttpServer::serve(int fd)
     char chunk[512];
 
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+#ifdef SO_NOSIGPIPE
+    const int one = 1;
+
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
     while (request.size() < kMaxRequest && request.find("\r\n\r\n") == std::string::npos)
     {
         ssize_t got = recv(fd, chunk, sizeof chunk, 0);
@@ -338,7 +346,7 @@ void HttpServer::serve(int fd)
             query = target.substr(question + 1);
             target = target.substr(0, question);
         }
-        const Response response = route(method, target, query);
+        const HttpResponse response = route(method, target, query);
 
         reply(fd, response.code, response.contentType, response.body);
     }
@@ -349,162 +357,129 @@ void HttpServer::serve(int fd)
     close(fd);
 }
 
-// GET: the page, /api/status, /api/devices, /api/adapters, /api/log. POST:
-// /api/radio/on and /off, then every other /api/<command> goes to Service::post().
-HttpServer::Response HttpServer::route(std::string_view method, std::string_view path, std::string_view query)
+// the console's own chip is not looked at, only listed
+std::string HttpServer::adaptersJson()
 {
-    Response response;
+    const std::vector<UsbDevice> found = m_usb.adapters();
+    Json json;
 
-    const auto postResponse = [](Service::PostResult result) {
-        Response response;
-
-        switch (result)
-        {
-        case Service::PostResult::Ok:
-            response.body = message(true, "ok");
-            break;
-        case Service::PostResult::Busy:
-            response.code = 409;
-            response.body = message(false, "busy");
-            break;
-        case Service::PostResult::BadAddress:
-            response.code = 400;
-            response.body = message(false, "bad address");
-            break;
-        case Service::PostResult::BadAdapter:
-            response.code = 400;
-            response.body = message(false, "adapter: internal, or external with dev=ugenX.Y");
-            break;
-        case Service::PostResult::NotAllowed:
-            response.code = 409;
-            response.body = message(false, "not allowed now");
-            break;
-        case Service::PostResult::RadioOff:
-            response.code = 409;
-            response.body = message(false, "the radio is off: start it first");
-            break;
-        }
-        return response;
-    };
-
-    if (method == "OPTIONS")
-    { // CORS preflight
-        response.code = 204;
-        return response;
-    }
-    if (method == "GET")
+    json.beginObject().key("internal").value(true).key("external").beginArray();
+    for (const UsbDevice& device : found)
     {
-        if (path == "/" || path == "/index.html")
-        {
-            response.contentType = "text/html; charset=utf-8";
-            response.body.assign(m_page);
-        }
-        else if (path == "/api/status")
-        {
-            response.body = m_service.statusJson();
-        }
-        else if (path == "/api/devices")
-        {
-            response.body = m_service.devicesJson();
-        }
-        else if (path == "/api/adapters")
-        {
-            // the console's own chip is not looked at, only listed
-            const std::vector<UsbDevice> found = m_usb.adapters();
-            Json json;
-
-            json.beginObject().key("internal").value(true).key("external").beginArray();
-            for (const UsbDevice& device : found)
-            {
-                json.beginObject()
-                    .key("device")
-                    .value(device.node)
-                    .key("vid")
-                    .value(static_cast<int>(device.vid))
-                    .key("pid")
-                    .value(static_cast<int>(device.pid))
-                    .key("class")
-                    .value(static_cast<int>(device.deviceClass))
-                    .key("subclass")
-                    .value(static_cast<int>(device.subClass))
-                    .key("protocol")
-                    .value(static_cast<int>(device.protocol))
-                    .key("product")
-                    .value(device.product)
-                    .key("vendor")
-                    .value(device.vendor)
-                    .endObject();
-            }
-            json.endArray().endObject();
-            response.body = json.take();
-        }
-        else if (path == "/api/log")
-        {
-            const std::string since = queryValue(query, "since");
-            unsigned from = since.empty() ? 0 : static_cast<unsigned>(std::strtoul(since.c_str(), nullptr, 10));
-            unsigned next = 0;
-            const std::string text = m_log.since(from, next, kMaxLogBytes);
-            Json json;
-
-            json.beginObject().key("next").value(next).key("text").value(text).endObject();
-            response.body = json.take();
-        }
-        else
-        {
-            response.code = 404;
-            response.body = message(false, "not found");
-        }
-        return response;
+        json.beginObject()
+            .key("device")
+            .value(device.node)
+            .key("vid")
+            .value(static_cast<int>(device.vid))
+            .key("pid")
+            .value(static_cast<int>(device.pid))
+            .key("class")
+            .value(static_cast<int>(device.deviceClass))
+            .key("subclass")
+            .value(static_cast<int>(device.subClass))
+            .key("protocol")
+            .value(static_cast<int>(device.protocol))
+            .key("product")
+            .value(device.product)
+            .key("vendor")
+            .value(device.vendor)
+            .endObject();
     }
+    json.endArray().endObject();
+    return json.take();
+}
 
-    if (method == "POST" && (path == "/api/radio/on" || path == "/api/radio/off"))
+// the log from line `since` on, as {"next": ..., "text": ...}
+std::string HttpServer::logJson(std::string_view query)
+{
+    const std::string since = queryValue(query, "since");
+    unsigned from = since.empty() ? 0 : static_cast<unsigned>(std::strtoul(since.c_str(), nullptr, 10));
+    unsigned next = 0;
+    const std::string text = m_log.since(from, next, kMaxLogBytes);
+    Json json;
+
+    json.beginObject().key("next").value(next).key("text").value(text).endObject();
+    return json.take();
+}
+
+// the page, /api/status, /api/devices, /api/adapters, /api/log
+HttpResponse HttpServer::routeGet(std::string_view path, std::string_view query)
+{
+    HttpResponse response;
+
+    if (path == "/" || path == "/index.html")
     {
-        const Service::PostResult result =
-            path == "/api/radio/on" ? m_service.startRadio(queryValue(query, "adapter"), queryValue(query, "dev"))
-                                    : m_service.stopRadio();
-
-        return postResponse(result);
+        response.contentType = "text/html; charset=utf-8";
+        response.body.assign(m_page);
     }
-    if (method == "POST" && path.size() > 5 && path.substr(0, 5) == "/api/")
+    else if (path == "/api/status")
     {
-        const std::string address = queryValue(query, "addr");
-
-        return postResponse(m_service.post(path.substr(5), address));
+        response.body = m_service.statusJson();
     }
-    response.code = 405;
-    response.body = message(false, "method not allowed");
+    else if (path == "/api/devices")
+    {
+        response.body = m_service.devicesJson();
+    }
+    else if (path == "/api/adapters")
+    {
+        response.body = adaptersJson();
+    }
+    else if (path == "/api/log")
+    {
+        response.body = logJson(query);
+    }
+    else
+    {
+        response.code = 404;
+        response.body = message(false, "not found");
+    }
     return response;
 }
 
-bool HttpServer::quitRunningInstance(Options options)
+HttpResponse HttpServer::route(std::string_view method, std::string_view path, std::string_view query)
 {
-    // The ports used before 7733 are still looked at, so that a copy of an
-    // older version is asked to quit by this one.
-    constexpr int kOldFirstPort = 8081;
-    constexpr int kOldLastPort = 8090;
-    const int current = options.lastPort - options.firstPort + 1;
-
-    for (int index = 0; index < current + (kOldLastPort - kOldFirstPort + 1); index++)
+    if (method == "GET")
     {
-        const int port = index < current ? options.firstPort + index : kOldFirstPort + index - current;
-        std::string answer;
-
-        if (!localRequest(port, "GET /api/status HTTP/1.0\r\n\r\n", answer))
+        return routeGet(path, query);
+    }
+    if (method == "POST")
+    {
+        // /api/radio/on and /off, then every other /api/<command> goes to Service::post()
+        if (path == "/api/radio/on")
         {
-            continue;
+            return postResponse(m_service.startRadio(queryValue(query, "adapter"), queryValue(query, "dev")));
         }
-        if (answer.find("\"state\"") == std::string::npos || answer.find("\"stream\"") == std::string::npos)
+        if (path == "/api/radio/off")
         {
-            continue;
+            return postResponse(m_service.stopRadio());
         }
-        logLine("web: found our server on port %d", port);
-        if (localRequest(port, "POST /api/quit HTTP/1.0\r\n\r\n", answer) &&
-            answer.find("\"ok\":true") != std::string::npos)
+        if (path == "/api/volume")
         {
-            return true;
+            return postResponse(m_service.setVolume(queryValue(query, "v")));
+        }
+        if (path == "/api/network")
+        {
+            return postResponse(m_service.setNetwork(queryValue(query, "v")));
+        }
+        if (path == "/api/quality")
+        {
+            return postResponse(m_service.setQuality(queryValue(query, "v")));
+        }
+        if (path == "/api/autostart")
+        {
+            return postResponse(m_service.setAutostart(queryValue(query, "on")));
+        }
+        if (path.size() > 5 && path.substr(0, 5) == "/api/")
+        {
+            return postResponse(m_service.post(path.substr(5), queryValue(query, "addr")));
         }
     }
-    return false;
+
+    HttpResponse response;
+
+    response.code = 405;
+    response.body = message(false, "method not allowed");
+    return response;
 }
 
 } // namespace bluev

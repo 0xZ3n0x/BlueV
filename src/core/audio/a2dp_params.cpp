@@ -6,7 +6,7 @@
 namespace bluev
 {
 
-bool chooseA2dpParams(std::uint32_t caps, A2dpConfig& c)
+bool chooseA2dpParams(std::uint32_t caps, int quality, A2dpConfig& c)
 {
     c = A2dpConfig{};
 
@@ -72,11 +72,13 @@ bool chooseA2dpParams(std::uint32_t caps, A2dpConfig& c)
     // the low nibble of the answer: 0x04 + 0x02 (8 subbands, SNR), changed to
     // 4 subbands (+4) and to loudness (-1) where those are what is chosen
     c.cfg = static_cast<std::uint8_t>(c.cfg + 6 + (((caps >> 8) & 4) ? 0 : 4) - ((caps >> 8) & 1));
-    // bitpool: locked at 40, clamped to the sink's range
+    // bitpool: the one of the quality, clamped to the sink's range
+    const std::uint32_t wanted = quality == kQualityHigh ? 53 : 40;
+
     c.poolMin = static_cast<std::uint8_t>(caps >> 16);
     c.poolMax = static_cast<std::uint8_t>(caps >> 24);
-    c.bitpool = 40;
-    if (c.poolMax < 40)
+    c.bitpool = wanted;
+    if (c.poolMax < wanted)
     {
         c.bitpool = c.poolMax;
     }

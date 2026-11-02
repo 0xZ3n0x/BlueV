@@ -12,6 +12,7 @@ enum Signal : std::uint8_t
 {
     kDiscover = 1,
     kGetCapabilities = 2,
+    kGetAllCapabilities = 0x0c, // AVDTP 1.3; the answer is the same list
     kSetConfiguration = 3,
     kOpen = 6,
     kStart = 7,
@@ -42,8 +43,8 @@ std::size_t buildAccept(std::uint8_t label, std::uint8_t signal, std::uint8_t* o
 std::size_t buildReject(std::uint8_t label, std::uint8_t signal, std::uint8_t error, std::uint8_t* out);
 // Answer to Discover: one SBC source endpoint, seid 1, not in use.
 std::size_t buildDiscoverAccept(std::uint8_t label, std::uint8_t* out);
-// Answer to Get Capabilities: media transport and SBC.
-std::size_t buildCapabilitiesAccept(std::uint8_t label, std::uint8_t* out);
+// Answer to Get Capabilities or Get All Capabilities (`signal`): media transport and SBC.
+std::size_t buildCapabilitiesAccept(std::uint8_t label, std::uint8_t signal, std::uint8_t* out);
 
 // What a Set Configuration command carries.
 struct PeerConfig

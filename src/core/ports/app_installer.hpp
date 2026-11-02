@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The system installer behind the home screen entry (see IShortcut).
+// The system installer behind the home screen entry (see HomeScreenShortcut).
 #pragma once
 
 #include <string>

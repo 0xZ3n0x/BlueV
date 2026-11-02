@@ -13,26 +13,17 @@
 
 #include "core/audio/a2dp_session.hpp"
 #include "core/audio/a2dp_streamer.hpp"
+#include "core/audio/avrcp.hpp"
 #include "core/bluetooth/bt_stack.hpp"
 #include "core/ports/audio_source.hpp"
 #include "core/ports/bond_store.hpp"
 #include "core/ports/clock.hpp"
+#include "core/ports/firmware_store.hpp"
 #include "core/ports/hci_transport.hpp"
-#include "core/ports/stream_observer.hpp"
 #include "core/ports/usb_directory.hpp"
 
 namespace bluev
 {
-
-// a device seen by the last scan
-struct RadioDevice
-{
-    BdAddr address{};
-    std::string name;
-    int rssi = -128;
-    std::uint32_t classOfDevice = 0;
-    bool other = false; // probably not an audio device (a TV and the like)
-};
 
 class IRadio
 {
@@ -49,15 +40,15 @@ class IRadio
     virtual void close() = 0;
     // `tick` is called about once a second, from inside poll().
     virtual void setTick(std::function<void()> tick) = 0;
-    // Where the stream's live numbers go; null for nobody.
-    virtual void setStreamObserver(IStreamObserver* observer) = 0;
+    // Where the stream's live numbers go; empty for nobody.
+    virtual void setStreamObserver(StreamObserver observer) = 0;
     // Lets the controller work for up to `timeoutMs` and handles what arrived.
     virtual void poll(std::uint32_t timeoutMs) = 0;
 
     // ---- devices ----
     // Inquiry; returns how many devices were found. devices() is the result.
     virtual int scan(std::uint32_t timeoutMs) = 0;
-    virtual std::vector<RadioDevice> devices() = 0;
+    virtual std::vector<BtDevice> devices() = 0;
     // Devices paired with the adapter in use, whether or not they were seen.
     virtual std::vector<BondEntry> bonds() = 0;
     virtual bool hasBond(const BdAddr& peer) = 0;
@@ -92,23 +83,34 @@ class IRadio
     virtual bool stream(bool capturing) = 0;
     // From any thread: ends stream() and the setup waits.
     virtual void requestStop() = 0;
+    // The headset's own volume, 0..127; -1 when it has none or has not said.
+    // From any thread.
+    virtual int volume() = 0;
+    // Asks the headset to take this volume, 0..127. From any thread.
+    virtual void setVolume(int volume) = 0;
+    // The sound quality (kQualityNormal or kQualityHigh) of the next stream. From any thread.
+    virtual void setQuality(int quality) = 0;
 };
 
 class Radio final : public IRadio
 {
   public:
-    Radio(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IAudioSource& audio, IClock& clock);
+    Radio(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IFirmwareStore& firmware,
+          IAudioSource& audio, IClock& clock);
 
     bool open(const std::string& node) override;
     std::string openError() override;
     void close() override;
     void setTick(std::function<void()> tick) override
     {
-        m_bt.setTick(std::move(tick));
+        m_bt.setTick([this, tick = std::move(tick)] {
+            m_avrcp.service();
+            tick();
+        });
     }
-    void setStreamObserver(IStreamObserver* observer) override
+    void setStreamObserver(StreamObserver observer) override
     {
-        m_streamer.setObserver(observer);
+        m_streamer.setObserver(std::move(observer));
     }
     void poll(std::uint32_t timeoutMs) override
     {
@@ -119,7 +121,10 @@ class Radio final : public IRadio
     {
         return m_bt.scan(timeoutMs);
     }
-    std::vector<RadioDevice> devices() override;
+    std::vector<BtDevice> devices() override
+    {
+        return m_bt.devices();
+    }
     std::vector<BondEntry> bonds() override
     {
         return m_bt.bonds();
@@ -164,17 +169,25 @@ class Radio final : public IRadio
     void resetAudio() override
     {
         m_session.reset();
+        m_avrcp.reset();
     }
     void listenAudio() override
     {
         m_session.listen();
+        m_avrcp.listen();
     }
     bool startAudio(bool initiatedByUs) override
     {
-        return m_session.start(initiatedByUs);
+        if (!m_session.start(initiatedByUs))
+        {
+            return false;
+        }
+        m_avrcp.start();
+        return true;
     }
     void stopAudio() override
     {
+        m_avrcp.stop();
         m_session.stop();
     }
     bool stream(bool capturing) override
@@ -185,20 +198,23 @@ class Radio final : public IRadio
     {
         m_session.requestStop();
     }
-
-    // The parts, for tests that look inside.
-    BtStack& stack()
+    int volume() override
     {
-        return m_bt;
+        return m_avrcp.volume();
     }
-    A2dpSession& session()
+    void setVolume(int volume) override
     {
-        return m_session;
+        m_avrcp.setVolume(volume);
+    }
+    void setQuality(int quality) override
+    {
+        m_session.setQuality(quality);
     }
 
   private:
     BtStack m_bt;
     A2dpSession m_session;
+    Avrcp m_avrcp;
     A2dpStreamer m_streamer;
 };
 

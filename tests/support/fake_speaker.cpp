@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "fake_speaker.hpp"
 
+#include <algorithm>
+
 namespace bluev::testing
 {
 
@@ -46,6 +48,11 @@ void FakeSpeaker::accept(std::uint8_t label, std::uint8_t signal, const Bytes& p
 {
     Bytes r = {static_cast<std::uint8_t>(label << 4 | 2), signal};
     append(r, params);
+    if (signal == loseAnswerTo)
+    {
+        loseAnswerTo = 0;
+        return;
+    }
     if (!silentAvdtp)
     {
         avdtp(r);
@@ -212,6 +219,11 @@ void FakeSpeaker::onAvdtp(const Bytes& f)
         return;
     }
     signals.push_back(signal);
+    if (refuseRepeats && signal != 1 && signal != 2 && std::count(signals.begin(), signals.end(), signal) > 1)
+    {
+        avdtp({static_cast<std::uint8_t>(label << 4 | 3), signal, 0x00, 0x13});
+        return;
+    }
     switch (signal)
     {
     case 1:
@@ -229,11 +241,26 @@ void FakeSpeaker::onAvdtp(const Bytes& f)
                       static_cast<std::uint8_t>(sbcCaps >> 16 & 0xff),
                       static_cast<std::uint8_t>(sbcCaps >> 24)};
         accept(label, 2, caps);
+        if (configuresAfterCapabilities)
+        {
+            configuresAfterCapabilities = false;
+            sendCommand(1, 3, {0x04, 0x04, 0x01, 0x00, 0x07, 0x06, 0x00, 0x00, 0x21, 0x15, 0x02, 0x35});
+            sendCommand(2, 6, {0x04});
+            connectRequest(mediaCid, 50);
+        }
         break;
     }
     case 3:
         configuration.assign(f.begin() + 2, f.end());
-        if (refuseConfiguration)
+        if (configuresWhenConfigured)
+        {
+            configuresWhenConfigured = false;
+            sendCommand(1, 3, {0x04, 0x04, 0x01, 0x00, 0x07, 0x06, 0x00, 0x00, 0x21, 0x15, 0x02, 0x35});
+            sendCommand(2, 6, {0x04});
+            connectRequest(mediaCid, 50);
+            avdtp({static_cast<std::uint8_t>(label << 4 | 3), 3, 0x00, 0x31});
+        }
+        else if (refuseConfiguration)
         {
             avdtp({static_cast<std::uint8_t>(label << 4 | 3), 3, 0x07, 0x13});
         }

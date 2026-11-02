@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <algorithm>
+
 #include "bt_fixture.hpp"
 #include "core/audio/a2dp_session.hpp"
 #include "fake_speaker.hpp"
@@ -29,6 +31,19 @@ class Session : public BtFixture
     A2dpSession session;
 };
 
+class SessionOnTheConsolesChip : public Session
+{
+  protected:
+    void SetUp() override
+    {
+        bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
+        startInternal();
+        speaker.attach();
+        ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+        controller.aclOut.clear();
+    }
+};
+
 } // namespace
 
 TEST_F(Session, WeRunTheWholeProcedure)
@@ -38,6 +53,8 @@ TEST_F(Session, WeRunTheWholeProcedure)
     EXPECT_EQ((std::vector<std::uint8_t>{1, 2, 3, 6, 7}), speaker.signals); // discover ... start
     EXPECT_TRUE(speaker.started);
     EXPECT_TRUE(sink.has("avdtp: signaling channel opened by us"));
+    EXPECT_TRUE(sink.has("avdtp: > command 0x01 label ")); // Discover, with its bytes
+    EXPECT_TRUE(sink.has("avdtp: < answer 0x01 label "));
     EXPECT_TRUE(sink.has("avdtp: SBC sink 2, capabilities ff ff, bitpool 2-53"));
     EXPECT_TRUE(sink.has("avdtp: streaming SBC 48000 Hz, bitpool 40"));
     EXPECT_EQ(48000u, session.config().rate);
@@ -120,6 +137,32 @@ TEST_F(Session, TheSpeakerDrivesTheProcedureItself)
     EXPECT_TRUE(speaker.signals.empty()); // we sent no command of our own
 }
 
+TEST_F(Session, HighQualityConfiguresBitpool53)
+{
+    session.setQuality(kQualityHigh);
+    ASSERT_TRUE(session.start(true)) << sink.all();
+
+    EXPECT_EQ(53u, session.config().bitpool);
+    EXPECT_TRUE(sink.has("avdtp: streaming SBC 48000 Hz, bitpool 53"));
+    ASSERT_GE(speaker.configuration.size(), 12u);
+    EXPECT_EQ(53, speaker.configuration[speaker.configuration.size() - 1]); // maximum bitpool in the configuration
+    EXPECT_EQ(53, speaker.configuration[speaker.configuration.size() - 2]); // and the minimum
+}
+
+TEST_F(Session, AGetAllCapabilitiesFromTheSpeakerIsAccepted)
+{
+    // the Redmi Buds ask for this (AVDTP 1.3) and wait when it is refused
+    session.listen();
+    speaker.dialIn(500);
+    speaker.sendCommand(1, 0x0c, {0x04}, 1000);
+    ASSERT_TRUE(session.start(false)) << sink.all();
+
+    ASSERT_EQ(12u, speaker.lastAvdtpReply.size());
+    EXPECT_EQ(0x02, speaker.lastAvdtpReply[0] & 3); // accepted, not rejected
+    EXPECT_EQ(0x0c, speaker.lastAvdtpReply[1]);
+    EXPECT_TRUE(sink.has("avdtp: > accept 0x0c label 1"));
+}
+
 TEST_F(Session, WeStartTheStreamWhenTheSpeakerConfiguredButDoesNotStart)
 {
     session.listen();
@@ -129,6 +172,74 @@ TEST_F(Session, WeStartTheStreamWhenTheSpeakerConfiguredButDoesNotStart)
     EXPECT_EQ((std::vector<std::uint8_t>{7}), speaker.signals) << sink.all();
     EXPECT_TRUE(speaker.started);
     EXPECT_TRUE(sink.has("(the device drove it, started=1)"));
+}
+
+TEST_F(Session, AnAdapterTakesARefusalOfARepeatAsARefusal)
+{
+    speaker.loseAnswerTo = 3;
+    speaker.refuseRepeats = true;
+    const auto t0 = clock.nowMs();
+    EXPECT_FALSE(session.start(true));
+    EXPECT_TRUE(sink.has("avdtp: configuration refused"));
+    EXPECT_GE(clock.nowMs() - t0, 8000u); // waited the full 8 s before asking again
+}
+
+TEST_F(SessionOnTheConsolesChip, ASpeakerThatStartsWhileWeAskIsFollowed)
+{
+    speaker.configuresAfterCapabilities = true;
+    ASSERT_TRUE(session.start(true)) << sink.all();
+
+    EXPECT_TRUE(sink.has("avdtp: the device configured the stream itself"));
+    EXPECT_EQ(0, std::count(speaker.signals.begin(), speaker.signals.end(), 3));
+}
+
+TEST_F(SessionOnTheConsolesChip, ARefusalBecauseTheSpeakerStartedIsFollowed)
+{
+    speaker.configuresWhenConfigured = true;
+    ASSERT_TRUE(session.start(true)) << sink.all();
+
+    EXPECT_TRUE(sink.has("avdtp: the device configured the stream itself"));
+    EXPECT_FALSE(sink.has("avdtp: configuration refused"));
+}
+
+TEST_F(Session, AnAdapterDoesNotFollowASpeakerThatStartsWhileWeAsk)
+{
+    speaker.configuresAfterCapabilities = true;
+    session.start(true);
+
+    EXPECT_FALSE(sink.has("avdtp: the device configured the stream itself"));
+    EXPECT_EQ(1, std::count(speaker.signals.begin(), speaker.signals.end(), 3));
+}
+
+TEST_F(SessionOnTheConsolesChip, ALostAnswerIsAskedAgain)
+{
+    speaker.loseAnswerTo = 6;
+    ASSERT_TRUE(session.start(true)) << sink.all();
+    EXPECT_EQ((std::vector<std::uint8_t>{1, 2, 3, 6, 6, 7}), speaker.signals);
+}
+
+TEST_F(SessionOnTheConsolesChip, ARefusalOfARepeatMeansTheFirstWasCarriedOut)
+{
+    speaker.loseAnswerTo = 3;
+    speaker.refuseRepeats = true;
+    ASSERT_TRUE(session.start(true)) << sink.all();
+    EXPECT_TRUE(sink.has("refused when repeated, taking the first as done"));
+    EXPECT_TRUE(speaker.started);
+}
+
+TEST_F(SessionOnTheConsolesChip, ARefusalAtTheFirstAskingIsARefusal)
+{
+    speaker.refuseConfiguration = true;
+    EXPECT_FALSE(session.start(true));
+    EXPECT_TRUE(sink.has("avdtp: configuration refused"));
+}
+
+TEST_F(SessionOnTheConsolesChip, ASpeakerThatNeverAnswersFailsAfterFourTries)
+{
+    speaker.silentAvdtp = true;
+    EXPECT_FALSE(session.start(true));
+    EXPECT_TRUE(sink.has("avdtp: signal 0x01 unanswered"));
+    EXPECT_EQ(4u, speaker.signals.size());
 }
 
 TEST_F(Session, ASpeakerThatDialsInWhileWeWaitIsAccepted)
@@ -174,10 +285,10 @@ TEST_F(Session, UnknownCommandsFromTheSpeakerAreRejected)
 {
     session.listen();
     speaker.dialIn(100);
-    speaker.sendCommand(5, 0x0c, {}, 1000); // a signal we do not know
+    speaker.sendCommand(5, 0x0b, {}, 1000); // security control, a signal we do not know
     session.start(false);
     EXPECT_EQ(1, speaker.rejectedGeneral);
-    EXPECT_EQ(0x0c, speaker.lastAvdtpReply.size() > 1 ? 0x0c : 0);
+    EXPECT_EQ(0x0b, speaker.lastAvdtpReply.size() > 1 ? speaker.lastAvdtpReply[1] : 0);
 }
 
 TEST_F(Session, StopClosesTheMediaAndSignalingChannels)

@@ -12,16 +12,13 @@ TEST(Log, FormatsAndForwardsToTheSink)
     CaptureSink sink;
     logLine("hello %s %d", "world", 7);
     notify("note %d", 1);
-    notifyShow("shown %d", 2);
     EXPECT_TRUE(sink.has("hello world 7"));
-    ASSERT_EQ(2u, sink.notes().size());
+    ASSERT_EQ(1u, sink.notes().size());
     EXPECT_EQ("note 1", sink.notes()[0]);
-    EXPECT_TRUE(sink.has("shown 2")); // notifyShow also logs
 }
 
 TEST(Log, DropsEverythingWithoutASink)
 {
-    EXPECT_EQ(nullptr, logSink());
     logLine("nobody listens"); // must not crash
     notify("nor here");
 }

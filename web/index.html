@@ -56,6 +56,13 @@ pre{margin:0;max-height:300px;overflow:auto;font:12px/1.5 ui-monospace,monospace
     <button id="btnRadioOff" onclick="post('radio/off')" disabled>Turn off</button>
     <span id="radioNote" class="grow mut"></span>
   </div>
+  <div class="row" style="margin-top:6px">
+    <span class="grow">Sound quality</span>
+    <select id="quality" onchange="setQuality()"><option value="0">Normal</option><option value="1">High</option></select>
+  </div>
+  <div class="mut" style="margin-top:2px;font-size:12px">High sends more data; use it only if the sound stays clean. It applies from the next connection.</div>
+  <label class="row" id="autoRow" style="margin-top:6px;display:none"><input type="checkbox" id="auto" onchange="setAutostart()">
+    <span class="grow">Start this adapter when BlueV starts</span></label>
   <div id="internalNote" class="warn">
     <b>Before you start the internal Bluetooth</b>
     <div class="mut" style="margin-top:4px">The console's own Bluetooth chip is shared with your gamepad. While BlueV is running, a gamepad that is switched off and on again, or reconnects, can end up connected but without input until the console is restarted.</div>
@@ -69,12 +76,25 @@ pre{margin:0;max-height:300px;overflow:auto;font:12px/1.5 ui-monospace,monospace
 
 <div class="card">
   <div class="row">
+    <b class="grow">Who can open this page</b>
+    <select id="network" onchange="setNetwork()"><option value="lan">Anyone on the network</option><option value="local">Only this console</option></select>
+  </div>
+  <div class="mut" style="margin-top:4px;font-size:12px">BlueV has no password. "Only this console" closes the page to your PC and phone; open it from the BlueV entry on the home screen to change it back.</div>
+</div>
+
+<div class="card">
+  <div class="row">
     <span id="state" class="badge">...</span>
     <span id="msg" class="grow mut"></span>
     <button id="btnDisc" onclick="post('disconnect')" disabled>Disconnect</button>
     <button id="btnStop" onclick="stopPayload()">Stop BlueV</button>
   </div>
   <div id="stream" class="mut" style="margin-top:8px"></div>
+  <div id="volRow" class="row" style="margin-top:8px;display:none">
+    <span class="mut">Headset volume</span>
+    <input id="vol" type="range" min="0" max="100" step="1" class="grow">
+    <span id="volTxt" class="mut"></span>
+  </div>
 </div>
 
 <div class="card">
@@ -102,6 +122,26 @@ function post(cmd,addr){
   fetch(u,{method:'POST'}).then(function(r){return r.json()}).then(function(j){
     if(!j.ok)$('msg').textContent='Error: '+j.message;
     refresh();
+  }).catch(function(){$('msg').textContent='Request failed'});
+}
+function setAutostart(){
+  fetch('/api/autostart?on='+($('auto').checked?1:0),{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+    $('radioNote').textContent=j.ok?'':'Error: '+j.message;
+    refresh();
+  }).catch(function(){$('radioNote').textContent='Request failed'});
+}
+function setQuality(){
+  fetch('/api/quality?v='+$('quality').value,{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+    $('radioNote').textContent=j.ok?'':'Error: '+j.message;
+  }).catch(function(){$('radioNote').textContent='Request failed'});
+}
+function setNetwork(){
+  var want=$('network').value;
+  if(want==='local'&&!confirm('Close the page to everything except this console? Your PC and phone will not reach it any more; open it from the BlueV entry on the console\'s home screen to change this back.')){
+    $('network').value='lan';return;
+  }
+  fetch('/api/network?v='+want,{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+    $('msg').textContent=j.ok?(want==='local'?'This page is now limited to the console.':'This page is open to the network again.'):'Error: '+j.message;
   }).catch(function(){$('msg').textContent='Request failed'});
 }
 function logShown(){return !$('log').hidden}
@@ -152,7 +192,7 @@ function startRadio(){
   }).catch(function(){$('radioNote').textContent='Request failed'});
 }
 function stopPayload(){
-  if(!confirm('Stop BlueV? The Bluetooth controller is released. Send the payload again or use the launcher to start it.'))return;
+  if(!confirm('Stop BlueV? The Bluetooth controller is released. Send the payload again to start it.'))return;
   fetch('/api/quit',{method:'POST'}).catch(function(){});
   stopped=true;
   $('state').textContent='Stopped';
@@ -160,6 +200,13 @@ function stopPayload(){
   $('msg').textContent='BlueV has been stopped.';
   $('btnDisc').disabled=true;$('btnScan').disabled=true;$('btnStop').disabled=true;$('btnStart').disabled=true;$('btnRadioOff').disabled=true;
 }
+var volTimer=null,volTouched=0;
+$('vol').oninput=function(){
+  $('volTxt').textContent=this.value+'%';
+  volTouched=Date.now();
+  clearTimeout(volTimer);
+  volTimer=setTimeout(function(){fetch('/api/volume?v='+$('vol').value,{method:'POST'}).catch(function(){})},150);
+};
 function refresh(){
   if(stopped)return;
   fetch('/api/status').then(function(r){return r.json()}).then(function(s){
@@ -177,6 +224,10 @@ function refresh(){
         if(!found){var opt=document.createElement('option');opt.value=s.radio.device;opt.textContent='USB Bluetooth adapter';sel.appendChild(opt);sel.value=s.radio.device;if(!listedOnce){listedOnce=true;findAdapters()}}
       }
     }
+    $('autoRow').style.display=radioOn&&s.radio.adapter==='external'?'':'none';
+    $('auto').checked=!!s.radio.autostart;
+    if(document.activeElement!==$('quality'))$('quality').value=String(s.quality||0);
+    if(document.activeElement!==$('network'))$('network').value=s.network||'lan';
     $('radioBadge').textContent=radioOn?(s.radio.adapter==='external'?'External on':'Internal on'):'Radio off';
     $('radioBadge').className='badge '+(radioOn?'streaming':'');
     var ext=document.querySelector('input[name=ad]:checked').value==='external';
@@ -189,6 +240,10 @@ function refresh(){
     $('stream').textContent=(s.state==='streaming')
       ? (s.peer.name||s.peer.addr)+' · '+s.stream.rate+' Hz · '+s.stream.pps+' packets/s · queue '+s.stream.queue_ms+' ms'
       : '';
+    // only a headset that reports its volume gets a slider; the others keep their own buttons
+    var hasVol=s.state==='streaming'&&s.volume>=0;
+    $('volRow').style.display=hasVol?'flex':'none';
+    if(hasVol&&Date.now()-volTouched>2500){$('vol').value=s.volume;$('volTxt').textContent=s.volume+'%'}
   }).catch(function(){$('state').textContent='no connection'});
   fetch('/api/devices').then(function(r){return r.json()}).then(drawDevs).catch(function(){});
   fetch('/api/log?since='+since).then(function(r){return r.json()}).then(function(j){

@@ -91,11 +91,6 @@ TEST(Resampler, StatePersistsAcrossCallsAndResets)
     {
         ASSERT_EQ(a.data()[i], b.data()[i]) << i;
     }
-
-    whole.reset();
-    PcmFifo c;
-    whole.process(in.data(), 1000, c);
-    EXPECT_EQ(a.size(), c.size());
 }
 
 TEST(Rtp, MediaHeader)

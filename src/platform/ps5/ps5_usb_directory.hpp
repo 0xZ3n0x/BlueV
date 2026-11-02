@@ -9,10 +9,12 @@
 #pragma once
 
 #include "core/ports/usb_directory.hpp"
-#include "platform/ps5/console.hpp"
 
 namespace bluev
 {
+
+// the console's own Bluetooth chip
+constexpr const char* kConsoleBluetoothNode = "ugen0.2";
 
 class Ps5UsbDirectory final : public IUsbDirectory
 {

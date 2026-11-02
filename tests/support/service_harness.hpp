@@ -16,8 +16,11 @@
 #include "capture_sink.hpp"
 #include "fake_stores.hpp"
 #include "mock_radio.hpp"
+#include "service/home_screen_shortcut.hpp"
 #include "service/log_buffer.hpp"
 #include "service/service.hpp"
+#include "service/settings.hpp"
+#include "temp_dir.hpp"
 
 namespace bluev::testing
 {
@@ -28,7 +31,7 @@ class ServiceHarness : public ::testing::Test
 {
   protected:
     using NiceRadio = ::testing::NiceMock<MockRadio>;
-    using NiceShortcut = ::testing::NiceMock<MockShortcut>;
+    using NiceInstaller = ::testing::NiceMock<MockInstaller>;
 
     ServiceHarness();
     ~ServiceHarness() override;
@@ -59,9 +62,12 @@ class ServiceHarness : public ::testing::Test
     std::string address; // what the service shows as its network address; set before startService()
     LogBuffer log;
     FakeUsbDirectory usb;
-    FakeSystemInfo system;
     NiceRadio radio;
-    NiceShortcut shortcut;
+    NiceInstaller installer; // behind the home screen entry
+    TempDir shortcutRoot;
+    HomeScreenShortcut shortcut{installer, "icon", shortcutRoot.path()};
+    TempDir settingsRoot;
+    SettingsFile settings{settingsRoot.file("settings")};
     std::string page = "<!doctype html><title>BlueV</title>";
     int port = 0;
 
@@ -69,6 +75,7 @@ class ServiceHarness : public ::testing::Test
     std::atomic<bool> lastStreamCapturing{false};
     std::atomic<int> streamingForMs{0}; // how long stream() blocks at most (0 = until a stop)
     std::atomic<bool> connectWorks{true};
+    std::atomic<int> headsetVolume{-1}; // what the fake headset reports (raw, 0..127)
 
   private:
     static int nextPortBase();
@@ -77,7 +84,7 @@ class ServiceHarness : public ::testing::Test
     std::atomic<bool> m_stopFlag{false};
     std::mutex m_tickMutex;
     std::function<void()> m_tick;
-    IStreamObserver* m_observer = nullptr;
+    StreamObserver m_observer;
     std::unique_ptr<Service> m_service;
     std::thread m_thread;
     int m_portBase = 0;

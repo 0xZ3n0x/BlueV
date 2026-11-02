@@ -47,6 +47,32 @@ TEST_F(BtFixture, ScanIsCancelledAtTheTimeout)
     EXPECT_TRUE(controller.sawCommand(kInquiryCancel));
 }
 
+TEST_F(BtFixture, TheConsolesChipPausesOnlyItsInquiryScanForAScan)
+{
+    controller.inquiryDevices = {device(0x41, "Creative")};
+    controller.scanSetting = 3;
+    startInternal();
+    stack.scan(10000);
+
+    std::vector<int> written;
+    for (const SentCommand& c : controller.commands)
+    {
+        if (c.opcode == kWriteScanEnable)
+        {
+            written.push_back(c.params[0]);
+        }
+    }
+    EXPECT_EQ((std::vector<int>{2, 3}), written); // page scan stays on throughout
+}
+
+TEST_F(BtFixture, AScanOnAnAdapterDoesNotTouchItsScanSetting)
+{
+    controller.inquiryDevices = {device(0x41, "Creative")};
+    startExternal();
+    stack.scan(10000);
+    EXPECT_FALSE(controller.sawCommand(kWriteScanEnable));
+}
+
 TEST_F(BtFixture, ANewScanStartsFromAnEmptyList)
 {
     controller.inquiryDevices = {device(0x41, "Creative")};

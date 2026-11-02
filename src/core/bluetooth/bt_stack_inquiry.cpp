@@ -6,6 +6,7 @@
 #include "core/bluetooth/device_filter.hpp"
 #include "core/bluetooth/hci_defs.hpp"
 #include "core/bluetooth/names.hpp"
+#include "core/bytes.hpp"
 #include "core/ports/log.hpp"
 
 namespace bluev
@@ -15,7 +16,7 @@ namespace
 {
 // Inquiry: GIAC LAP 0x9E8B33, ~10.24 s, unlimited responses
 const std::uint8_t kInquiryParams[5] = {0x33, 0x8b, 0x9e, 0x18, 0x00};
-constexpr std::size_t kMaxDevices = 16;
+constexpr std::size_t kMaxFound = 16;
 } // namespace
 
 void BtStack::onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const std::uint8_t* eir, int eirLength)
@@ -29,7 +30,7 @@ void BtStack::onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const 
         if (m_skippedLogged < 40)
         {
             m_skippedLogged++;
-            const unsigned cls = static_cast<unsigned>(cod[0] | cod[1] << 8 | cod[2] << 16);
+            const unsigned cls = getLe24(cod);
 
             logLine("inquiry: skipped %s (%s, class %06x), not audio/video", addressText(address).c_str(),
                     deviceClassName(cls), cls);
@@ -51,7 +52,7 @@ void BtStack::onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const 
     const bool isNew = dev == nullptr;
     if (isNew)
     {
-        if (m_devices.size() >= kMaxDevices)
+        if (m_devices.size() >= kMaxFound)
         {
             return;
         }
@@ -62,8 +63,8 @@ void BtStack::onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const 
     }
 
     dev->pageScanRepMode = rec[6];
-    dev->clockOffset = static_cast<std::uint16_t>((rec[11] | rec[12] << 8) | 0x8000);
-    dev->classOfDevice = static_cast<std::uint32_t>(cod[0]) | cod[1] << 8 | cod[2] << 16;
+    dev->clockOffset = static_cast<std::uint16_t>(getLe16(rec + 11) | 0x8000);
+    dev->classOfDevice = getLe24(cod);
     if (rssi > -128)
     {
         dev->rssi = rssi;
@@ -184,8 +185,25 @@ int BtStack::scan(std::uint32_t timeoutMs)
 {
     m_devices.clear();
     logLine("scan: %u s", timeoutMs / 1000);
+    // the console's own inquiry scan takes the time an inquiry needs; page scan
+    // stays, a gamepad can always reach the console
+    const bool pauseInquiryScan = !m_external && (m_systemScan & 1) != 0;
+    if (pauseInquiryScan)
+    {
+        setScan(m_systemScan & 2);
+    }
     runInquiry(timeoutMs);
+    if (pauseInquiryScan)
+    {
+        restoreScan();
+    }
     logLine("scan: %d device(s)", static_cast<int>(m_devices.size()));
+    if (m_devices.empty() && m_external && m_family != FirmwareFamily::Unknown && m_family != FirmwareFamily::Csr &&
+        !firmwareUploadSupported(m_family))
+    {
+        logLine("scan: nothing found; if this %s adapter needs firmware, BlueV cannot upload it yet",
+                firmwareFamilyName(m_family));
+    }
     return static_cast<int>(m_devices.size());
 }
 

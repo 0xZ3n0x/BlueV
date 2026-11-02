@@ -44,6 +44,8 @@ TEST_F(Link, ConnectsToAPairedDeviceAndEncryptsTheLink)
     EXPECT_TRUE(sink.has("connection complete: handle 0x042"));
     EXPECT_TRUE(sink.has("authentication complete"));
     EXPECT_TRUE(sink.has("link encrypted"));
+    EXPECT_TRUE(sink.has("connect: paging "));
+    EXPECT_TRUE(sink.has(" s, security "));
     // the stored key went to the controller
     const SentCommand* reply = controller.lastCommand(kLinkKeyReply);
     ASSERT_NE(nullptr, reply);
@@ -60,6 +62,18 @@ TEST_F(Link, ForcesEncryptionWhenTheLinkDoesNotDoItAlone)
     ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
     EXPECT_TRUE(controller.sawCommand(kSetConnEncryption));
     EXPECT_EQ(1, controller.lastCommand(kSetConnEncryption)->params[2]);
+}
+
+TEST_F(Link, AKnownDeviceThatDoesNotEncryptIsAskedAfterHalfASecond)
+{
+    bondedAndStarted();
+    controller.remote.encrypts = false;
+    const auto t0 = clock.nowMs();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    EXPECT_TRUE(controller.sawCommand(kSetConnEncryption));
+    EXPECT_LT(clock.nowMs() - t0, 2000u);
+    EXPECT_TRUE(sink.has("connect: paging "));
 }
 
 TEST_F(Link, PairsANewDeviceAndSavesTheKey)
@@ -145,6 +159,8 @@ TEST_F(Link, NoAnswerToAuthenticationTakesThirtySeconds)
     EXPECT_FALSE(stack.connectTo(remoteAddress()));
     EXPECT_GE(clock.nowMs() - t0, 30000u);
     EXPECT_TRUE(sink.has("authentication: no answer"));
+    EXPECT_TRUE(sink.has("security 30.")); // the time the failed step took
+    EXPECT_TRUE(sink.has("(failed)"));
 }
 
 TEST_F(Link, PagesFourTimesWhenTheDeviceIsSilent)
@@ -157,6 +173,7 @@ TEST_F(Link, PagesFourTimesWhenTheDeviceIsSilent)
     EXPECT_EQ(4, controller.countCommand(kCreateConnCancel));
     EXPECT_TRUE(sink.has("connection: no answer (try 1)"));
     EXPECT_TRUE(sink.has("connection: no answer (try 4)"));
+    EXPECT_TRUE(sink.has("connect: no link after "));
     // the first try has DM1 only and no role switch, the second the usual
     std::vector<const SentCommand*> pages;
     for (const SentCommand& c : controller.commands)
@@ -207,6 +224,55 @@ TEST_F(Link, AnExistingLinkIsCleanedAndTriedAgain)
     EXPECT_TRUE(sink.has("an earlier link to this device is still there"));
     ASSERT_FALSE(sink.notes().empty());
     EXPECT_EQ("BlueV: turn the device off and on, then try again", sink.notes().back());
+}
+
+TEST_F(Link, TheConsolesChipPausesItsScanOnlyForThePage)
+{
+    bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
+    controller.scanSetting = 3;
+    startInternal();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    std::vector<int> order;
+    for (const SentCommand& c : controller.commands)
+    {
+        if (c.opcode == kWriteScanEnable)
+        {
+            order.push_back(c.params[0]);
+        }
+        if (c.opcode == kCreateConn)
+        {
+            order.push_back(-1);
+        }
+    }
+    EXPECT_EQ((std::vector<int>{0, -1, 3}), order);
+}
+
+TEST_F(Link, TheConsolesChipListensWithItsScanOnBetweenPages)
+{
+    bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
+    controller.remote.page = FakeController::Remote::Page::Silent;
+    startInternal();
+    EXPECT_FALSE(stack.connectTo(remoteAddress()));
+
+    EXPECT_EQ(4, controller.countCommand(kCreateConn));
+    EXPECT_EQ(2, controller.lastCommand(kWriteScanEnable)->params[0]);
+}
+
+TEST_F(Link, AnAdapterLeavesPageScanAloneWhilePaging)
+{
+    bondedAndStarted();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    EXPECT_FALSE(controller.sawCommand(kWriteScanEnable));
+}
+
+TEST_F(Link, TheConsolesChipDropsNoOtherLinkWhenOneExists)
+{
+    bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
+    startInternal();
+    controller.remote.page = FakeController::Remote::Page::AlreadyConnected;
+    EXPECT_FALSE(stack.connectTo(remoteAddress()));
+    EXPECT_FALSE(controller.sawCommand(kDisconnect));
 }
 
 TEST_F(Link, DisconnectSendsTheRequestAndLeavesPageScanOn)
@@ -262,10 +328,9 @@ TEST_F(Link, LinkResetForgetsTheState)
 }
 
 // ---- the device dials in ----
-TEST_F(Link, ServiceModeAcceptsAPairedDeviceAndAdoptsTheLink)
+TEST_F(Link, AcceptsAPairedDeviceThatDialsInAndAdoptsTheLink)
 {
     bondedAndStarted();
-    stack.setServiceMode(true);
     controller.event(0x04, inboundRequest(remoteAddress(), 0x240404));
     stack.poll(10);
 
@@ -279,12 +344,12 @@ TEST_F(Link, ServiceModeAcceptsAPairedDeviceAndAdoptsTheLink)
     ASSERT_TRUE(stack.adoptIncoming()) << sink.all();
     EXPECT_TRUE(sink.has("Creative connected by itself"));
     EXPECT_TRUE(sink.has("link encrypted"));
+    EXPECT_TRUE(sink.has("connect: security "));
 }
 
-TEST_F(Link, ServiceModeIgnoresADeviceThatIsNotPaired)
+TEST_F(Link, IgnoresADeviceThatIsNotPaired)
 {
     startExternal();
-    stack.setServiceMode(true);
     controller.event(0x04, inboundRequest(remoteAddress(), 0x240404));
     controller.event(0x04, inboundRequest(remoteAddress(), 0x240404));
     stack.poll(10);
@@ -298,38 +363,15 @@ TEST_F(Link, ServiceModeIgnoresADeviceThatIsNotPaired)
 TEST_F(Link, OtherRadioLinkTypesAreLeftAlone)
 {
     bondedAndStarted();
-    stack.setServiceMode(true);
     controller.event(0x04, inboundRequest(remoteAddress(), 0x240404, 0)); // SCO
     stack.poll(10);
     EXPECT_FALSE(controller.sawCommand(kAcceptConnReq));
     EXPECT_EQ(0, stack.foreignRequests());
 }
 
-TEST_F(Link, WithoutServiceModeUnknownHeadphonesAreAcceptedButNotTelevisions)
-{
-    startExternal();
-    controller.event(0x04, inboundRequest(remoteAddress(), 0x240404));
-    stack.poll(10);
-    EXPECT_TRUE(controller.sawCommand(kAcceptConnReq));
-
-    controller.commands.clear();
-    BdAddr tv = remoteAddress();
-    tv[0] = 0x99;
-    controller.event(0x04, inboundRequest(tv, 0x24042c));
-    stack.poll(10);
-    EXPECT_FALSE(controller.sawCommand(kAcceptConnReq));
-
-    BdAddr phone = remoteAddress();
-    phone[0] = 0x98;
-    controller.event(0x04, inboundRequest(phone, 0x5a020c)); // not audio
-    stack.poll(10);
-    EXPECT_FALSE(controller.sawCommand(kAcceptConnReq));
-}
-
-TEST_F(Link, ServiceModeAdoptsAPairedDeviceThatConnectsWhileBusy)
+TEST_F(Link, AdoptsAPairedDeviceThatConnectsWhileBusy)
 {
     bondedAndStarted();
-    stack.setServiceMode(true);
     // a connection complete from a paired device we did not expect
     controller.event(0x03, {0, 0x42, 0x00, 0xCC, 0xBB, 0xAA, 0x22, 0x11, 0x00, 1, 0});
     stack.poll(10);
@@ -341,7 +383,6 @@ TEST_F(Link, ServiceModeAdoptsAPairedDeviceThatConnectsWhileBusy)
 TEST_F(Link, ADeviceThatReconnectsWhileTearingDownKeepsItsLink)
 {
     bondedAndStarted();
-    stack.setServiceMode(true);
     ASSERT_TRUE(stack.connectTo(remoteAddress()));
     // it hangs up and dials in again right away
     controller.remoteDisconnect(0x13, 20);

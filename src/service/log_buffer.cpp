@@ -12,7 +12,7 @@ namespace bluev
 // the ring.
 void LogBuffer::add(const std::string& line)
 {
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
 
     std::snprintf(m_ring[m_sequence % kRingLines].data(), kLineLength, "%s", line.c_str());
     m_sequence++;
@@ -26,7 +26,7 @@ void LogBuffer::add(const std::string& line)
 std::string LogBuffer::takePending()
 {
     std::string out;
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
 
     out.swap(m_pending);
     return out;
@@ -35,7 +35,7 @@ std::string LogBuffer::takePending()
 std::string LogBuffer::since(unsigned from, unsigned& next, std::size_t maxBytes)
 {
     std::string out;
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
 
     // `from` ahead of what exists: the caller saw an earlier run of the program
     // (the numbers start again at 0), so it gets everything that is kept

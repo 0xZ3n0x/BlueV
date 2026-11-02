@@ -76,10 +76,6 @@ class Json
         return value(static_cast<long>(number));
     }
 
-    const std::string& str() const
-    {
-        return m_text;
-    }
     std::string take()
     {
         return std::move(m_text);

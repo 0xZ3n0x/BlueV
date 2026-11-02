@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="homebrew/bluev/sce_sys/icon0.png" alt="BlueV" width="160">
+  <img src="assets/icon0.png" alt="BlueV" width="160">
 </p>
 
 <h1 align="center">BlueV</h1>
@@ -22,14 +22,19 @@ from a simple web page, on the console itself or from a phone or PC on the same 
 - Works with a USB Bluetooth adapter or with the console's own Bluetooth chip
 - Control page for scanning, connecting, pairing and disconnecting, also in the console's browser
 - Remembers paired devices and accepts them when they connect by themselves
+- Can open the USB adapter by itself when BlueV starts
+- Sets the headset's volume from the page (when the headset reports its volume, over AVRCP)
+- Two sound qualities, Normal and High
+- Can limit the page to the console itself
 - A "BlueV" entry on the home screen that opens the control page
-- Optional launcher entry for [ps5-payload-websrv](https://github.com/ps5-payload-dev/websrv)
 
 ## What you need
 
 - A PS5 that runs payloads (for example with `elfldr` listening on port 9021)
 - A Bluetooth speaker or headphones
 - **Recommended:** a USB Bluetooth adapter. A CSR 4.0 adapter (`0a12:0001`) is tested.
+  Realtek adapters such as the TP-Link UB600 (RTL8761BU) work with a firmware file
+  on the console; see [Realtek adapters](#realtek-adapters).
   The console's own chip also works, but it is shared with your gamepad (see
   [Good to know](#good-to-know)).
 
@@ -45,9 +50,6 @@ from a simple web page, on the console itself or from a phone or PC on the same 
    BlueV starts, shows a notification, and adds a **BlueV** entry to the home screen.
    Sending the file again replaces the running copy.
 
-Optional launcher entry: run `make homebrew` and copy `build/homebrew/bluev/` to
-`/data/homebrew/` on the console.
-
 ## Use
 
 1. Open the control page: the **BlueV** entry on the home screen, or
@@ -57,6 +59,9 @@ Optional launcher entry: run `make homebrew` and copy `build/homebrew/bluev/` to
 3. Put your speaker or headphones in pairing mode and press **Scan**.
 4. Press **Connect** next to it. The first time takes a few seconds longer because it pairs.
 5. Start a game. The sound comes out of the Bluetooth device.
+
+Tick **Start this adapter when BlueV starts** once the adapter is on, and BlueV opens it by
+itself the next time (the console's own chip is always started by hand).
 
 Next time, switch the device on: paired devices connect by themselves. Use **Disconnect**
 to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit.
@@ -68,22 +73,67 @@ to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit
   off and on can leave it connected but without input until the console restarts.
   Switch the gamepad on **before** you press Start and leave it alone. A USB adapter does
   not have this problem.
-- Connecting takes about 10 seconds with a USB adapter and can take over a minute with
-  the internal chip.
-- The control page has no password. Anyone on your network can open it, so use it on a
-  network you trust.
+- Connecting takes about 10 seconds with a USB adapter and about 15 to 30 seconds with the
+  internal chip.
+- The control page has no password. By default anyone on your network can open it, so use
+  it on a network you trust. On a shared network, set **Who can open this page** to
+  **Only this console**; the page then opens only from the BlueV entry on the console's
+  home screen (your PC and phone no longer reach it, and the same box changes it back).
 - Devices that are probably not audio devices (TVs and the like) are marked in the list.
 - BlueV uses SBC, the codec every Bluetooth audio device supports. It does not send
   microphone audio.
 - Tested on a PS5 Slim and a PS5 Pro (13.00). With a USB adapter, a Creative Stage Air V2,
-  Sony WH-CH720N and Sony WH-1000XM5 work. On the Pro's internal chip the XM5 works too; after
-  a fresh pairing the first Connect can fail before A2DP, so press Connect again. On the Slim's
-  internal chip the Creative works, but the WH-CH720N could not be made to work (see
-  [Contributing](#contributing)).
+  Sony WH-CH720N and Sony WH-1000XM5 work. With the internal chip the Creative works, and the
+  WH-CH720N works but often needs a few tries to connect. On the Pro's internal chip the XM5
+  works too; after a fresh pairing the first Connect can fail before A2DP, so press Connect
+  again (see [Contributing](#contributing)).
+
+## Realtek adapters
+
+Realtek USB adapters (the RTL8761BU in the UB600, the UB500, and other Realtek
+sticks) start in a ROM mode that answers Bluetooth commands and appears in the
+adapter list, but the radio cannot scan. BlueV uploads the missing patch, the
+same way Linux's `btrtl` does, from files you put on the console:
+
+```text
+/data/bluev/firmware/rtl8761bu_fw.bin
+/data/bluev/firmware/rtl8761bu_config.bin      (optional)
+```
+
+Copy them with your usual file-transfer payload (create `/data/bluev/firmware/`
+first if your tool does not). The files are in the
+`linux-firmware` package (`/lib/firmware/rtl_bt/` on Linux, `firmware-realtek` on
+Debian and Ubuntu), or in the
+[`rtl_bt` tree of linux-firmware](https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/rtl_bt).
+The Windows driver package from TP-Link works too: BlueV accepts both the
+`Realtech` and the `RTBTCore` file formats, as long as the file is named
+`rtl8761bu_fw.bin`.
+
+If the file is missing, **Start** stops with
+`this adapter needs firmware: put rtl8761bu_fw.bin in /data/bluev/firmware/`.
+The patch is uploaded whenever the chip is back in ROM mode (after a console
+power cycle, or when the adapter is plugged in). A Realtek chip that already
+carries a vendor patch is put back into ROM mode first, the way Linux's `btrtl`
+does, and the file is uploaded again. A file meant for another chip is refused
+(the log names the one this chip wants). Other Realtek chips use their own file
+(for example `rtl8761cu_fw.bin`, `rtl8821cu_fw.bin`); the error names the one
+the adapter wants.
+
+Only the RTL8761BU (the UB600) has been tested on hardware. The loader also says
+it knows the other USB chips in Linux's `btrtl` table, but they are untested: in
+particular the secure-boot parts (RTL8852AU/BU/CU, RTL8851BU, RTL8922AU,
+RTL8852BTU) take their patch from the key-id security sections, a path that has
+not been run on a console yet.
+
+Only Realtek is supported so far. Broadcom, Intel and MediaTek dongles that need
+a firmware patch are not handled yet; the ones whose ROM works (such as the ASUS
+BT400) are left alone.
 
 ## Troubleshooting
 
 - **Nothing in the list:** the device must be in pairing mode, and close to the console.
+  A Realtek adapter that finds nothing while its firmware is missing is explained in
+  [Realtek adapters](#realtek-adapters); **Start** reports the exact file it wants.
 - **No sound:** check that the page shows *Streaming*, and that the game is making sound
   (BlueV streams what the console plays).
 - **Logs:** the *Log* card on the control page, or the file `/data/bluev/bluev.log` on the
@@ -103,24 +153,26 @@ original **fat PS5**, please try it and report what happens: does the radio star
 endpoints does the log show, does a speaker connect and stream? The first lines of the log
 (console model, adapter, endpoints) are the interesting part.
 
-**Try other Bluetooth adapters.** The only USB adapter tested is a CSR 4.0 (`0a12:0001`).
-Results with other brands (Realtek, Intel, Broadcom and so on) are welcome, including the
-ones that do not work. Adapters that need firmware to be loaded first will likely fail.
+**Try other Bluetooth adapters.** The USB adapter tested here is a CSR 4.0
+(`0a12:0001`). The Realtek path is new (see [Realtek adapters](#realtek-adapters));
+reports for the UB600 and other Realtek sticks are welcome. Results with other brands
+are welcome too, including the ones that do not work. Only the Realtek family has a
+firmware uploader so far; Broadcom (`.hcd`), Intel (`.sfi`/`.ddc`) and MediaTek dongles
+that boot from ROM are not handled yet.
 
-**Try other speakers and headphones, especially on the internal chip.** With the internal
-chip the Creative Stage Air V2 works, but I could not get the Sony WH-CH720N to work. It
-works with a USB adapter. If you can test it, or other headphones, on the internal chip, please
-share the log.
+**Try other speakers and headphones, especially on the internal chip.** The Creative Stage
+Air V2 works there, and the Sony WH-CH720N works but often needs a few tries. If you test
+other ones on the internal chip, please share the log.
 
 **Improve the internal chip support.** The internal chip is shared with the console's own
-Bluetooth stack, which makes it the hard part (see [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md),
-section 12, for what is known and what was tried). Ideas and fixes there are very welcome.
+Bluetooth stack, which makes it the hard part (see [`docs/shared-chip.md`](docs/shared-chip.md)
+for what is known and what was tried). Ideas and fixes there are very welcome.
 I will review every pull request.
 
 **Code changes.** The tests run on a PC (`tests/run.sh`) and the code is formatted with
 `clang-format`. Please add a test for new behaviour (the fakes in `tests/support/` make a
 Bluetooth controller and a speaker easy to script) and keep `third_party/` untouched. Open
-work is listed in section 18 of `src/ARCHITECTURE.md`. Please do not send changes that read
+work is listed in [`docs/todo.md`](docs/todo.md). Please do not send changes that read
 or write the console's kernel memory.
 
 ## Build
@@ -132,7 +184,6 @@ Requirements: the [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk)
 git clone --recurse-submodules <this repository>
 cd <repository>
 make              # build/bluev.elf
-make homebrew     # the launcher entry in build/homebrew/bluev/
 make release      # build/release/bluev.elf and its .sha256, for a release (see below)
 ```
 
@@ -140,24 +191,31 @@ make release      # build/release/bluev.elf and its .sha256, for a release (see 
 compiler note, and with the paths of the machine that built it taken out of the binary (the
 build fails if one is left). Run it from a clean checkout of the tag (`make clean release`).
 
-Tests run on a PC (they need `clang++`, `cmake` and `ninja`):
+Tests run on a PC, on x86-64 or arm64 (they need `clang++`, `cmake` and `ninja`):
 
 ```sh
 tests/run.sh              # all tests
 tests/run.sh address      # with AddressSanitizer (also: thread)
 ```
 
+or with the CMake presets `debug`, `release`, `asan` and `tsan` (build in `build-host/<preset>`):
+
+```sh
+cmake --preset asan && cmake --build --preset asan && ctest --preset asan
+```
+
 ## For developers
 
 How BlueV works, how the code is organised and what was learned about the console's
-Bluetooth chip is in [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md).
+Bluetooth chip is in [`docs/`](docs/README.md).
 
 | Folder | What is in it |
 |---|---|
 | `src/` | the program: `core` (Bluetooth and audio, no console code), `service` (web server and state), `platform` (the console and the file system), `app` (`main`) |
 | `tests/` | unit, protocol (fake controller and speaker) and web API tests |
+| `docs/` | how the program works and what was learned about the console |
 | `web/` | the control page |
-| `homebrew/` | the launcher entry and the icon |
+| `assets/` | the icon |
 | `tools/` | `usbprobe`, a USB diagnostic payload |
 | `third_party/` | libsbc and googletest (git submodules) |
 
@@ -165,13 +223,13 @@ Bluetooth chip is in [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md).
 
 (General information, not legal advice.)
 
-- BlueV is not affiliated with or endorsed by Sony Interactive Entertainment. PlayStation is a
-  trademark of Sony Interactive Entertainment Inc.
+- BlueV is not affiliated with or endorsed by Sony Interactive Entertainment. PlayStation, PS5
+  and DualSense are trademarks of Sony Interactive Entertainment Inc.
 - BlueV contains no exploit and no copy protection circumvention. It needs a console on which you
   already run payloads.
 - This repository contains no Sony code, binaries or decrypted system libraries. It has the
-  names of system functions, their NIDs, file paths and the data layouts the program needs, found
-  by running software on a console, to make it work with other Bluetooth devices.
+  names of system functions, their NIDs, file paths and the data layouts the program needs,
+  checked by running software on a console, to make it work with other Bluetooth devices.
 - Running homebrew may go against Sony's terms for your console, and what the law says about it
   differs from country to country. Check what applies to you; use is at your own risk.
 
@@ -187,12 +245,22 @@ in the hope that it will be useful, but without any warranty.
 It is under the GPL because of the [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk)
 that builds it: every payload built with it contains the SDK's start-up code, and its headers
 are GPL-3.0-or-later. BlueV itself includes `ps5/kernel.h` (`src/platform/ps5/ps5_api.hpp`)
-and calls the SDK's `kernel_dynlib_*` functions (`avcap_source.cpp`, `ps5_system.cpp`,
+and calls the SDK's `kernel_dynlib_*` functions (`avcap_library.cpp`, `ps5_system.cpp`,
 `ps5_usb_directory.cpp`). The third-party parts keep their own licenses, which work with the GPL:
 
 - `third_party/sbc` (libsbc from BlueZ) is LGPL-2.1-or-later, built unmodified
 - `third_party/googletest` is BSD-3-Clause and is only used for the tests
 - the FreeBSD USB headers the SDK ships (`dev/usb/*.h`, `libusb.h`) are BSD licensed
+
+The SDK's own `LICENSE` is the plain GPL-3.0 with no linking exception (checked in October 2026),
+so a payload built with it has to be offered under the GPL together with its source.
+
+**Source of a release.** The `bluev.elf` of a release is GPL-3.0-or-later. Its source is the
+version tag of the release in this repository (the release workflow builds the file from that tag
+with `make release`): `git clone --recurse-submodules` and check out the tag. The source archive
+that GitHub offers for the tag holds BlueV's own files but not the submodules, so use the clone to
+get libsbc (and GoogleTest, which is not in the file) at the exact commits the tag names.
+Anyone who has the file can ask for that source here.
 
 ## Credits
 
@@ -206,9 +274,8 @@ and calls the SDK's `kernel_dynlib_*` functions (`avcap_source.cpp`, `ps5_system
   showing that this is possible. If you are the author and have questions or concerns, please
   open an issue.
 - [libsbc](https://git.kernel.org/pub/scm/bluetooth/sbc.git) from BlueZ (LGPL), used unmodified
-- [ps5-payload-sdk](https://github.com/ps5-payload-dev) and
-  [ps5-payload-websrv](https://github.com/ps5-payload-dev/websrv)
+- [ps5-payload-sdk](https://github.com/ps5-payload-dev)
 - [GoogleTest](https://github.com/google/googletest) for the tests
 
-BlueV is not affiliated with or endorsed by Sony Interactive Entertainment. PlayStation is
-a trademark of Sony Interactive Entertainment Inc. Use it at your own risk.
+BlueV is not affiliated with or endorsed by Sony Interactive Entertainment. PlayStation, PS5
+and DualSense are trademarks of Sony Interactive Entertainment Inc. Use it at your own risk.

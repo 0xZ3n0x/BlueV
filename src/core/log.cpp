@@ -20,11 +20,6 @@ void setLogSink(ILogSink* sink)
     s_sink.store(sink);
 }
 
-ILogSink* logSink()
-{
-    return s_sink.load();
-}
-
 void flushLog()
 {
     if (ILogSink* sink = s_sink.load())
@@ -52,11 +47,6 @@ void logLine(const char* fmt, ...)
 void notify(const char* fmt, ...)
 {
     BLUEV_FORMAT(notify);
-}
-
-void notifyShow(const char* fmt, ...)
-{
-    BLUEV_FORMAT(notifyShow);
 }
 
 } // namespace bluev

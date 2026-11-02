@@ -3,6 +3,8 @@
 
 #include <cstring>
 
+#include "core/bytes.hpp"
+
 namespace bluev
 {
 
@@ -25,7 +27,7 @@ bool L2capReassembler::feed(std::uint16_t flags, const std::uint8_t* pl, std::ui
     }
     if (dlen >= 4 && dlen <= 0x1000)
     { // start fragment
-        const std::uint16_t l2len = static_cast<std::uint16_t>(pl[0] | pl[1] << 8);
+        const std::uint16_t l2len = getLe16(pl);
 
         std::memcpy(m_buf, pl, dlen);
         m_len = dlen;

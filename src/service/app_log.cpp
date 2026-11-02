@@ -25,13 +25,10 @@ void AppLog::line(const char* text)
 
 void AppLog::notify(const char* text)
 {
-    m_notifications.post(text, false);
-}
-
-void AppLog::notifyShow(const char* text)
-{
-    line(text);
-    m_notifications.post(text, true);
+    if (m_notifier)
+    {
+        m_notifier(text);
+    }
 }
 
 void AppLog::flush()

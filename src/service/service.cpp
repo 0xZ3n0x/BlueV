@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "service/service.hpp"
 
+#include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -8,7 +10,9 @@
 #include <thread>
 
 #include "core/bluetooth/address.hpp"
+#include "core/bluetooth/device_filter.hpp"
 #include "core/ports/log.hpp"
+#include "platform/posix/quit_signal.hpp"
 #include "service/json.hpp"
 
 namespace bluev
@@ -18,7 +22,7 @@ namespace
 {
 
 constexpr int kScanMilliseconds = 30000;
-constexpr std::size_t kMaxDevices = 32;
+constexpr std::size_t kMaxListed = 32;
 
 bool validNode(std::string_view node)
 {
@@ -44,11 +48,13 @@ bool validNode(std::string_view node)
 
 } // namespace
 
-Service::Service(const Ports& ports, ServerPorts server)
-    : m_radio(ports.radio), m_usb(ports.usb), m_system(ports.system), m_shortcut(ports.shortcut),
-      m_address(ports.address), m_server(*this, ports.usb, ports.log, ports.page, server)
+Service::Service(IRadio& radio, IUsbDirectory& usb, HomeScreenShortcut& shortcut, SettingsFile& settings,
+                 LogBuffer& log, std::string_view page, std::string model, std::string address, int port)
+    : m_radio(radio), m_usb(usb), m_shortcut(shortcut), m_settings(settings), m_model(std::move(model)),
+      m_address(std::move(address)), m_server(*this, usb, log, page, port)
 {
-    m_radio.setStreamObserver(this);
+    m_radio.setStreamObserver(
+        [this](int rate, int queueMs, int pps, long packets) { publishStream(rate, queueMs, pps, packets); });
 }
 
 const char* Service::stateName(State state)
@@ -101,7 +107,6 @@ Service::PostResult Service::post(std::string_view command, std::string_view add
     else if (command == "quit")
     {
         m_quit.store(true);
-        m_disconnectRequested.store(true);
         return PostResult::Ok;
     }
     else
@@ -117,7 +122,7 @@ Service::PostResult Service::post(std::string_view command, std::string_view add
         }
     }
 
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (m_pending.command != Command::None)
     {
         return PostResult::Busy;
@@ -132,6 +137,12 @@ Service::PostResult Service::post(std::string_view command, std::string_view add
     }
     m_pending.command = wanted;
     m_pending.address = parsed;
+    if (wanted == Command::Connect)
+    {
+        // an old Disconnect must not end this connection; one that comes after
+        // this point must, even before the radio thread has started it
+        m_disconnectRequested.store(false);
+    }
     return PostResult::Ok;
 }
 
@@ -152,7 +163,7 @@ Service::PostResult Service::startRadio(std::string_view adapter, std::string_vi
         return PostResult::BadAdapter;
     }
 
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (m_pending.command != Command::None)
     {
         return PostResult::Busy;
@@ -168,7 +179,7 @@ Service::PostResult Service::startRadio(std::string_view adapter, std::string_vi
 
 Service::PostResult Service::stopRadio()
 {
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (m_pending.command != Command::None)
     {
         return PostResult::Busy;
@@ -181,11 +192,110 @@ Service::PostResult Service::stopRadio()
     return PostResult::Ok;
 }
 
+namespace
+{
+// the headset's raw volume (0..127) as a percentage; -1 stays -1
+int volumePercent(int raw)
+{
+    return raw < 0 ? -1 : (raw * 100 + 63) / 127;
+}
+} // namespace
+
+Service::PostResult Service::setVolume(std::string_view percent)
+{
+    int value = -1;
+    const auto parsed = std::from_chars(percent.data(), percent.data() + percent.size(), value);
+
+    if (parsed.ec != std::errc() || parsed.ptr != percent.data() + percent.size() || value < 0 || value > 100)
+    {
+        return PostResult::BadValue;
+    }
+    if (currentState() != State::Streaming || m_radio.volume() < 0)
+    {
+        return PostResult::NotAllowed;
+    }
+    const int raw = (value * 127 + 50) / 100;
+
+    m_askedVolume.store(raw);
+    m_radio.setVolume(raw);
+    return PostResult::Ok;
+}
+
+Service::PostResult Service::setAutostart(std::string_view on)
+{
+    if (on != "0" && on != "1")
+    {
+        return PostResult::BadValue;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (on == "1")
+    {
+        if (!m_radioOn)
+        {
+            return PostResult::RadioOff;
+        }
+        if (m_adapterNode.empty() || m_adapterVid == 0)
+        {
+            return PostResult::NotAllowed; // the console's own chip is started by hand
+        }
+        m_saved.vid = m_adapterVid;
+        m_saved.pid = m_adapterPid;
+    }
+    m_saved.autostart = on == "1";
+    if (!m_settings.save(m_saved))
+    {
+        logLine("settings: could not save the settings file");
+    }
+    return PostResult::Ok;
+}
+
+Service::PostResult Service::setQuality(std::string_view quality)
+{
+    if (quality != "0" && quality != "1")
+    {
+        return PostResult::BadValue;
+    }
+    const int chosen = quality == "1" ? 1 : 0;
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    m_saved.quality = chosen;
+    if (!m_settings.save(m_saved))
+    {
+        logLine("settings: could not save the settings file");
+    }
+    m_radio.setQuality(chosen);
+    return PostResult::Ok;
+}
+
+Service::PostResult Service::setNetwork(std::string_view who)
+{
+    if (who != "lan" && who != "local")
+    {
+        return PostResult::BadValue;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    m_saved.localOnly = who == "local";
+    if (!m_settings.save(m_saved))
+    {
+        logLine("settings: could not save the settings file");
+    }
+    m_restartServer.store(true);
+    return PostResult::Ok;
+}
+
+bool Service::localOnly()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_saved.localOnly;
+}
+
 std::string Service::statusJson()
 {
     Json json;
 
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     const bool idle = m_state == State::Idle;
 
     json.beginObject()
@@ -200,6 +310,12 @@ std::string Service::statusJson()
         .key("addr")
         .value(idle ? std::string_view() : std::string_view(m_peerAddress))
         .endObject()
+        .key("volume")
+        .value(volumePercent(m_radio.volume()))
+        .key("quality")
+        .value(m_saved.quality)
+        .key("network")
+        .value(m_saved.localOnly ? "local" : "lan")
         .key("stream")
         .beginObject()
         .key("rate")
@@ -219,6 +335,8 @@ std::string Service::statusJson()
         .value(m_adapterNode.empty() ? "internal" : "external")
         .key("device")
         .value(m_adapterNode)
+        .key("autostart")
+        .value(m_saved.autostart)
         .key("foreign_requests")
         .value(m_radio.foreignRequests())
         .endObject()
@@ -230,7 +348,7 @@ std::string Service::devicesJson()
 {
     Json json;
 
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     json.beginArray();
     for (const DeviceInfo& device : m_devices)
     {
@@ -257,7 +375,7 @@ std::string Service::devicesJson()
 
 void Service::publishStream(int rate, int queueMs, int packetsPerSecond, long packets)
 {
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_stream = StreamInfo{rate, queueMs, packetsPerSecond, packets};
 }
 
@@ -273,30 +391,28 @@ void Service::setState(State state, const char* fmt, ...)
     std::vsnprintf(text, sizeof text, fmt, args);
     va_end(args);
 
-    m_radioState = state;
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_state = state;
     m_message = text;
 }
 
 Service::Pending Service::takePending()
 {
-    ScopedLock lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     Pending taken = m_pending;
     m_pending = Pending{};
     return taken;
 }
 
-// Rebuilds the device list: scan results first, then paired devices that
-// were not seen. A scan result without a name keeps the name saved with the
-// bond.
+// Scan results first, then paired devices that were not seen. A scan result
+// without a name keeps the name saved with the bond.
 void Service::publishDevices()
 {
     std::vector<DeviceInfo> devices;
 
-    for (const RadioDevice& found : m_radio.devices())
+    for (const BtDevice& found : m_radio.devices())
     {
-        if (devices.size() >= kMaxDevices)
+        if (devices.size() >= kMaxListed)
         {
             break;
         }
@@ -305,22 +421,28 @@ void Service::publishDevices()
         info.name = found.name;
         info.rssi = found.rssi;
         info.cod = found.classOfDevice;
-        info.other = found.other;
+        info.other = isJunkDevice(found.classOfDevice, found.name);
         info.bonded = m_radio.hasBond(found.address);
-        info.connected = m_hasCurrent && m_currentAddress == found.address;
+        info.connected = m_current == found.address;
         devices.push_back(std::move(info));
     }
+    addBondedDevices(devices);
 
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_devices = std::move(devices);
+}
+
+// Names the unnamed entries from their bonds, and appends the bonded devices
+// that are not in the list yet.
+void Service::addBondedDevices(std::vector<DeviceInfo>& devices)
+{
     const std::vector<BondEntry> bonds = m_radio.bonds();
+
     for (DeviceInfo& info : devices)
     {
-        if (!info.name.empty())
-        {
-            continue;
-        }
         for (const BondEntry& bond : bonds)
         {
-            if (info.address == addressString(bond.peer))
+            if (info.name.empty() && info.address == addressString(bond.peer))
             {
                 info.name = bond.name;
             }
@@ -328,16 +450,13 @@ void Service::publishDevices()
     }
     for (const BondEntry& bond : bonds)
     {
-        if (devices.size() >= kMaxDevices)
+        const std::string address = addressString(bond.peer);
+        const bool seen = std::any_of(devices.begin(), devices.end(),
+                                      [&address](const DeviceInfo& info) { return info.address == address; });
+
+        if (devices.size() >= kMaxListed)
         {
             break;
-        }
-        const std::string address = addressString(bond.peer);
-        bool seen = false;
-
-        for (const DeviceInfo& info : devices)
-        {
-            seen = seen || info.address == address;
         }
         if (seen)
         {
@@ -347,36 +466,81 @@ void Service::publishDevices()
         info.address = address;
         info.name = bond.name;
         info.bonded = true;
-        info.connected = m_hasCurrent && m_currentAddress == bond.peer;
+        info.connected = m_current == bond.peer;
         devices.push_back(std::move(info));
     }
+}
 
-    ScopedLock lock(m_mutex);
-    m_devices = std::move(devices);
+// A newer copy found us by name and asked us (SIGTERM) to step aside; take
+// exactly the same, peaceful path "quit" from the web interface does: finish
+// what is running, then stop. Checked in tick() and in run()'s loop: a session
+// blocks the loop for as long as it runs, but tick() keeps being called from
+// inside BtStack::poll(), which a stream calls too; and tick() is never
+// called while idle with the radio off, which the loop iterates through.
+bool Service::checkQuitSignal()
+{
+    if (!takeQuitRequestedFlag())
+    {
+        return false;
+    }
+    logLine("service: asked by a newer copy to quit");
+    m_quit.store(true);
+    return true;
 }
 
 // called by the radio's poll about once a second
 void Service::tick()
 {
+    checkQuitSignal();
     flushLog();
     {
         const std::string name = m_radio.peerName();
         const std::string address = m_radio.peerAddress();
-        ScopedLock lock(m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
 
         m_peerName = name;
         m_peerAddress = address;
     }
-    if (m_radioState == State::Scanning || m_radioState == State::Idle)
+    announceVolume();
+    const State state = currentState();
+
+    if (state == State::Scanning || state == State::Idle)
     {
         publishDevices();
     }
     // a disconnect or quit during a session ends it; when no session is
     // running the request has nothing to stop and must not linger
-    if (m_radioState != State::Idle && m_radioState != State::Scanning &&
-        (m_disconnectRequested.load() || m_quit.load()))
+    if (state != State::Idle && state != State::Scanning && (m_disconnectRequested.load() || m_quit.load()))
     {
         m_radio.requestStop();
+    }
+    applyNetwork();
+}
+
+// Shows a volume change that came from the headset's own buttons. This runs
+// once a second, so a button held down gives one message with the last value.
+void Service::announceVolume()
+{
+    const int volume = m_radio.volume();
+
+    if (volume == m_announcedVolume)
+    {
+        return;
+    }
+    const bool first = m_announcedVolume < 0;
+
+    m_announcedVolume = volume;
+    if (volume < 0 || first)
+    {
+        m_askedVolume.store(-1);
+    }
+    else if (volume == m_askedVolume.load())
+    {
+        m_askedVolume.store(-1); // the answer to the volume set from the page
+    }
+    else
+    {
+        notify("Headset volume %d%%", volumePercent(volume));
     }
 }
 
@@ -385,13 +549,19 @@ void Service::tick()
 void Service::runSession(bool capturing, const BdAddr* address)
 {
     const char* failure = nullptr;
+    const auto begun = std::chrono::steady_clock::now();
+    const auto secondsSince = [](std::chrono::steady_clock::time_point from) {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+    };
 
-    m_disconnectRequested.store(false);
+    if (address == nullptr)
+    {
+        m_disconnectRequested.store(false); // a device dialled in: an old request does not end this session
+    }
     if (address != nullptr)
     {
         m_radio.resetAudio();
-        m_currentAddress = *address;
-        m_hasCurrent = true;
+        m_current = *address;
         setState(State::Connecting, "connecting to %s", addressText(*address).c_str());
         if (!m_radio.connectTo(*address))
         {
@@ -406,6 +576,8 @@ void Service::runSession(bool capturing, const BdAddr* address)
             failure = "the link could not be secured";
         }
     }
+    const double linkSeconds = secondsSince(begun);
+
     if (failure == nullptr)
     {
         setState(State::Connecting, "setting up audio");
@@ -417,6 +589,8 @@ void Service::runSession(bool capturing, const BdAddr* address)
     }
     if (failure == nullptr)
     {
+        logLine("connect: link %.1f s, audio %.1f s, until the stream %.1f s", linkSeconds,
+                secondsSince(begun) - linkSeconds, secondsSince(begun));
         tick();
         setState(State::Streaming, "streaming to %s", m_radio.peerName().c_str());
         m_radio.stream(capturing);
@@ -425,28 +599,40 @@ void Service::runSession(bool capturing, const BdAddr* address)
     m_radio.disconnect();
     m_radio.resetAudio();
     m_radio.listenAudio();
-    // the request is spent; clear it here, not on the next idle round
-    m_disconnectRequested.store(false);
     // a device we failed to pair with leaves no name file behind
     if (failure != nullptr && address != nullptr && !m_radio.hasBond(*address))
     {
         m_radio.forget(*address);
     }
-    m_hasCurrent = false;
+    m_current.reset();
     publishStream(0, 0, 0, 0);
     setState(State::Idle, "%s", failure != nullptr ? failure : "stream ended");
     publishDevices();
+}
+
+Service::State Service::currentState()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_state;
+}
+
+bool Service::radioIsOn()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_radioOn;
 }
 
 bool Service::openRadio(const std::string& node)
 {
     UsbDevice usb;
     const char* which = node.empty() ? m_usb.internalNode() : node.c_str();
-    const std::string model = m_system.modelName();
+    const std::string& model = m_model;
 
     // what this is running on, for the log: a console of another model may
     // have another chip
-    if (m_usb.nodeInfo(which, usb))
+    const bool known = m_usb.nodeInfo(which, usb);
+
+    if (known)
     {
         logLine("radio: console %s, %s adapter %s %04x:%04x (USB class %02x/%02x/%02x)",
                 !model.empty() ? model.c_str() : "(model unknown)", node.empty() ? "internal" : "external", which,
@@ -472,11 +658,12 @@ bool Service::openRadio(const std::string& node)
         return false;
     }
     m_radio.setTick([this] { tick(); });
-    m_radioOpen = true;
     {
-        ScopedLock lock(m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         m_radioOn = true;
         m_adapterNode = node;
+        m_adapterVid = known && !node.empty() ? usb.vid : 0;
+        m_adapterPid = known && !node.empty() ? usb.pid : 0;
     }
     setState(State::Idle, "ready");
     return true;
@@ -484,21 +671,77 @@ bool Service::openRadio(const std::string& node)
 
 void Service::closeRadio()
 {
-    if (!m_radioOpen)
+    if (!radioIsOn())
     {
         return;
     }
     m_radio.close();
-    m_radioOpen = false;
     {
-        ScopedLock lock(m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         m_radioOn = false;
     }
     setState(State::Idle, "radio off");
 }
 
+void Service::loadSettings()
+{
+    const Settings saved = m_settings.load();
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_saved = saved;
+    }
+    m_radio.setQuality(saved.quality);
+    m_server.setLocalOnly(saved.localOnly);
+}
+
+void Service::applyNetwork()
+{
+    if (!m_restartServer.exchange(false))
+    {
+        return;
+    }
+    bool localOnly;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        localOnly = m_saved.localOnly;
+    }
+    m_server.stop(); // waits for the requests being served, the one that asked for this included
+    m_server.setLocalOnly(localOnly);
+    m_serverUp = m_server.start();
+    if (!m_serverUp)
+    {
+        logLine("web: could not start the HTTP server again, will keep trying");
+    }
+}
+
+void Service::autostartRadio()
+{
+    Settings saved;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        saved = m_saved;
+    }
+    if (!saved.autostart)
+    {
+        return;
+    }
+    for (const UsbDevice& adapter : m_usb.adapters())
+    {
+        if (adapter.vid == saved.vid && adapter.pid == saved.pid)
+        {
+            logLine("radio: starting with the USB adapter of the last run (%04x:%04x)", saved.vid, saved.pid);
+            openRadio(adapter.node);
+            publishDevices();
+            return;
+        }
+    }
+    logLine("radio: the USB adapter of the last run (%04x:%04x) is not plugged in", saved.vid, saved.pid);
+    notify("BlueV: the saved USB adapter is not plugged in");
+}
+
 bool Service::run(bool capturing)
 {
+    loadSettings();
     m_serverUp = m_server.start();
     if (!m_serverUp)
     {
@@ -506,7 +749,7 @@ bool Service::run(bool capturing)
     }
     publishDevices();
     setState(State::Idle, "radio off");
-    if (!m_address.empty() && m_server.port() > 0)
+    if (!m_address.empty() && m_server.port() > 0 && !localOnly())
     {
         notify("BlueV ready: open http://%s:%d", m_address.c_str(), m_server.port());
     }
@@ -515,10 +758,17 @@ bool Service::run(bool capturing)
         notify("BlueV ready: open its entry on the home screen");
     }
 
+    autostartRadio();
+
     auto lastServerTry = std::chrono::steady_clock::now();
 
     while (!m_quit.load())
     {
+        if (checkQuitSignal())
+        {
+            continue;
+        }
+        applyNetwork();
         // started at boot, the network may not be up yet
         if (!m_serverUp && std::chrono::steady_clock::now() - lastServerTry > std::chrono::seconds(2))
         {
@@ -551,7 +801,7 @@ bool Service::run(bool capturing)
             publishDevices();
             break;
         case Command::None:
-            if (!m_radioOpen)
+            if (!radioIsOn())
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 break;
@@ -561,8 +811,6 @@ bool Service::run(bool capturing)
             {
                 runSession(capturing, nullptr);
             }
-            // a disconnect that arrived with nothing to disconnect
-            m_disconnectRequested.store(false);
             break;
         }
     }

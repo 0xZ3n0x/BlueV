@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "service/settings.hpp"
 #include "service_harness.hpp"
 
 using namespace bluev;
@@ -22,7 +23,7 @@ class HttpApi : public ServiceHarness
 };
 } // namespace
 
-TEST_F(HttpApi, ServesThePageAndTheCorsHeaders)
+TEST_F(HttpApi, ServesThePageWithoutCorsHeaders)
 {
     ASSERT_TRUE(startService());
     std::string body;
@@ -31,10 +32,8 @@ TEST_F(HttpApi, ServesThePageAndTheCorsHeaders)
     EXPECT_NE(std::string::npos, body.find("<title>"));
     EXPECT_EQ(200, request("GET", "/index.html", body));
 
-    EXPECT_NE(std::string::npos, fullAnswer("GET /api/status HTTP/1.0\r\n\r\n").find("Access-Control-Allow-Origin: *"));
-    const std::string options = fullAnswer("OPTIONS /api/connect HTTP/1.0\r\n\r\n");
-    EXPECT_EQ(0u, options.find("HTTP/1.0 204"));
-    EXPECT_NE(std::string::npos, options.find("Access-Control-Allow-Methods"));
+    EXPECT_EQ(std::string::npos, fullAnswer("GET /api/status HTTP/1.0\r\n\r\n").find("Access-Control"));
+    EXPECT_EQ(0u, fullAnswer("OPTIONS /api/connect HTTP/1.0\r\n\r\n").find("HTTP/1.0 405"));
 }
 
 TEST_F(HttpApi, ReadyNotificationNamesTheAddress)
@@ -114,13 +113,13 @@ TEST_F(HttpApi, ForgetAcceptsAPercentEncodedAddress)
     EXPECT_TRUE(waitFor([&] { return forgotten.load() == 1; }, 2000));
 }
 
-TEST_F(HttpApi, UninstallShortcutReachesTheShortcut)
+TEST_F(HttpApi, UninstallShortcutAsksTheInstaller)
 {
     ASSERT_TRUE(startService());
     std::string body;
-    EXPECT_CALL(shortcut, remove()).WillOnce(Return(true));
+    EXPECT_CALL(installer, unregisterTitle(_)).WillOnce(Return(true));
     EXPECT_EQ(200, request("POST", "/api/uninstall-shortcut", body));
-    EXPECT_CALL(shortcut, remove()).WillOnce(Return(false));
+    EXPECT_CALL(installer, unregisterTitle(_)).WillOnce(Return(false));
     EXPECT_EQ(409, request("POST", "/api/uninstall-shortcut", body));
 }
 
@@ -216,6 +215,208 @@ TEST_F(HttpApi, AnExternalAdapterIsOpenedByItsNode)
     EXPECT_TRUE(sink.has("external adapter ugen1.2"));
 }
 
+namespace
+{
+UsbDevice csrAdapter()
+{
+    UsbDevice csr;
+    csr.node = "ugen1.2";
+    csr.vid = 0x0a12;
+    csr.pid = 1;
+    csr.deviceClass = 0xe0;
+    return csr;
+}
+} // namespace
+
+TEST_F(HttpApi, TheUsbAdapterInUseIsOpenedAgainWhenBlueVStarts)
+{
+    usb.devices = {csrAdapter()};
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_EQ(409, request("POST", "/api/autostart?on=1", body)) << "the radio is off";
+    EXPECT_CALL(radio, open("ugen1.2")).WillOnce(Return(true));
+    EXPECT_EQ(200, request("POST", "/api/radio/on?adapter=external&dev=ugen1.2", body));
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":true") != std::string::npos; }, 2000));
+    EXPECT_NE(std::string::npos, status().find("\"autostart\":false"));
+    EXPECT_EQ(200, request("POST", "/api/autostart?on=1", body));
+    EXPECT_NE(std::string::npos, status().find("\"autostart\":true"));
+
+    // a new run of BlueV, the adapter plugged in at another port
+    stopService();
+    port = 0;
+    usb.devices = {csrAdapter()};
+    usb.devices[0].node = "ugen2.3";
+    EXPECT_CALL(radio, open("ugen2.3")).WillOnce(Return(true));
+    ASSERT_TRUE(startService());
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":true") != std::string::npos; }, 2000));
+    EXPECT_NE(std::string::npos, status().find("\"device\":\"ugen2.3\""));
+    EXPECT_TRUE(sink.has("radio: starting with the USB adapter of the last run (0a12:0001)"));
+}
+
+TEST_F(HttpApi, WithoutTheAdapterTheRadioStaysOffAndTheUserIsTold)
+{
+    Settings saved;
+    saved.autostart = true;
+    saved.vid = 0x0a12;
+    saved.pid = 1;
+    ASSERT_TRUE(settings.save(saved));
+    EXPECT_CALL(radio, open(_)).Times(0);
+    ASSERT_TRUE(startService());
+
+    EXPECT_NE(std::string::npos, status().find("\"on\":false"));
+    EXPECT_NE(std::string::npos, status().find("\"autostart\":true")); // still wanted
+    EXPECT_TRUE(sink.has("is not plugged in"));
+}
+
+TEST_F(HttpApi, TurningAutostartOffIsRemembered)
+{
+    usb.devices = {csrAdapter()};
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_CALL(radio, open("ugen1.2")).WillOnce(Return(true));
+    EXPECT_EQ(200, request("POST", "/api/radio/on?adapter=external&dev=ugen1.2", body));
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":true") != std::string::npos; }, 2000));
+    EXPECT_EQ(200, request("POST", "/api/autostart?on=1", body));
+    EXPECT_EQ(200, request("POST", "/api/autostart?on=0", body));
+
+    stopService();
+    port = 0;
+    EXPECT_CALL(radio, open(_)).Times(0);
+    ASSERT_TRUE(startService());
+    EXPECT_NE(std::string::npos, status().find("\"on\":false"));
+    EXPECT_NE(std::string::npos, status().find("\"autostart\":false"));
+}
+
+TEST_F(HttpApi, TheConsolesOwnChipIsNeverStartedAutomatically)
+{
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_CALL(radio, open("")).WillOnce(Return(true));
+    EXPECT_EQ(200, request("POST", "/api/radio/on?adapter=internal", body));
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":true") != std::string::npos; }, 2000));
+    EXPECT_EQ(409, request("POST", "/api/autostart?on=1", body));
+    EXPECT_EQ(400, request("POST", "/api/autostart?on=2", body));
+    EXPECT_EQ(400, request("POST", "/api/autostart", body));
+    EXPECT_NE(std::string::npos, status().find("\"autostart\":false"));
+}
+
+namespace
+{
+// whether something listens on this address and port
+bool listensOn(const char* address, int port)
+{
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in where{};
+    timeval timeout{1, 0};
+
+    where.sin_family = AF_INET;
+    where.sin_port = htons(static_cast<std::uint16_t>(port));
+    inet_pton(AF_INET, address, &where.sin_addr);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
+    const bool connected = connect(fd, reinterpret_cast<sockaddr*>(&where), sizeof where) == 0;
+    char answer[256];
+
+    if (connected)
+    {
+        recv(fd, answer, sizeof answer, 0); // the server answers the empty request; leave it time to
+    }
+    close(fd);
+    return connected;
+}
+} // namespace
+
+TEST_F(HttpApi, ThePageCanBeLimitedToTheConsoleAndBackAgain)
+{
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_NE(std::string::npos, status().find("\"network\":\"lan\""));
+    // every address of the machine answers; where 127.0.0.2 is not one (macOS), this part cannot be checked
+    const bool otherAddressWorks = listensOn("127.0.0.2", port);
+
+    EXPECT_EQ(400, request("POST", "/api/network?v=nobody", body));
+    EXPECT_EQ(400, request("POST", "/api/network", body));
+    EXPECT_EQ(200, request("POST", "/api/network?v=local", body));
+    // the radio thread starts the server again a moment after the answer
+    ASSERT_TRUE(waitFor([&] { return sink.has("(this console only)"); }, 3000))
+        << "the server did not come back on the loopback address";
+    EXPECT_NE(std::string::npos, status().find("\"network\":\"local\""));
+    EXPECT_TRUE(listensOn("127.0.0.1", port));
+    if (otherAddressWorks)
+    {
+        EXPECT_FALSE(listensOn("127.0.0.2", port)) << "the page is still open to the network";
+    }
+
+    EXPECT_EQ(200, request("POST", "/api/network?v=lan", body));
+    ASSERT_TRUE(
+        waitFor([&] { return otherAddressWorks ? listensOn("127.0.0.2", port) : listensOn("127.0.0.1", port); }, 3000));
+    EXPECT_NE(std::string::npos, status().find("\"network\":\"lan\""));
+}
+
+TEST_F(HttpApi, TheChoiceOfWhoCanOpenThePageIsRemembered)
+{
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_EQ(200, request("POST", "/api/network?v=local", body));
+    ASSERT_TRUE(waitFor([&] { return sink.has("(this console only)"); }, 3000));
+
+    stopService();
+    port = 0;
+    ASSERT_TRUE(startService());
+    EXPECT_NE(std::string::npos, status().find("\"network\":\"local\""));
+    EXPECT_TRUE(listensOn("127.0.0.1", port));
+}
+
+// A client that asks and then resets the connection must not take the
+// program down with a SIGPIPE when the answer is written.
+TEST_F(HttpApi, AClientThatHangsUpDoesNotEndTheProgram)
+{
+    ASSERT_TRUE(startService());
+
+    for (int i = 0; i < 30; i++)
+    {
+        const int fd = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in where{};
+        linger reset{1, 0}; // closing sends a reset
+        const char ask[] = "GET /api/log?since=0 HTTP/1.0\r\n\r\n";
+
+        where.sin_family = AF_INET;
+        where.sin_port = htons(static_cast<std::uint16_t>(port));
+        inet_pton(AF_INET, "127.0.0.1", &where.sin_addr);
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &reset, sizeof reset);
+        ASSERT_EQ(0, connect(fd, reinterpret_cast<sockaddr*>(&where), sizeof where));
+        ASSERT_EQ(static_cast<ssize_t>(sizeof ask - 1), send(fd, ask, sizeof ask - 1, 0));
+        close(fd);
+    }
+    std::string body;
+    EXPECT_EQ(200, request("GET", "/api/status", body));
+}
+
+TEST_F(HttpApi, TheSoundQualityIsPassedOnAndRemembered)
+{
+    EXPECT_CALL(radio, setQuality(0)).Times(1); // at start, nothing saved yet
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_NE(std::string::npos, status().find("\"quality\":0"));
+    EXPECT_CALL(radio, setQuality(1)).Times(1);
+    EXPECT_EQ(200, request("POST", "/api/quality?v=1", body)) << "also while the radio is off";
+    EXPECT_NE(std::string::npos, status().find("\"quality\":1"));
+    EXPECT_EQ(400, request("POST", "/api/quality?v=2", body));
+    EXPECT_EQ(400, request("POST", "/api/quality", body));
+
+    // a new run of BlueV gives it to the radio again
+    stopService();
+    port = 0;
+    EXPECT_CALL(radio, setQuality(1)).Times(1);
+    ASSERT_TRUE(startService());
+    EXPECT_NE(std::string::npos, status().find("\"quality\":1"));
+}
+
 TEST_F(HttpApi, AFailedStartLeavesTheRadioOffWithTheReason)
 {
     ASSERT_TRUE(startService());
@@ -295,9 +496,9 @@ TEST_F(WithRadioOn, DevicesAlsoShowPairedOnesThatWereNotSeen)
 TEST_F(WithRadioOn, ASeenDeviceWithoutANameGetsTheNameOfItsBond)
 {
     ON_CALL(radio, devices()).WillByDefault(::testing::Invoke([] {
-        RadioDevice d;
+        BtDevice d;
         d.address = BdAddr{{0xCC, 0xBB, 0xAA, 0x22, 0x11, 0x00}};
-        return std::vector<RadioDevice>{d};
+        return std::vector<BtDevice>{d};
     }));
     BondEntry b;
     b.peer = BdAddr{{0xCC, 0xBB, 0xAA, 0x22, 0x11, 0x00}};
@@ -474,10 +675,14 @@ TEST_F(WithRadioOn, QuitDuringAStreamEndsTheStream)
     SUCCEED();
 }
 
+// A fixed number of requests, not a fixed time: every request leaves a client
+// port in TIME_WAIT, and macOS has only 16384 of them, held for 30 s. A fast
+// machine running for a fixed time used them all up, and then /api/quit could
+// not connect and the test hung.
 TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
 {
-    std::atomic<bool> go{true};
-    std::atomic<long> served{0}, bad{0};
+    constexpr int kRequestsPerClient = 100;
+    std::atomic<long> bad{0};
     std::mutex badMutex;
     std::vector<std::string> badNotes;
     const auto noteBad = [&](const std::string& what, int code, const std::string& reply) {
@@ -496,7 +701,7 @@ TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
         clients.emplace_back([&, c] {
             std::mt19937 rng(static_cast<unsigned>(c) + 1);
 
-            while (go.load())
+            for (int i = 0; i < kRequestsPerClient; i++)
             {
                 std::string reply;
                 int code;
@@ -527,12 +732,9 @@ TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
                     bad++;
                     noteBad("request", code, reply);
                 }
-                served++;
             }
         });
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
-    go.store(false);
     for (std::thread& client : clients)
     {
         client.join();
@@ -542,43 +744,63 @@ TEST_F(WithRadioOn, ManyClientsAtOnceGetValidAnswers)
     {
         ADD_FAILURE() << note;
     }
-    EXPECT_GT(served.load(), 100);
     std::string body;
     request("POST", "/api/disconnect", body);
-    EXPECT_TRUE(waitForState("idle", 5000));
+    EXPECT_TRUE(waitForState("idle", 5000)) << status();
 }
 
-TEST_F(HttpApi, ARunningCopyIsAskedToQuitByANewOne)
+// A Disconnect that comes right after a Connect must not be lost: the
+// connection may not have started yet, and it must end as soon as it has.
+// A connection that was not ended keeps the service busy, so the next Connect
+// is refused until the wait runs out.
+TEST_F(WithRadioOn, ADisconnectRightAfterAConnectIsNotLost)
 {
-    ASSERT_TRUE(startService());
-    EXPECT_TRUE(HttpServer::quitRunningInstance(ServerPorts{port, port}));
+    std::string body;
+    const std::string connect = std::string("/api/connect?addr=") + kSpeakerAddress;
+
+    for (int i = 0; i < 25; i++)
+    {
+        int code = 0;
+
+        ASSERT_TRUE(waitFor([&] { return (code = request("POST", connect, body)) == 200; }, 3000))
+            << "round " << i << ": " << status();
+        EXPECT_EQ(200, request("POST", "/api/disconnect", body));
+    }
 }
 
-TEST_F(HttpApi, NothingRunningMeansNobodyToAsk)
+// Finding and asking an older copy to quit is no longer HTTP-based (a new
+// copy looks it up by process name through the kernel, see
+// platform/ps5/process_identity.hpp), and the server listens on one fixed
+// port rather than a range, so there is no fallback-port behaviour left to
+// cover here. Both are PS5-only (thr_set_name/sysctl) and are not part of
+// the host test build.
+
+TEST_F(WithRadioOn, VolumeIsShownAndSetOnlyWhileTheHeadsetHasOne)
 {
-    EXPECT_FALSE(HttpServer::quitRunningInstance(ServerPorts{29990, 29991}));
-}
+    std::string body;
+    EXPECT_CALL(radio, setVolume(76)).Times(1); // 60 percent of 127
 
-TEST_F(HttpApi, ServerComesUpOnTheNextFreePort)
-{
-    // occupy the first port, then start: the service must take the next one
-    const int taken = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in address{};
-    // find our harness range base by starting once, stopping, then blocking its first port
-    ASSERT_TRUE(startService());
-    const int first = port;
-    stopService();
-    port = 0;
+    EXPECT_EQ(200, request("POST", std::string("/api/connect?addr=") + kSpeakerAddress, body));
+    ASSERT_TRUE(waitForState("streaming", 3000));
+    EXPECT_NE(std::string::npos, status().find("\"volume\":-1")) << "no volume until the headset reports one";
+    EXPECT_EQ(409, request("POST", "/api/volume?v=60", body));
 
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
-    address.sin_port = htons(static_cast<std::uint16_t>(first));
-    int one = 1;
-    setsockopt(taken, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    ASSERT_EQ(0, bind(taken, reinterpret_cast<sockaddr*>(&address), sizeof address));
-    listen(taken, 1);
-
-    ASSERT_TRUE(startService());
-    EXPECT_EQ(first + 1, port);
-    close(taken);
+    headsetVolume = 127;
+    EXPECT_NE(std::string::npos, status().find("\"volume\":100")) << status();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300)); // a few ticks
+    for (const std::string& note : sink.notes())
+    {
+        EXPECT_EQ(std::string::npos, note.find("Headset volume")) << "the first value is not announced";
+    }
+    headsetVolume = 64; // a button on the headset
+    ASSERT_TRUE(waitFor(
+        [&] {
+            const auto notes = sink.notes();
+            return !notes.empty() && notes.back() == "Headset volume 50%";
+        },
+        3000));
+    EXPECT_EQ(400, request("POST", "/api/volume?v=101", body));
+    EXPECT_EQ(400, request("POST", "/api/volume?v=loud", body));
+    EXPECT_EQ(400, request("POST", "/api/volume", body));
+    EXPECT_EQ(200, request("POST", "/api/volume?v=60", body));
 }

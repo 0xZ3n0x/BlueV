@@ -11,13 +11,16 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
 #include "core/bluetooth/address.hpp"
+#include "core/bluetooth/firmware.hpp"
 #include "core/bluetooth/l2cap_reassembler.hpp"
 #include "core/ports/bond_store.hpp"
 #include "core/ports/clock.hpp"
+#include "core/ports/firmware_store.hpp"
 #include "core/ports/hci_transport.hpp"
 #include "core/ports/usb_directory.hpp"
 
@@ -52,6 +55,15 @@ struct L2Channel
     bool closed = false;          // the device closed it, or the link went down
     std::uint32_t theirMtu = 672; // 672 is the L2CAP default until they say otherwise
 
+    // the device asked for this channel: remember its id, wait for the configuration
+    void accept(std::uint32_t theirCid_)
+    {
+        theirCid = theirCid_;
+        connDone = true;
+        up = false;
+        configured = false;
+        closed = false;
+    }
     // forget a previous session's state
     void reset()
     {
@@ -72,10 +84,10 @@ using FrameHandler = std::function<void(std::uint32_t cid, const std::uint8_t* d
 class BtStack
 {
   public:
-    // The four ports are used, not owned; they must outlive the stack.
-    BtStack(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IClock& clock);
+    // The five ports are used, not owned; they must outlive the stack.
+    BtStack(IHciTransport& transport, IBondStore& bonds, IUsbDirectory& usb, IFirmwareStore& firmware, IClock& clock);
 
-    // ---- the controller (bt_stack.cpp) ----
+    // ---- the controller (bt_stack_controller.cpp) ----
     // Choose the controller before start(): the console's own chip (empty) or
     // an adapter in a USB port (a name under /dev).
     void useAdapter(const std::string& node);
@@ -101,16 +113,10 @@ class BtStack
     {
         m_tick = std::move(tick);
     }
-    // Service mode (a long-running program, not a one-off tool): a device that
-    // was paired before may dial in and is accepted, any other is counted in
-    // foreignRequests() and refused, and inquiry results are not announced.
-    void setServiceMode(bool on)
-    {
-        m_service = on;
-    }
 
-    // a command whose answer is waited for; true when it succeeded
-    bool hciSync(std::uint16_t opcode, const std::uint8_t* params = nullptr, std::uint8_t length = 0);
+    // a command whose answer is waited for; true when it succeeded. `attempts`
+    // is how many times it is sent when no reply comes.
+    bool hciSync(std::uint16_t opcode, const std::uint8_t* params = nullptr, std::uint8_t length = 0, int attempts = 5);
     // Sends a command that is answered with Command Status (Inquiry and the
     // like) and returns that status, or -1 when no status came back.
     int commandStatus(std::uint16_t opcode, const std::uint8_t* params = nullptr, std::uint8_t length = 0,
@@ -125,6 +131,7 @@ class BtStack
         return m_devices;
     }
     void setScan(int mode); // 0 off, 1 inquiry, 2 page, 3 both
+    void restoreScan();     // what paired devices connect by: see the definition
 
     // ---- bonds ----
     bool hasBond(const BdAddr& peer);
@@ -144,17 +151,17 @@ class BtStack
     {
         return m_disconnected;
     }
+    // the console's chip, where a packet for us can go to the console instead
+    bool sharedChip() const
+    {
+        return !m_external;
+    }
     void disconnect();
     void linkReset(); // forget the link state and the target
     // HCI connection handle of the link, 0 when there is none.
     std::uint16_t handle() const
     {
         return m_handle;
-    }
-    // How many links have come up since start(); a change means a new link.
-    unsigned connectionCount() const
-    {
-        return m_connGen;
     }
     std::string peerName() const
     {
@@ -164,7 +171,7 @@ class BtStack
     {
         return m_peerMac.empty() ? "--" : m_peerMac;
     }
-    // Connection requests from unpaired devices that were refused (service mode).
+    // Connection requests from unpaired devices that were refused.
     long foreignRequests() const
     {
         return m_foreignRequests.load();
@@ -173,13 +180,17 @@ class BtStack
     // ---- L2CAP (bt_stack_l2cap.cpp) ----
     bool openChannel(L2Channel& channel, std::uint16_t psm, FrameHandler handler);
     void closeChannel(L2Channel& channel);
-    // accept an inbound connection to `psm` on `channel`
+    // accept an inbound connection to `psm` on `channel`; binding a PSM again
+    // replaces the channel (at most two PSMs)
     void bindInbound(std::uint16_t psm, L2Channel& channel, FrameHandler handler);
 
     // ---- sending and flow control ----
     // One L2CAP frame on channel `cid`, unfragmented; false when it does not fit
     // the controller's ACL buffer or the transport refused it. Takes a credit.
     bool send(std::uint32_t cid, const std::uint8_t* data, int length);
+    // An L2CAP signalling command on channel 1: `code`, `id`, then up to four
+    // 16-bit fields (the command's parameters, little-endian).
+    bool sendSignal(std::uint8_t code, std::uint8_t id, std::initializer_list<unsigned> fields);
     // True when a credit is free and not too much is in flight (see send()).
     bool canSend();
     // The largest `length` send() takes: the controller's ACL size minus the headers.
@@ -215,14 +226,24 @@ class BtStack
     // Whether a command reply answers a command we sent recently (the console's
     // stack shares the chip and its replies arrive here too).
     bool replyIsOurs(std::uint16_t opcode);
+    bool openTransport();
+    // Uploads the patch an adapter's ROM needs (Realtek only, for now).
+    bool bringUpAdapterFirmware();
+    void readBufferSize();
+    bool identifyController();
+    void logControllerSettings();
+    void configureController();
     // Turns scanning off and disconnects the link we hold, if any.
     void dropStaleLinks();
-    // Off while our own page runs on a shared chip (see bt_stack.cpp).
-    void pauseSystemScan();
-    void restoreSystemScan();
 
     // events (bt_stack_events.cpp)
     void handleEvent(const std::uint8_t* evt, int n);
+    void onInquiryResults(const std::uint8_t* e, bool withRssi);
+    void onPinCodeRequest(const std::uint8_t* e);
+    void onLinkKeyRequest(const std::uint8_t* e);
+    void onIoCapabilityRequest(const std::uint8_t* e);
+    void onUserConfirmRequest(const std::uint8_t* e);
+    void onVendorEvent(const std::uint8_t* evt, int n);
     void onConnectionComplete(const std::uint8_t* e);
     void onConnectionRequest(const std::uint8_t* e);
     void onDisconnectionComplete(const std::uint8_t* e);
@@ -241,15 +262,41 @@ class BtStack
     int startInquiry(std::uint64_t until);
 
     // link
-    bool waitConn(std::uint32_t timeoutMs);
+    bool pageAttempts(std::uint8_t* request);
+    bool recoverExistingLink(std::uint8_t* request);
     bool pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t clock);
     bool encryptLink();
     void resetLinkState(); // keeps the target
     void setBond(const BdAddr& peer);
-    bool bondExists(const BdAddr& peer);
+    bool isTarget(const std::uint8_t* address) const; // the six bytes are the device we deal with
+    // logs a reply to a command that was not ours (the console's own stack), up to 50 times
+    void noteForeignReply(std::uint16_t opcode, unsigned status);
+    void clearConnectResult();                 // m_connDone, m_connStatus
+    void clearSecurity();                      // authentication and encryption results
+    void resetCredits();                       // all ACL buffers free, nothing in flight
+    void pushInFlight(std::uint64_t sentAt);   // a packet went out
+    void popInFlight();                        // the oldest packet is accounted for
+    void sendDisconnect(std::uint16_t handle); // "remote user terminated"
+    void dropAllLinks(std::uint32_t pauseMs);  // Disconnect for every handle a controller could hold
 
     // L2CAP
     void signaling(const std::uint8_t* cmd, int length);
+    void onChannelRequest(std::uint8_t id, const std::uint8_t* params);
+    void onChannelResponse(const std::uint8_t* params);
+    void onConfigureRequest(std::uint8_t id, const std::uint8_t* params, std::uint16_t length);
+    void onConfigureResponse(const std::uint8_t* params);
+    void onChannelClose(std::uint8_t id, const std::uint8_t* params);
+    void onEchoRequest(std::uint8_t id, const std::uint8_t* params, std::uint16_t length);
+    void onInformationRequest(std::uint8_t id, const std::uint8_t* params);
+    enum class Request
+    {
+        Failed,
+        Accepted,
+        OpenedByPeer
+    };
+    Request requestChannel(L2Channel& channel, std::uint16_t psm);
+    bool configureChannel(L2Channel& channel);
+    bool reopenChannel(L2Channel& channel, std::uint16_t psm);
     void dispatch(std::uint32_t cid, const std::uint8_t* data, int length);
     void addChannel(L2Channel& channel, FrameHandler handler);
     L2Channel* channelByTheirs(std::uint16_t cid);
@@ -257,18 +304,20 @@ class BtStack
     IHciTransport& m_transport;
     IBondStore& m_bondStore;
     IUsbDirectory& m_usb;
+    IFirmwareStore& m_firmware;
     IClock& m_clock;
 
     // the controller
     std::string m_node; // empty = the console's chip
     HciLayout m_layout;
     bool m_external = false;
+    int m_systemScan = 0;            // the scan setting found on the console's chip, 0 unknown
     bool m_layoutKnown = false;      // the endpoints are known, no detection needed
     bool m_internalStandard = false; // detected once on the console's chip
     std::string m_startError;
+    FirmwareFamily m_family = FirmwareFamily::Unknown; // for the "scan found nothing" hint
     BdAddr m_local{};
     bool m_localKnown = false;
-    bool m_service = false;
     std::function<void()> m_tick;
     std::uint64_t m_lastTick = 0;
 
@@ -293,8 +342,6 @@ class BtStack
 
     // the link
     BdAddr m_target{};
-    std::uint8_t m_targetPsrm = 0;
-    std::uint16_t m_targetClock = 0;
     BondKey m_key;
     std::string m_peerName;
     std::string m_peerMac;
@@ -320,13 +367,12 @@ class BtStack
     // is a ring of send times of packets not yet reported completed
     std::uint32_t m_aclMtu = 0;
     std::uint32_t m_pageTimeoutMs = 0; // from Read Page Timeout
-    int m_scanSaved = 2;               // the system's Scan_Enable, read at start
-    bool m_scanPaused = false;
     int m_credits = 0;
     int m_creditsMax = 0;
     long m_sent = 0, m_reported = 0, m_assumed = 0;
     long m_otherCompleted = 0, m_otherAcl = 0;
-    std::uint64_t m_inflight[64] = {};
+    static constexpr int kInFlightSlots = 64;
+    std::uint64_t m_inflight[kInFlightSlots] = {};
     int m_ifHead = 0, m_ifCount = 0;
 
     // L2CAP
@@ -336,9 +382,14 @@ class BtStack
     FrameHandler m_handlers[kMaxChannels];
     int m_channelCount = 0;
     std::uint8_t m_sigId = 1;
-    std::uint16_t m_inPsm = 0;
-    L2Channel* m_inChannel = nullptr;
-    FrameHandler m_inHandler;
+    // the PSMs we accept connections to (AVDTP and AVCTP), see bindInbound()
+    struct Inbound
+    {
+        std::uint16_t psm = 0;
+        L2Channel* channel = nullptr;
+        FrameHandler handler;
+    };
+    Inbound m_inbound[2];
     unsigned m_rejectedGen = 0;
     int m_rejectedCount = 0; // refused inbound connections logged for this link
     L2capReassembler m_reassembler;

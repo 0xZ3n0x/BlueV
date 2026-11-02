@@ -10,25 +10,36 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#ifdef BLUEV_HOST_BUILD
+/* libsbc only reads __BYTE_ORDER. Take it from the system header when there is
+ * one (glibc, BSD), else from the compiler (macOS). */
+#if __has_include(<endian.h>)
 #include <endian.h>
-#endif
-#ifndef __BYTE_ORDER
+#elif __has_include(<sys/endian.h>)
 #include <sys/endian.h>
-#ifndef __BYTE_ORDER
-#define __BYTE_ORDER _BYTE_ORDER
 #endif
+#ifndef __BYTE_ORDER
+#define __BYTE_ORDER __BYTE_ORDER__
 #endif
 #ifndef __LITTLE_ENDIAN
-#define __LITTLE_ENDIAN 1234
+#define __LITTLE_ENDIAN __ORDER_LITTLE_ENDIAN__
 #endif
 #ifndef __BIG_ENDIAN
-#define __BIG_ENDIAN 4321
+#define __BIG_ENDIAN __ORDER_BIG_ENDIAN__
 #endif
 
-/* The SIMD encoder paths are switched on by libsbc itself on x86-64. The
- * target CPU always has MMX and SSE4.2, so libsbc does not probe for them at
- * run time. */
+#ifdef BLUEV_HOST_BUILD
+/* The host tests use libsbc's plain C encoder on every CPU: defining the
+ * include guards of its SIMD headers leaves them empty. The console build
+ * keeps MMX and SSE. */
+#define __SBC_PRIMITIVES_MMX_H
+#define __SBC_PRIMITIVES_SSE_H
+#define __SBC_PRIMITIVES_NEON_H
+#define __SBC_PRIMITIVES_ARMV6_H
+#define __SBC_PRIMITIVES_IWMMXT_H
+#endif
+
+/* The target CPU always has MMX and SSE4.2, so libsbc does not probe for them
+ * at run time. */
 #define __builtin_cpu_init() ((void)0)
 #define __builtin_cpu_supports(feature) 1
 
