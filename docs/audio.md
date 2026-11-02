@@ -122,8 +122,10 @@ keeps the old behaviour.
 
 **Status: works on the console with the WH-CH720N, the Creative Stage Air V2,
 the Redmi Buds 4 Lite and the WH-1000XM5: the slider changes the volume audibly
-and the headset's buttons move the slider and show the message. Not tried on a
-headset without absolute volume (that path is covered by the PC tests only).**
+and the headset's buttons move the slider and show the message. On the 2026-11-02
+PS5 Pro run (MediaTek `0e8d:3605`) the WH-1000XM5's slider was present on every
+stream. Not tried on a headset without absolute volume (that path is covered by
+the PC tests only).**
 
 What it does: shows the headset's own volume on the page, lets the page set it,
 and announces changes made with the headset's buttons. It is the headset's

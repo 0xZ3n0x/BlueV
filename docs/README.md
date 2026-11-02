@@ -9,8 +9,10 @@ speaker through the console's USB Bluetooth controller. It does not touch the
 system's own Bluetooth stack (DualSense etc.); it shares the controller with it
 and talks raw HCI.
 
-It runs on the PS5 Slim as a web-driven service: a long-running process that
-the user controls from a web page (sections [1](program.md#1-top-level-appmaincpp-serviceservicecpp) and [2](program.md#2-web-interface-servicewebcpp-webindexhtml)).
+It runs on the PS5 Slim and the PS5 Pro as a web-driven service: a long-running
+process that the user controls from a web page (sections
+[1](program.md#1-top-level-appmaincpp-serviceservicecpp) and
+[2](program.md#2-web-interface-servicewebcpp-webindexhtml)).
 
 The whole program is C++20 (no exceptions, no RTTI), organised as ports and
 adapters so that every layer runs on a PC under gtest/gmock. Naming: classes

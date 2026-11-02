@@ -126,12 +126,12 @@ plain paired connect.
 **On the console's chip** the stack's own page scan runs at nearly full duty and
 leaves a page almost no radio time, so it is off for the whole page (all the
 rounds above) and put back when the page is over or has failed. The page then
-takes about a second. There is no listen window between rounds any more: a page
-that is not answered fails in at most 3 x 12 s instead of waiting 20 s for the
-device to dial in. A scan turns both scans off: the console's page scan leaves an
-inquiry almost no radio time, so a gamepad cannot reach the console for those
-seconds. A copy killed during a pause leaves page scan off until the next start.
-Adapters are left as they were.
+takes about a second (0.2-1.4 s measured on a PS5 Pro, 2026-11-02). There is no
+listen window between rounds any more: a page that is not answered fails in at
+most 3 x 12 s instead of waiting 20 s for the device to dial in. A scan turns
+both scans off: the console's page scan leaves an inquiry almost no radio time,
+so a gamepad cannot reach the console for those seconds. A copy killed during a
+pause leaves page scan off until the next start. Adapters are left as they were.
 
 **Inbound** (`BtStack::poll`, connection request): only devices that
 have a bond file are accepted (as the **master** of the link, see below); others

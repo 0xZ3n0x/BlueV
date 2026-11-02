@@ -86,9 +86,10 @@ to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit
 - Devices that are probably not audio devices (TVs and the like) are marked in the list.
 - BlueV uses SBC, the codec every Bluetooth audio device supports. It does not send
   microphone audio.
-- Tested on a PS5 Slim only. With a USB adapter, a Creative Stage Air V2 and Sony WH-CH720N
-  headphones work. With the internal chip the Creative works, the Sony WH-1000XM5 works,
-  and the WH-CH720N works but often needs a few tries to connect.
+- Tested on a PS5 Slim and a PS5 Pro (CFI-7119, MediaTek `0e8d:3605`). With a USB adapter, a
+  Creative Stage Air V2 and Sony WH-CH720N headphones work. With the internal chip the
+  Creative works and the Sony WH-1000XM5 works; the WH-CH720N works but often needs a few
+  tries to connect.
 
 ## Realtek adapters
 
@@ -149,12 +150,13 @@ BT400) are left alone.
 
 ## Contributing
 
-BlueV was written and tested by one person on one console, so tests on other hardware are the
-most useful thing you can send. Please open an issue or a pull request with what you found,
+BlueV has been tested on a PS5 Slim and a PS5 Pro, so tests on other hardware are the most
+useful thing you can send. Please open an issue or a pull request with what you found,
 including the log (the *Log* card, or `/data/bluev/bluev.log`).
 
-**Try it on other consoles.** I only have a **PS5 Slim**. If you have a **PS5 Pro** or the
-original **fat PS5**, please try it and report what happens: does the radio start, which
+**Try it on other consoles.** The internal chip has been tested on a PS5 Slim and on a
+**PS5 Pro** (CFI-7119, MediaTek `0e8d:3605`); the original **fat PS5** is still wanted. If
+you have one, please try it and report what happens: does the radio start, which
 endpoints does the log show, does a speaker connect and stream? The first lines of the log
 (console model, adapter, endpoints) are the interesting part.
 

@@ -17,6 +17,10 @@ connected over Bluetooth:
 | one event read and one ACL read, no commands | does not reconnect |
 | 48 + 16 reads (this program) | does not reconnect |
 
+On a PS5 Pro (CFI-7119, MediaTek `0e8d:3605`) the chip is shared the same way:
+the 2026-11-02 runs show the same `ACL from handle ... before a link of ours`
+and 2-8% of media packets without a completion report (`reports missing`).
+
 The harm is lasting: after the reads stopped the console still did not accept
 the controller until it was restarted. The log shows what happens: with a
 single read we took the console's own `Command Status` (`Exit Sniff Mode`),
