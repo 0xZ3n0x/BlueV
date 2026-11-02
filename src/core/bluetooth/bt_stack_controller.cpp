@@ -261,19 +261,6 @@ void BtStack::setEventMask(int attempts)
     hciSync(hci::kSetEventMask, kEventMask, 8, attempts);
 }
 
-void BtStack::setSimplePairing()
-{
-    if (hciSync(hci::kReadSimplePairing, nullptr, 0, 1) && m_ccLen >= 7)
-    {
-        if (m_cc[6] != 0)
-        {
-            return; // still on
-        }
-        logLine("controller: Simple Pairing was off, turned on again");
-    }
-    hciSync(hci::kWriteSimplePairing, &kSimplePairingOn, 1);
-}
-
 // what we need from the controller: all events, simple pairing, extended
 // inquiry results, an audio device class, our name, and no scanning yet. The
 // console's chip keeps its class, name and scan setting: they are its stack's.

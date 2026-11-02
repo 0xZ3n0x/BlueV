@@ -76,6 +76,25 @@ TEST_F(Link, AKnownDeviceThatDoesNotEncryptIsAskedAfterHalfASecond)
     EXPECT_TRUE(sink.has("connect: paging "));
 }
 
+TEST_F(Link, ANewPairingOnTheConsoleChipIsFollowedByAFreshLink)
+{
+    // the headset answers no AVDTP on the link it was just paired on
+    startInternal();
+    const auto t0 = clock.nowMs();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    EXPECT_EQ(2, controller.countCommand(kCreateConn));
+    EXPECT_TRUE(sink.has("paired, dialling again for the audio link"));
+    EXPECT_GE(clock.nowMs() - t0, 2500u); // a pause before the new link
+    EXPECT_TRUE(stack.linkUp());
+}
+
+TEST_F(Link, AnAdapterDoesNotDialTwiceAfterPairing)
+{
+    startExternal();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    EXPECT_EQ(1, controller.countCommand(kCreateConn));
+}
+
 TEST_F(Link, PairsANewDeviceAndSavesTheKey)
 {
     startExternal();
@@ -88,7 +107,7 @@ TEST_F(Link, PairsANewDeviceAndSavesTheKey)
     ASSERT_NE(nullptr, io);
     EXPECT_EQ(3, io->params[6]); // NoInputNoOutput
     EXPECT_TRUE(controller.sawCommand(kUserConfirmReply));
-    EXPECT_TRUE(sink.has("paired with 00:11:22:AA:BB:CC, key saved"));
+    EXPECT_TRUE(sink.has("paired with 00:11:22:AA:BB:CC, key type 4, key saved"));
 
     BondKey saved;
     ASSERT_TRUE(bonds.loadKey(controller.localAddress, remoteAddress(), saved));
@@ -151,28 +170,58 @@ TEST_F(Link, AStaleKeyIsForgottenAfterAFailedAuthentication)
     EXPECT_FALSE(bonds.hasKey(controller.localAddress, remoteAddress()));
 }
 
-TEST_F(Link, NoAnswerToAuthenticationTakesThirtySeconds)
+TEST_F(Link, NoAnswerToAuthenticationIsWaitedOut)
 {
     bondedAndStarted();
     controller.silentOpcodes = {kAuthRequested};
     const auto t0 = clock.nowMs();
     EXPECT_FALSE(stack.connectTo(remoteAddress()));
-    EXPECT_GE(clock.nowMs() - t0, 30000u);
+    EXPECT_LT(clock.nowMs() - t0, 19000u); // under the time the headset waits
+    EXPECT_GE(controller.countCommand(kAuthRequested), 4);
     EXPECT_TRUE(sink.has("authentication: no answer"));
-    EXPECT_TRUE(sink.has("security 30.")); // the time the failed step took
     EXPECT_TRUE(sink.has("(failed)"));
 }
 
-TEST_F(Link, PagesFourTimesWhenTheDeviceIsSilent)
+TEST_F(Link, AuthenticationIsAskedAgainWhenThePairingDoesNotStart)
+{
+    // the console's stack takes pairing events on the shared chip
+    startExternal();
+    controller.authSilentTries = 2;
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    EXPECT_EQ(3, controller.countCommand(kAuthRequested));
+    EXPECT_TRUE(sink.has("link encrypted"));
+}
+
+TEST_F(Link, AnAuthenticationCollisionIsNotAFailure)
+{
+    // the headset is already pairing by itself: keep waiting, do not give up
+    startExternal();
+    controller.authCollisionTries = 2;
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    EXPECT_TRUE(sink.has("authentication: the headset is already pairing"));
+    EXPECT_TRUE(sink.has("link encrypted"));
+}
+
+TEST_F(Link, EncryptionThatDoesNotComeOnFailsTheLink)
+{
+    bondedAndStarted();
+    controller.remote.encrypts = false;
+    controller.encryptionSilentTries = 1;
+    EXPECT_FALSE(stack.connectTo(remoteAddress()));
+    EXPECT_EQ(1, controller.countCommand(kSetConnEncryption));
+    EXPECT_TRUE(sink.has("(failed)"));
+}
+
+TEST_F(Link, PagesThreeTimesWhenTheDeviceIsSilent)
 {
     bondedAndStarted();
     controller.remote.page = FakeController::Remote::Page::Silent;
     EXPECT_FALSE(stack.connectTo(remoteAddress()));
 
-    EXPECT_EQ(4, controller.countCommand(kCreateConn));
-    EXPECT_EQ(4, controller.countCommand(kCreateConnCancel));
+    EXPECT_EQ(3, controller.countCommand(kCreateConn));
+    EXPECT_EQ(3, controller.countCommand(kCreateConnCancel));
     EXPECT_TRUE(sink.has("connection: no answer (try 1)"));
-    EXPECT_TRUE(sink.has("connection: no answer (try 4)"));
+    EXPECT_TRUE(sink.has("connection: no answer (try 3)"));
     EXPECT_TRUE(sink.has("connect: no link after "));
     // the first try has DM1 only and no role switch, the second the usual
     std::vector<const SentCommand*> pages;
@@ -193,12 +242,12 @@ TEST_F(Link, ADeviceThatDialsInWhilePagingStillConnects)
 {
     bondedAndStarted();
     controller.remote.page = FakeController::Remote::Page::Silent;
-    // the device answers during the pause after the first cancel
+    // the device answers during the first page; it must be taken without a cancel
     controller.event(0x03, {0, 0x42, 0x00, 0xCC, 0xBB, 0xAA, 0x22, 0x11, 0x00, 1, 0}, 5000);
     controller.event(0x08, {0, 0x42, 0x00, 1}, 8000);
     controller.event(0x06, {0, 0x42, 0x00}, 7000);
     EXPECT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
-    EXPECT_EQ(1, controller.countCommand(kCreateConnCancel));
+    EXPECT_EQ(0, controller.countCommand(kCreateConnCancel));
 }
 
 TEST_F(Link, ReportsAFailedPageWithAHint)
@@ -248,15 +297,24 @@ TEST_F(Link, TheConsolesChipPausesItsScanOnlyForThePage)
     EXPECT_EQ((std::vector<int>{0, -1, 3}), order);
 }
 
-TEST_F(Link, TheConsolesChipListensWithItsScanOnBetweenPages)
+TEST_F(Link, TheConsolesChipKeepsItsScanOffForEveryPage)
 {
     bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
     controller.remote.page = FakeController::Remote::Page::Silent;
     startInternal();
     EXPECT_FALSE(stack.connectTo(remoteAddress()));
 
-    EXPECT_EQ(4, controller.countCommand(kCreateConn));
-    EXPECT_EQ(2, controller.lastCommand(kWriteScanEnable)->params[0]);
+    EXPECT_EQ(3, controller.countCommand(kCreateConn));
+    // the scan is turned off once, for the whole set of pages, and put back at the end
+    std::vector<int> scans;
+    for (const SentCommand& c : controller.commands)
+    {
+        if (c.opcode == kWriteScanEnable)
+        {
+            scans.push_back(c.params[0]);
+        }
+    }
+    EXPECT_EQ((std::vector<int>{0, 2}), scans);
 }
 
 TEST_F(Link, AnAdapterLeavesPageScanAloneWhilePaging)

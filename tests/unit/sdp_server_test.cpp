@@ -20,10 +20,10 @@ std::vector<std::uint8_t> request(std::uint8_t pdu, const std::vector<std::uint8
     return r;
 }
 
-// pattern: sequence with one 16 bit UUID, maximum record count 2, no continuation
-std::vector<std::uint8_t> searchFor(std::uint16_t uuid)
+// pattern: sequence with one 16 bit UUID, maximum record count, no continuation
+std::vector<std::uint8_t> searchFor(std::uint16_t uuid, std::uint8_t max = 2)
 {
-    return {0x35, 0x03, 0x19, static_cast<std::uint8_t>(uuid >> 8), static_cast<std::uint8_t>(uuid), 0x00, 0x02, 0x00};
+    return {0x35, 0x03, 0x19, static_cast<std::uint8_t>(uuid >> 8), static_cast<std::uint8_t>(uuid), 0x00, max, 0x00};
 }
 
 int ask(const std::vector<std::uint8_t>& req, std::uint8_t* out, int cap = 512)
@@ -66,23 +66,48 @@ TEST(SdpServer, SearchForTheRemoteControlFindsItsOwnRecord)
 
     for (std::uint16_t uuid : {0x110e, 0x0017})
     {
-        ASSERT_EQ(14, ask(request(0x02, searchFor(uuid)), out)) << std::hex << uuid;
-        EXPECT_EQ(1, out[6]);
+        // the target record carries the same class and PSM, so both match
+        ASSERT_EQ(18, ask(request(0x02, searchFor(uuid)), out)) << std::hex << uuid;
+        EXPECT_EQ(2, out[6]);
         EXPECT_EQ(0x02, out[12]); // handle 0x00010002
+        EXPECT_EQ(0x04, out[16]); // handle 0x00010004
     }
 }
 
-TEST(SdpServer, SearchForWhatBothShareFindsBothRecords)
+TEST(SdpServer, SearchForTheDeviceIdentityFindsItsOwnRecord)
+{
+    std::uint8_t out[512];
+    bluev::testing::CaptureSink sink;
+
+    // headsets look this up first; an empty answer makes some hang up
+    ASSERT_EQ(14, ask(request(0x02, searchFor(0x1200)), out));
+    EXPECT_EQ(1, out[6]);
+    EXPECT_EQ(0x03, out[12]); // handle 0x00010003
+    EXPECT_TRUE(sink.has("service search -> 1 record"));
+}
+
+TEST(SdpServer, SearchForTheRemoteControlTargetFindsItsOwnRecord)
+{
+    std::uint8_t out[512];
+    bluev::testing::CaptureSink sink;
+
+    // the headset searches for this to open our AVCTP channel
+    ASSERT_EQ(14, ask(request(0x02, searchFor(0x110c)), out));
+    EXPECT_EQ(1, out[6]);
+    EXPECT_EQ(0x04, out[12]); // handle 0x00010004
+    EXPECT_TRUE(sink.has("service search -> 1 record"));
+}
+
+TEST(SdpServer, SearchForThePublicBrowseGroupFindsEveryRecord)
 {
     std::uint8_t out[512];
 
-    for (std::uint16_t uuid : {0x0100, 0x1002})
-    {
-        ASSERT_EQ(18, ask(request(0x02, searchFor(uuid)), out)) << std::hex << uuid;
-        EXPECT_EQ(2, out[6]);
-        EXPECT_EQ(0x01, out[12]);
-        EXPECT_EQ(0x02, out[16]);
-    }
+    ASSERT_GT(ask(request(0x02, searchFor(0x1002, 0xff)), out), 0);
+    EXPECT_EQ(4, out[6]);
+    EXPECT_EQ(0x01, out[12]);
+    EXPECT_EQ(0x02, out[16]);
+    EXPECT_EQ(0x03, out[20]);
+    EXPECT_EQ(0x04, out[24]);
 }
 
 TEST(SdpServer, SearchForSomethingElseFindsNothing)
@@ -106,6 +131,25 @@ TEST(SdpServer, AttributeRequestReturnsTheRecordWithTheName)
     const std::string body(reinterpret_cast<char*>(out), static_cast<std::size_t>(n));
     EXPECT_NE(std::string::npos, body.find("BlueV"));                                // the service name
     EXPECT_NE(std::string::npos, body.find(std::string("\x35\x03\x19\x11\x0a", 5))); // class: audio source
+}
+
+TEST(SdpServer, DeviceIdentityUsesTheStandardAttributeIds)
+{
+    std::uint8_t out[512];
+    // handle 0x00010003, maximum 0xffff bytes, all attributes
+    const std::vector<std::uint8_t> params = {0x00, 0x01, 0x00, 0x03, 0xff, 0xff, 0x35,
+                                              0x05, 0x0a, 0x00, 0x00, 0xff, 0xff, 0x00};
+    const int n = ask(request(0x04, params), out);
+
+    ASSERT_GT(n, 20);
+    const std::string body(reinterpret_cast<char*>(out), static_cast<std::size_t>(n));
+    // Device ID profile: 0x201 vendor, 0x202 product, 0x203 version,
+    // 0x204 primary record, 0x205 vendor id source
+    EXPECT_NE(std::string::npos, body.find(std::string("\x09\x02\x01\x09\x1d\x6b", 6))); // vendor: Linux
+    EXPECT_NE(std::string::npos, body.find(std::string("\x09\x02\x02\x09\x00\x01", 6))); // product
+    EXPECT_NE(std::string::npos, body.find(std::string("\x09\x02\x03\x09\x01\x00", 6))); // version
+    EXPECT_NE(std::string::npos, body.find(std::string("\x09\x02\x04\x28\x01", 5)));     // primary
+    EXPECT_NE(std::string::npos, body.find(std::string("\x09\x02\x05\x09\x00\x02", 6))); // source: USB-IF
 }
 
 TEST(SdpServer, UnknownRecordHandleIsAnError)
@@ -147,8 +191,10 @@ TEST(SdpServer, SearchAttributeForTheRemoteControlReturnsItsRecord)
     ASSERT_GT(n, 20);
     EXPECT_EQ(0x07, out[0]);
     const std::string body(reinterpret_cast<char*>(out), static_cast<std::size_t>(n));
-    EXPECT_NE(std::string::npos, body.find(std::string("\x35\x03\x19\x11\x0e", 5))); // class: remote control
-    EXPECT_NE(std::string::npos, body.find(std::string("\x09\x00\x17", 3)));         // l2cap psm 0x17
+    EXPECT_NE(std::string::npos,
+              body.find(std::string("\x35\x06\x19\x11\x0e\x19\x11\x0f", 8))); // class: remote control and controller
+    EXPECT_NE(std::string::npos, body.find(std::string("\x09\x00\x17", 3)));  // l2cap psm 0x17
+    EXPECT_NE(std::string::npos, body.find(std::string("\x09\x00\x02", 3)));  // features: absolute volume
     EXPECT_EQ(std::string::npos, body.find(std::string("\x35\x03\x19\x11\x0a", 5))); // not the audio source
 }
 
@@ -162,7 +208,7 @@ TEST(SdpServer, SearchAttributeForBothRecordsListsBoth)
     ASSERT_GT(n, 40);
     const std::string body(reinterpret_cast<char*>(out), static_cast<std::size_t>(n));
     EXPECT_NE(std::string::npos, body.find(std::string("\x35\x03\x19\x11\x0a", 5)));
-    EXPECT_NE(std::string::npos, body.find(std::string("\x35\x03\x19\x11\x0e", 5)));
+    EXPECT_NE(std::string::npos, body.find(std::string("\x35\x06\x19\x11\x0e\x19\x11\x0f", 8)));
     EXPECT_EQ(static_cast<int>(out[8] << 8 | out[9]) + 10,
               n - 1); // the outer list covers both, then the continuation byte
 }

@@ -565,7 +565,9 @@ void Service::runSession(bool capturing, const BdAddr* address)
         setState(State::Connecting, "connecting to %s", addressText(*address).c_str());
         if (!m_radio.connectTo(*address))
         {
-            failure = "could not connect";
+            // a paired device that failed to connect is tried again from the
+            // page: the key is kept, so the next Connect is a short one
+            failure = m_radio.hasBond(*address) ? "could not connect; press Connect again" : "could not connect";
         }
     }
     else
@@ -583,7 +585,7 @@ void Service::runSession(bool capturing, const BdAddr* address)
         setState(State::Connecting, "setting up audio");
         if (!m_radio.startAudio(address != nullptr))
         {
-            failure = "audio setup failed";
+            failure = "audio setup failed; press Connect again";
             m_radio.stopAudio();
         }
     }

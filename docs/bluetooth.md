@@ -113,11 +113,14 @@ comes. Without that the list holds only its address.
 window in which the device may connect to us instead. Packet types and role
 switch alternate between rounds (all types / DM1 only). A late "ACL already
 exists" (`0x0b`) is first given time to complete as our own link before any
-cleanup. Then `encrypt_link`. A headset that was just paired does not answer
-AVDTP on that link (Discover and configure stay unanswered until it times out),
-so on the console's chip a fresh pairing drops the link and dials once more with
-the saved key (`connect: paired, dialling again for the audio link`); an adapter
-does not.
+cleanup. Then `encrypt_link`. A headset that was just paired does not encrypt that
+link and answers no AVDTP on it either (Discover and configure stay unanswered
+until it times out); the next link does both. So on the console's chip the link is
+dropped as soon as the key is saved and, after a short pause, dialled once more
+with the key (`connect: paired, dialling again for the audio link`); an adapter
+does not. The pause is there because the headset still holds its A2DP state on the
+dropped link for a moment and refuses the transport
+channel until it has cleared it.
 
 **On the console's chip** the stack's own scanning competes with us for radio time,
 so page and inquiry scan are off for each 4 s Create Connection and back on for the
@@ -145,13 +148,21 @@ effect of [section 12](shared-chip.md#12-the-controller-is-shared-with-the-conso
 logged as `link role: ... we are the master`) the same setup ran 4.5 minutes
 with a game and audio and no loss, so far one run: not proven.
 
-**`encrypt_link`**: waits for authentication (30 s), then for the link to
-encrypt itself (0.5 s for a device we have a key for, 2 s after a new pairing)
-and forces it with Set Connection Encryption (20 s). The WH-CH720N and the Redmi
-Buds never encrypt by themselves, the Creative speaker does within 0.2 s; the
-wait used to be 2 s for all and cost every connection that long (2026-10-30). A
-failed authentication with a stored key deletes that bond. The link's packet
-types are left to the controller: forcing multi-slot types with Change
+**`encrypt_link`**: sends Authentication Requested and waits up to 18 s for
+authentication, sending the request again every 5 s as a nudge. A headset starts
+pairing by itself only seconds after the link is up, once it has looked at the
+SDP records, and until then the answer is "no answer" or "LMP error transaction
+collision" — a collision means a transaction is already running, so it is not a
+failure. On the shared chip the console's reads also take some of the pairing
+events, which is the other reason for repeating. A wrong key is not retried.
+Then it waits for the link to encrypt itself (0.5 s for a device we have a key
+for, 4 s after a new pairing) and forces it with Set Connection Encryption every
+3 s for up to 12 s, logging a refusal; a fresh pairing takes a moment to settle
+in the headset. The WH-CH720N and the Redmi Buds never encrypt by themselves, the
+Creative speaker does within 0.2 s; the wait used to be 2 s for all and cost
+every connection that long (2026-10-30). A failed authentication with a stored
+key deletes that bond.
+The link's packet types are left to the controller: forcing multi-slot types with Change
 Connection Packet Type right after encryption was tried on the Slim and
 coincided with the speaker dropping the link a second later (reason 0x08)
 in most sessions, and with it removed 4 of 4 reconnects were clean.
@@ -231,6 +242,15 @@ Service Attribute and Service Search Attribute PDUs. Two records:
   (L2CAP psm `0x17`/AVCTP 1.4), profile AVRCP 1.4, supported features
   category 1. We are only the controller, and only for the volume ([section
   9a](audio.md#9a-the-headsets-volume-avrcp-coreaudioavrcp)). Found by `0x110e`, `0x0017`, `0x0100` and `0x1002`.
+- `0x10003`: PnP Information (`0x1200`), profile DI 1.3, generic identity
+  (USB-IF vendor id source, Linux Foundation ids). A headset looks it up first;
+  the WH-1000XM5 searches it, and with an empty answer it stops and lets the
+  link time out instead of pairing. Found by `0x1200` and `0x1002`.
+- `0x10004`: service class A/V Remote Control Target (`0x110c`), same protocol
+  and profile as `0x10002`. The headset searches it after the identity and
+  opens our AVCTP channel at once instead of a wait; commands from it are
+  answered "not implemented", the volume notification is the one we read.
+  Found by `0x110c`, `0x0017`, `0x110e`, `0x0100` and `0x1002`.
 
 A pattern matches a record when it names any one of the record's UUIDs, so a
-search for L2CAP or the public browse group finds both records.
+search for L2CAP or the public browse group finds all of them.

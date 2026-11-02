@@ -152,8 +152,6 @@ const char* hciOpcodeName(std::uint16_t op)
         return "Write Inquiry Scan Activity";
     case 0x0c24:
         return "Write Class of Device";
-    case 0x0c25:
-        return "Read Simple Pairing Mode";
     case 0x0c45:
         return "Write Inquiry Mode";
     case 0x0c47:

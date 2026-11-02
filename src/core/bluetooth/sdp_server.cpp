@@ -48,10 +48,10 @@ const Attribute kA2dpAttributes[] = {
 };
 
 // the AV remote control controller (AVRCP 1.4): we only send the volume
-const std::uint32_t kAvrcpUuids[] = {0x110e, 0x0017, 0x0100, kPublicBrowseRoot};
+const std::uint32_t kAvrcpUuids[] = {0x110e, 0x110f, 0x0017, 0x0100, kPublicBrowseRoot};
 const Attribute kAvrcpAttributes[] = {
-    {0x000, BLOB("\x0a\x00\x01\x00\x02"), 5}, // service record handle 0x00010002
-    {0x001, BLOB("\x35\x03\x19\x11\x0e"), 5}, // class: remote control
+    {0x000, BLOB("\x0a\x00\x01\x00\x02"), 5},             // service record handle 0x00010002
+    {0x001, BLOB("\x35\x06\x19\x11\x0e\x19\x11\x0f"), 8}, // class: remote control and controller
     {0x004,
      BLOB("\x35\x10\x35\x06\x19\x01\x00\x09\x00\x17" // protocols: L2CAP on psm 0x17,
           "\x35\x06\x19\x00\x17\x09\x01\x04"),
@@ -62,7 +62,41 @@ const Attribute kAvrcpAttributes[] = {
      BLOB("\x25\x05"
           "BlueV"),
      7},                              // service name
-    {0x311, BLOB("\x09\x00\x01"), 3}, // supported features: category 1
+    {0x311, BLOB("\x09\x00\x02"), 3}, // supported features: category 2 (absolute volume)
+};
+
+// the device identity (PnP Information 1.3). Headsets look it up first and some
+// (the WH-1000XM5) stop and hang up when the answer is empty. The attribute ids
+// are those of the Device ID profile: 0x201 vendor, 0x202 product, 0x203
+// version, 0x204 primary record, 0x205 vendor id source.
+const std::uint32_t kDeviceIdUuids[] = {0x1200, kPublicBrowseRoot};
+const Attribute kDeviceIdAttributes[] = {
+    {0x000, BLOB("\x0a\x00\x01\x00\x03"), 5},                      // service record handle 0x00010003
+    {0x001, BLOB("\x35\x03\x19\x12\x00"), 5},                      // class: PnP Information
+    {0x005, BLOB("\x35\x03\x19\x10\x02"), 5},                      // browse group: public root
+    {0x009, BLOB("\x35\x08\x35\x06\x19\x12\x00\x09\x01\x03"), 10}, // profile: DI 1.3
+    {0x200, BLOB("\x09\x01\x03"), 3},                              // spec id: DI 1.3
+    {0x201, BLOB("\x09\x1d\x6b"), 3},                              // vendor: Linux Foundation
+    {0x202, BLOB("\x09\x00\x01"), 3},                              // product
+    {0x203, BLOB("\x09\x01\x00"), 3},                              // version 1.0.0
+    {0x204, BLOB("\x28\x01"), 2},                                  // primary record
+    {0x205, BLOB("\x09\x00\x02"), 3},                              // vendor id source: USB-IF
+};
+
+// the AV remote control target (the headset's role, we answer what we know):
+// a headset searches for this and connects to our AVCTP channel at once instead
+// of after a wait
+const std::uint32_t kAvrcpTargetUuids[] = {0x110c, 0x0017, 0x110e, 0x0100, kPublicBrowseRoot};
+const Attribute kAvrcpTargetAttributes[] = {
+    {0x000, BLOB("\x0a\x00\x01\x00\x04"), 5}, // service record handle 0x00010004
+    {0x001, BLOB("\x35\x03\x19\x11\x0c"), 5}, // class: remote control target
+    {0x004,
+     BLOB("\x35\x10\x35\x06\x19\x01\x00\x09\x00\x17" // protocols: L2CAP on psm 0x17,
+          "\x35\x06\x19\x00\x17\x09\x01\x04"),
+     18},                                                          // then AVCTP 1.4
+    {0x005, BLOB("\x35\x03\x19\x10\x02"), 5},                      // browse group: public root
+    {0x009, BLOB("\x35\x08\x35\x06\x19\x11\x0e\x09\x01\x04"), 10}, // profile: AVRCP 1.4
+    {0x311, BLOB("\x09\x00\x01"), 3},                              // supported features: category 1
 };
 #undef BLOB
 
@@ -80,6 +114,9 @@ struct Record
 const Record kRecords[] = {
     {0x10001, kA2dpUuids, std::size(kA2dpUuids), kA2dpAttributes, std::size(kA2dpAttributes)},
     {0x10002, kAvrcpUuids, std::size(kAvrcpUuids), kAvrcpAttributes, std::size(kAvrcpAttributes)},
+    {0x10003, kDeviceIdUuids, std::size(kDeviceIdUuids), kDeviceIdAttributes, std::size(kDeviceIdAttributes)},
+    {0x10004, kAvrcpTargetUuids, std::size(kAvrcpTargetUuids), kAvrcpTargetAttributes,
+     std::size(kAvrcpTargetAttributes)},
 };
 constexpr unsigned kRecordCount = std::size(kRecords);
 

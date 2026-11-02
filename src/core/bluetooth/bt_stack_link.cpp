@@ -19,6 +19,16 @@ namespace
 constexpr int kCreateConnLength = 13;
 using CreateConn = std::uint8_t[kCreateConnLength];
 
+// The console's stack shares the chip and its reads take some of the pairing
+// events; a headset that gets no answer gives up. The headset also starts its
+// own authentication seconds after the link is up (once it has looked at our
+// SDP records), so the request is repeated now and then and the answer waited
+// out; a collision means "already pairing", not a failure.
+constexpr std::uint32_t kAuthMs = 18000;
+constexpr std::uint32_t kAuthResendMs = 5000;
+constexpr std::uint32_t kEncryptionMs = 12000;
+constexpr std::uint32_t kEncryptionResendMs = 3000;
+
 // Alternates between the tries: the odd ones use DM1 only and no role switch,
 // the even ones every packet type.
 void setPageVariant(CreateConn req, int attempt)
@@ -31,30 +41,24 @@ void setPageVariant(CreateConn req, int attempt)
 }
 } // namespace
 
-// Pages the device up to four times, then listens for a while, because a
-// headset may be paging us at the same time. True when a connection event
-// came (successful or not: m_connStatus tells).
+// Pages the device until the controller answers. The console's page scan takes
+// almost all the radio time on this chip, so pageDevice() turns scanning off
+// for the whole page; the controller needs about a second to find the device
+// then. True when a connection event came (successful or not: m_connStatus
+// tells).
 bool BtStack::pageAttempts(std::uint8_t* req)
 {
-    for (int attempt = 1; attempt <= 4; attempt++)
+    for (int attempt = 1; attempt <= 3; attempt++)
     {
         setPageVariant(req, attempt);
-        // the console's page scan leaves a page almost no radio time on the
-        // chip, so it is off for the page and on again for the listening below
-        if (!m_external)
-        {
-            setScan(0);
-        }
-        const bool sent = cmd(hci::kCreateConn, req, kCreateConnLength);
-        const bool answered = sent && wait([this] { return m_connDone; }, 4000);
-        if (!m_external)
-        {
-            restoreScan();
-        }
-        if (!sent)
+        clearConnectResult();
+        if (!cmd(hci::kCreateConn, req, kCreateConnLength))
         {
             return false;
         }
+        // the controller's page timeout is 15 s, so a device that does not
+        // answer costs one timeout here, not four
+        const bool answered = wait([this] { return m_connDone; }, 12000);
         if (answered)
         {
             return true;
@@ -62,12 +66,6 @@ bool BtStack::pageAttempts(std::uint8_t* req)
         logLine("connection: no answer (try %d)", attempt);
         cmd(hci::kCreateConnCancel, m_target.data(), 6);
         poll(400);
-        clearConnectResult();
-        // stop paging for a moment: the headset may be paging us
-        if (wait([this] { return m_connDone; }, 20000) && m_connStatus == 0)
-        {
-            return true;
-        }
         clearConnectResult();
     }
     return false;
@@ -121,43 +119,83 @@ bool BtStack::pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t cl
     req[9] = 0;                                             // reserved
     putLe16(req + 10, clock);
 
-    if (!pageAttempts(req))
+    // The console's page scan runs at nearly full duty on its chip and leaves a
+    // page almost no radio time, so it is off for the whole page and put back
+    // when the page is over (or failed). Adapters are left as they were.
+    const bool pauseScan = !m_external;
+    if (pauseScan)
     {
-        return false;
+        setScan(0);
     }
-    if (m_connStatus == 0)
+    bool linked = false;
+    if (pageAttempts(req))
     {
-        return true;
+        if (m_connStatus == 0)
+        {
+            linked = true;
+        }
+        else if (m_connStatus == 0x0b)
+        {
+            linked = recoverExistingLink(req);
+        }
+        else
+        {
+            logLine("connection failed: %s (status %#04x)%s", hciStatusName(m_connStatus), m_connStatus,
+                    m_connStatus == 4 ? " (the device may be off, out of range or connected to something else)" : "");
+        }
     }
-    if (m_connStatus == 0x0b)
+    if (pauseScan)
     {
-        return recoverExistingLink(req);
+        restoreScan();
     }
-    logLine("connection failed: %s (status %#04x)%s", hciStatusName(m_connStatus), m_connStatus,
-            m_connStatus == 4 ? " (the device may be off, out of range or connected to something else)" : "");
-    return false;
+    return linked;
 }
 
-// Authenticates (pairing happens here when there is no key) and turns encryption
-// on. False when either fails; a key the device no longer accepts is deleted.
-bool BtStack::encryptLink()
+// Authenticates the link; pairing happens here when there is no key. False when
+// it fails, and a key the device no longer accepts is deleted.
+bool BtStack::authenticateLink()
 {
     std::uint8_t req[3];
 
-    // A device we have a key for does not encrypt the link by itself within a
-    // moment (the WH-CH720N and the Redmi Buds never did, in 2 s of waiting),
-    // so it is asked soon. A new pairing is left the longer time: the controller
-    // starts the encryption itself when the pairing is done.
-    const std::uint32_t encryptionGraceMs = m_key.have ? 500 : 2000;
-
     putLe16(req, m_handle);
+    // The headset takes up to about ten seconds to start pairing by itself; our
+    // request before that is answered with "no answer" or "LMP error transaction
+    // collision", and the collision means a transaction is already running. So
+    // the request is only repeated as a nudge and the answer is waited out.
     m_authDone = false;
-    if (!cmd(hci::kAuthRequested, req, 2))
+    m_authStatus = 0;
+    bool collisionLogged = false;
+    bool sent = false;
+    std::uint64_t lastSend = m_clock.nowMs();
+    const std::uint64_t deadline = m_clock.nowMs() + kAuthMs;
+
+    while (!m_authDone && !m_disconnected && m_clock.nowMs() < deadline)
     {
+        if (!sent || m_clock.nowMs() - lastSend >= kAuthResendMs)
+        {
+            if (!cmd(hci::kAuthRequested, req, 2))
+            {
+                return false;
+            }
+            sent = true;
+            lastSend = m_clock.nowMs();
+        }
+        poll(500);
+        if (m_authDone && (m_authStatus == 0x23 || m_authStatus == 0x0c))
+        {
+            if (!collisionLogged)
+            {
+                logLine("authentication: the headset is already pairing");
+                collisionLogged = true;
+            }
+            m_authDone = false; // still in progress, not a failure
+        }
+    }
+    if (m_disconnected)
+    {
+        logLine("authentication: the link went away");
         return false;
     }
-
-    wait([this] { return m_authDone; }, 30000);
     if (!m_authDone)
     {
         logLine("authentication: no answer");
@@ -176,21 +214,63 @@ bool BtStack::encryptLink()
         m_key = BondKey{};
         return false;
     }
+    return true;
+}
 
-    // wait for the link to encrypt itself; force it if needed
-    wait([this] { return m_encOn || m_disconnected; }, encryptionGraceMs, false);
-    if (!m_encOn && !m_disconnected)
+// Authenticates the link and turns encryption on. False when either fails.
+bool BtStack::encryptLink()
+{
+    std::uint8_t req[3];
+
+    // A device we have a key for does not encrypt the link by itself within a
+    // moment (the WH-CH720N and the Redmi Buds never did, in 2 s of waiting),
+    // so it is asked soon. A new pairing is left the longer time: the controller
+    // starts the encryption itself when the pairing is done.
+    const std::uint32_t encryptionGraceMs = m_key.have ? 500 : 4000;
+
+    if (!authenticateLink())
     {
-        putLe16(req, m_handle);
-        req[2] = 1;
-        if (!cmd(hci::kSetConnEncryption, req, 3))
+        return false;
+    }
+
+    // wait for the link to encrypt itself; force it if needed, and keep asking
+    // while it does not. A fresh pairing takes a moment to settle in the headset,
+    // which can refuse the command while it is still busy with it.
+    wait([this] { return m_encOn || m_disconnected; }, encryptionGraceMs, false);
+    const std::uint64_t encryptionDeadline = m_clock.nowMs() + kEncryptionMs;
+    bool encryptionSent = false;
+    bool encryptionStatusLogged = false;
+    std::uint64_t lastEncryption = m_clock.nowMs();
+
+    while (!m_encOn && !m_disconnected && m_clock.nowMs() < encryptionDeadline)
+    {
+        if (!encryptionSent || m_clock.nowMs() - lastEncryption >= kEncryptionResendMs)
         {
-            return false;
+            putLe16(req, m_handle);
+            req[2] = 1;
+            if (!cmd(hci::kSetConnEncryption, req, 3))
+            {
+                return false;
+            }
+            encryptionSent = true;
+            lastEncryption = m_clock.nowMs();
+            m_encCmdDone = false;
         }
-        wait([this] { return m_encOn || m_disconnected; }, 20000, false);
+        poll(500);
+        if (m_encCmdDone && m_encCmdStatus != 0 && !encryptionStatusLogged)
+        {
+            logLine("encryption: refused (%s, status %#04x)", hciStatusName(static_cast<unsigned>(m_encCmdStatus)),
+                    m_encCmdStatus);
+            encryptionStatusLogged = true;
+        }
     }
     if (!m_encOn)
     {
+        if (m_disconnected)
+        {
+            logLine("encryption: the link went away");
+            return false;
+        }
         logLine("encryption failed: %s (status %#04x)", hciStatusName(m_encStatus), m_encStatus);
         return false;
     }
@@ -239,6 +319,7 @@ bool BtStack::connectTo(const BdAddr& peer)
     resetLinkState();
     m_target = peer;
     setBond(peer);
+    const bool hadKey = m_key.have;
     if (d != nullptr)
     {
         psrm = d->pageScanRepMode ? d->pageScanRepMode : 1;
@@ -254,13 +335,39 @@ bool BtStack::connectTo(const BdAddr& peer)
             m_key.have ? " (paired before)" : " (new device)");
     const std::uint64_t began = m_clock.nowMs();
 
+    if (!m_external)
+    {
+        setSimplePairing();
+    }
     if (!pageDevice(peer, psrm, clock))
     {
         logLine("connect: no link after %.1f s", static_cast<double>(m_clock.nowMs() - began) / 1000.0);
         return false;
     }
     const std::uint64_t paged = m_clock.nowMs();
-    const bool secured = encryptLink();
+    bool secured;
+
+    if (!hadKey && !m_external)
+    {
+        // The headset does not encrypt the link it was just paired on, and does
+        // not answer AVDTP on it either (Discover and configure stay unanswered
+        // until it times out); the next link does both. So the link is dropped as
+        // soon as the key is saved and dialled again.
+        secured = authenticateLink();
+        if (secured)
+        {
+            logLine("connect: paired, dialling again for the audio link");
+            disconnect();
+            // the headset still has its A2DP state on the dropped link for a
+            // moment and refuses the transport channel until it has cleared it
+            poll(2500);
+            secured = (linkUp() || pageDevice(peer, psrm, clock)) && encryptLink();
+        }
+    }
+    else
+    {
+        secured = encryptLink();
+    }
 
     logLine("connect: paging %.1f s, security %.1f s%s", static_cast<double>(paged - began) / 1000.0,
             static_cast<double>(m_clock.nowMs() - paged) / 1000.0, secured ? "" : " (failed)");

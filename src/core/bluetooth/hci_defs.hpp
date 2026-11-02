@@ -30,7 +30,6 @@ constexpr std::uint16_t kReadPageTimeout = 0x0c17;
 constexpr std::uint16_t kReadScanEnable = 0x0c19;
 constexpr std::uint16_t kWriteScanEnable = 0x0c1a;
 constexpr std::uint16_t kWriteClassOfDevice = 0x0c24;
-constexpr std::uint16_t kReadSimplePairing = 0x0c25;
 constexpr std::uint16_t kWriteInquiryMode = 0x0c45;
 constexpr std::uint16_t kWriteSimplePairing = 0x0c56;
 constexpr std::uint16_t kReadLocalVersion = 0x1001;
