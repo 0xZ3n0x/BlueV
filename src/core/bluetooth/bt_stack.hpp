@@ -152,6 +152,12 @@ class BtStack
     {
         return !m_external;
     }
+    // The peer searched our AVRCP target record on this link: it is about to
+    // open the volume channel itself, so we should not race it.
+    bool peerSearchedAvrcpTarget() const
+    {
+        return m_peerSearchedAvrcpTarget;
+    }
     void disconnect();
     void linkReset(); // forget the link state and the target
     // HCI connection handle of the link, 0 when there is none.
@@ -174,7 +180,10 @@ class BtStack
     }
 
     // ---- L2CAP (bt_stack_l2cap.cpp) ----
-    bool openChannel(L2Channel& channel, std::uint16_t psm, FrameHandler handler);
+    // `requirePeerConfigure`: do not treat the channel as usable without the
+    // device's own configure request (the A2DP media channel on the console's
+    // chip, where such a channel carries no audio).
+    bool openChannel(L2Channel& channel, std::uint16_t psm, FrameHandler handler, bool requirePeerConfigure = false);
     void closeChannel(L2Channel& channel);
     // accept an inbound connection to `psm` on `channel`; binding a PSM again
     // replaces the channel (at most two PSMs)
@@ -229,6 +238,9 @@ class BtStack
     bool identifyController();
     void logControllerSettings();
     void configureController();
+    // Writes the all-events mask. On the console's chip the console's stack
+    // writes its own while it works, so it is put back before every scan.
+    void setEventMask(int attempts = 5);
     // Turns scanning off and disconnects the link we hold, if any.
     void dropStaleLinks();
 
@@ -249,23 +261,28 @@ class BtStack
     void onCommandStatus(const std::uint8_t* e);
     void onCompletedPackets(const std::uint8_t* e, int n);
     void onLinkKeyNotification(const std::uint8_t* e);
+    void onRemoteNameComplete(const std::uint8_t* e, int n);
     void handleAcl(const std::uint8_t* acl, int n);
     bool isOurLink(const std::uint8_t* e) const;
 
     // inquiry
     void onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const std::uint8_t* eir, int eirLength);
     void runInquiry(std::uint32_t timeoutMs);
+    void fetchNames();
+    void fetchName(BtDevice& device);
 
     // link
     bool pageAttempts(std::uint8_t* request);
     bool recoverExistingLink(std::uint8_t* request);
     bool pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t clock);
     bool encryptLink();
+    bool authenticateLink();
     void resetLinkState(); // keeps the target
     void setBond(const BdAddr& peer);
     bool isTarget(const std::uint8_t* address) const; // the six bytes are the device we deal with
-    // logs a reply to a command that was not ours (the console's own stack), up to 50 times
-    void noteForeignReply(std::uint16_t opcode, unsigned status);
+    // logs a reply to a command that was not ours (the console's own stack), up to 50 times;
+    // true when it answered one of ours
+    bool noteForeignReply(std::uint16_t opcode, unsigned status);
     void clearConnectResult();                 // m_connDone, m_connStatus
     void clearSecurity();                      // authentication and encryption results
     void resetCredits();                       // all ACL buffers free, nothing in flight
@@ -290,8 +307,7 @@ class BtStack
         OpenedByPeer
     };
     Request requestChannel(L2Channel& channel, std::uint16_t psm);
-    bool configureChannel(L2Channel& channel);
-    bool reopenChannel(L2Channel& channel, std::uint16_t psm);
+    bool configureChannel(L2Channel& channel, bool requirePeerConfigure);
     void dispatch(std::uint32_t cid, const std::uint8_t* data, int length);
     void addChannel(L2Channel& channel, FrameHandler handler);
     L2Channel* channelByTheirs(std::uint16_t cid);
@@ -347,11 +363,21 @@ class BtStack
     int m_encStatus = 0;
     unsigned m_connGen = 0; // counts successful connections
     std::atomic<long> m_foreignRequests{0};
+    bool m_peerSearchedAvrcpTarget = false; // on this link, for the volume channel
 
     // inquiry
     std::vector<BtDevice> m_devices;
     bool m_inqDone = false;
+    bool m_inqStatusDone = false; // the Command Status of our Inquiry arrived
+    int m_inqStatus = -1;
+    int m_inqResults = 0; // inquiry result events of this scan, of any inquiry
     int m_skippedLogged = 0;
+    // the name request after a scan
+    bool m_nameStatusDone = false; // the Command Status of our Remote Name Request arrived
+    int m_nameStatus = -1;
+    bool m_nameDone = false; // its completion arrived
+    BdAddr m_namePeer{};
+    std::string m_name;
 
     // flow control: `m_credits` ACL buffers free of `m_creditsMax`; `m_inflight`
     // is a ring of send times of packets not yet reported completed

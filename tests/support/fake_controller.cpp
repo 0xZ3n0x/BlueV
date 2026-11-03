@@ -186,11 +186,25 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
     case kReadScanEnable:
         complete(opcode, {0, scanSetting});
         break;
+    case kSetEventMask:
+        std::copy(p.begin(), p.end(), m_eventMask.begin());
+        complete(opcode, {0});
+        break;
     case kInquiry: {
+        if (inquiryBusyTries > 0)
+        {
+            inquiryBusyTries--;
+            status(opcode, 0x0c);
+            break;
+        }
         status(opcode, 0);
         std::uint32_t at = 200;
         for (const InquiryDevice& d : inquiryDevices)
         {
+            if (!inquiryResultsOn())
+            {
+                break;
+            }
             Bytes r = {1};
             r.insert(r.end(), d.address.begin(), d.address.end());
             r.push_back(d.pageScanRepMode);
@@ -219,6 +233,37 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
                                          [](const Scheduled& s) { return !s.isAcl && s.data[0] == 0x01; }),
                           m_scheduled.end());
         break;
+    case kRemoteNameRequest: {
+        const BdAddr address = addressFrom(p.data());
+
+        status(opcode, 0);
+        Bytes r = {0};
+        r.insert(r.end(), address.begin(), address.end());
+        const auto it = remoteNames.find(address);
+
+        if (it == remoteNames.end())
+        {
+            r[0] = 0x02; // unknown connection
+            event(0x07, r, 100);
+            break;
+        }
+        r.insert(r.end(), it->second.begin(), it->second.end());
+        r.push_back(0);
+        event(0x07, r, nameRequestDelayMs);
+        break;
+    }
+    case kRemoteNameRequestCancel: {
+        const BdAddr address = addressFrom(p.data());
+
+        complete(opcode, {0});
+        m_scheduled.erase(std::remove_if(m_scheduled.begin(), m_scheduled.end(),
+                                         [&address](const Scheduled& s) {
+                                             return !s.isAcl && s.data.size() >= 9 && s.data[0] == 0x07 &&
+                                                    addressFrom(&s.data[3]) == address;
+                                         }),
+                          m_scheduled.end());
+        break;
+    }
     case kCreateConn: {
         status(opcode, 0);
         if (remote.page == Remote::Page::Accept)
@@ -251,7 +296,18 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
         }
         break;
     case kAuthRequested:
+        if (authCollisionTries > 0)
+        {
+            authCollisionTries--;
+            status(opcode, 0x23); // LMP transaction already running
+            break;
+        }
         status(opcode, 0);
+        if (authSilentTries > 0)
+        {
+            authSilentTries--; // the request is accepted but no pairing follows
+            break;
+        }
         event(0x17, Bytes(remote.address.begin(), remote.address.end()), 100); // link key request
         break;
     case kLinkKeyReply:
@@ -277,6 +333,11 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
     }
     case kSetConnEncryption:
         status(opcode, 0);
+        if (encryptionSilentTries > 0)
+        {
+            encryptionSilentTries--; // accepted, but the link does not encrypt
+            break;
+        }
         event(0x08, {0, lo, hi, 1}, 100);
         break;
     case kRoleDiscovery:

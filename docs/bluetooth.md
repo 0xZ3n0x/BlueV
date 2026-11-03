@@ -93,18 +93,45 @@ keeps Audio/Video class devices and takes the name from EIR data when present.
 `is_junk` marks TVs and soundbars (minor class, name list); this is only an
 "other device" hint in the UI and never influences a choice.
 
-**Outbound** (`BtStack::connectTo`): selects the device's bond (`setBond`), then
-`page_device`: up to 4 rounds of a 4 s Create Connection followed by a 20 s
-window in which the device may connect to us instead. Packet types and role
-switch alternate between rounds (all types / DM1 only). A late "ACL already
-exists" (`0x0b`) is first given time to complete as our own link before any
-cleanup. Then `encrypt_link`.
+On the console's chip the console's stack writes its own event mask while it
+works, which switches the inquiry results off, so `runInquiry` sends ours again
+before every scan there (an adapter keeps the one from the start), and again
+after 3 s without a result. The Command Status of the Inquiry is waited for, and
+a "command not allowed now", "rejected, limited resources" or "busy" (0x0c,
+0x0d, 0x3a, the console is inquiring or paging) is retried after a second, up to
+six tries; any other status ends the scan. A scan that ends without a single
+result event says so in the log, so an empty list can be told from a masked
+controller.
 
-**On the console's chip** the stack's own scanning competes with us for radio time,
-so page and inquiry scan are off for each 4 s Create Connection and back on for the
-listen window (a device can only reach us with page scan on), and a scan pauses
-inquiry scan only, so a gamepad can still reach the console. A copy killed during
-that pause leaves page scan off until the next start. Adapters are left as they were.
+A device that answers without a name in its EIR data (the Sony headsets do) is
+named with a Remote Name Request after the scan (`fetchNames`): the four
+unnamed devices with the strongest signal, 2 s each, cancelled when no answer
+comes. Without that the list holds only its address.
+
+**Outbound** (`BtStack::connectTo`): selects the device's bond (`setBond`), then
+`page_device`: up to 3 Create Connection rounds of 12 s each. Packet types and
+role switch alternate between rounds (all types / DM1 only). A late "ACL already
+exists" (`0x0b`) is first given time to complete as our own link before any
+cleanup. Then `encryptLink`. A headset that was just paired does not encrypt that
+link and answers no AVDTP on it either (Discover and configure stay unanswered
+until it times out); the next link does both. So on the console's chip the link is
+dropped as soon as the key is saved and, after a short pause, dialled once more
+with the key (`connect: paired, dialling again for the audio link`); an adapter
+does not. The pause is there because the headset still holds its A2DP state on the
+dropped link for a moment and refuses the transport
+channel until it has cleared it. If that second link fails, the session ends and
+the page asks for another Connect; the key is kept, so the next attempt is a
+plain paired connect.
+
+**On the console's chip** the stack's own page scan runs at nearly full duty and
+leaves a page almost no radio time, so it is off for the whole page (all the
+rounds above) and put back when the page is over or has failed. The page then
+takes about a second (0.2-1.4 s measured on a PS5 Pro, 2026-11-02). There is no
+listen window between rounds any more: a page that is not answered fails in at
+most 3 x 12 s instead of waiting 20 s for the device to dial in. A scan turns
+both scans off: the console's page scan leaves an inquiry almost no radio time,
+so a gamepad cannot reach the console for those seconds. A copy killed during a
+pause leaves page scan off until the next start. Adapters are left as they were.
 
 **Inbound** (`BtStack::poll`, connection request): only devices that
 have a bond file are accepted (as the **master** of the link, see below); others
@@ -124,13 +151,20 @@ effect of [section 12](shared-chip.md#12-the-controller-is-shared-with-the-conso
 logged as `link role: ... we are the master`) the same setup ran 4.5 minutes
 with a game and audio and no loss, so far one run: not proven.
 
-**`encrypt_link`**: waits for authentication (30 s), then for the link to
-encrypt itself (0.5 s for a device we have a key for, 2 s after a new pairing)
-and forces it with Set Connection Encryption (20 s). The WH-CH720N and the Redmi
-Buds never encrypt by themselves, the Creative speaker does within 0.2 s; the
-wait used to be 2 s for all and cost every connection that long (2026-10-30). A
-failed authentication with a stored key deletes that bond. The link's packet
-types are left to the controller: forcing multi-slot types with Change
+**`encrypt_link`**: sends Authentication Requested and waits up to 18 s for
+authentication, sending the request again every 5 s as a nudge. A headset starts
+pairing by itself only seconds after the link is up, once it has looked at the
+SDP records, and until then the answer is "no answer" or "LMP error transaction
+collision" — a collision means a transaction is already running, so it is not a
+failure. On the shared chip the console's reads also take some of the pairing
+events, which is the other reason for repeating. A wrong key is not retried.
+Then it waits for the link to encrypt itself (0.5 s for a device we have a key
+for, 4 s after a new pairing) and forces it once with Set Connection Encryption
+(10 s); a fresh pairing takes a moment to settle in the headset. The WH-CH720N and the Redmi Buds never encrypt by themselves, the
+Creative speaker does within 0.2 s; the wait used to be 2 s for all and cost
+every connection that long (2026-10-30). A failed authentication with a stored
+key deletes that bond.
+The link's packet types are left to the controller: forcing multi-slot types with Change
 Connection Packet Type right after encryption was tried on the Slim and
 coincided with the speaker dropping the link a second later (reason 0x08)
 in most sessions, and with it removed 4 of 4 reconnects were clean.
@@ -145,7 +179,7 @@ time of day):
 - `connect: paging N s, security N s` (`BtStack::connectTo`; `(failed)` is added
   when the security step failed, and `connect: no link after N s` when paging
   gave up) or, for a device that dialed in, `connect: security N s`. Paging
-  includes the listen windows between the rounds.
+  includes the page rounds.
 - `connect: link N s, audio N s, until the stream N s` (`Service::runSession`,
   just before streaming starts). The audio part is the AVDTP setup and, for a
   device that dialed in, the time it took to start the procedure.
@@ -179,9 +213,13 @@ connection generation number) that new link is kept for the next session.
     every 4 s with the same id (a new id can read as a second configuration), never once the device sent its own, and 4 s
     after that ours is taken as accepted. Channels the device opens are not covered:
     their single request is not repeated. The device's own configure request can be
-    lost the same way, which leaves the channel half open on its side: when none
-    came 3 s after ours was accepted, the channel is closed and asked for again,
-    once (`reopenChannel`). Every signaling command on this chip is logged
+    lost the same way. On most channels the channel is open on the device's side
+    all the same and is used without that request; closing it and asking again is
+    answered "no resources" (the device still holds it) and never worked. The
+    **A2DP media channel is the exception**: without the device's configure it
+    carries no audio at all (every packet in the log shows as a missing
+    completion), so `openChannel` is asked to require it there and the setup fails
+    instead. Every signaling command on this chip is logged
     (`l2cap: >` and `l2cap: <`, with its bytes).
   - CID `0x50`: SDP (`sdp_handle`).
   - Others: the frame handler of the registered channel.
@@ -194,22 +232,40 @@ connection generation number) that new link is kept for the next session.
   40 packets/s; a 44.1/48 kHz stream needs 49-53, and with those limits the
   Slim dropped about 20 ms of audio every 10 s.
 
-Channel API: `openChannel` (connection request, then configure requests
-every 6 s until the channel is `up` and `configured`; a "no resources" answer is
-retried; gives up after 14 s), `closeChannel`, `bindInbound`.
+Channel API: `openChannel` (one connection request, then configure requests
+every 6 s until the channel is `up` and `configured`), `closeChannel`,
+`bindInbound`. The connection request is not retried: a headset answers it or
+refuses it, and a refusal does not clear up on the same link (measured, 15 tries
+over 30 s all refused), so a failed setup is settled by dialling the device
+again. The `requirePeerConfigure` flag makes a missing device configure a
+failure (the media channel on the console's chip). A channel the device opened
+counts as `up` as soon as the device configured it, even when it never answers
+our configure request: that keeps us from opening a second channel to a PSM that
+is already open.
 
 ## 8. SDP (`core/bluetooth/sdp_server.cpp`)
 
 A minimal SDP server so headsets recognise us as an A2DP source: Service Search,
-Service Attribute and Service Search Attribute PDUs. Two records:
+Service Attribute and Service Search Attribute PDUs. Four records:
 
 - `0x10001`: service class A2DP Source (`0x110a`), protocol list (L2CAP/AVDTP),
   profile (`0x110d`), name `BlueV`. Found by `0x110a`, `0x110d`, `0x0019`,
   `0x0100` and `0x1002`.
-- `0x10002`: service class A/V Remote Control (`0x110e`), protocol list
-  (L2CAP psm `0x17`/AVCTP 1.4), profile AVRCP 1.4, supported features
-  category 1. We are only the controller, and only for the volume ([section
-  9a](audio.md#9a-the-headsets-volume-avrcp-coreaudioavrcp)). Found by `0x110e`, `0x0017`, `0x0100` and `0x1002`.
+- `0x10002`: service class A/V Remote Control (`0x110e`) and A/V Remote Control
+  Controller (`0x110f`), protocol list (L2CAP psm `0x17`/AVCTP 1.4), profile AVRCP
+  1.4, supported features category 2 (absolute volume). We are only the
+  controller, and only for the volume ([section
+  9a](audio.md#9a-the-headsets-volume-avrcp-coreaudioavrcp)). Found by `0x110e`, `0x110f`, `0x0017`, `0x0100` and `0x1002`.
+- `0x10003`: PnP Information (`0x1200`), profile DI 1.3, generic identity
+  (Linux Foundation vendor and product ids, USB-IF vendor id source). The
+  attribute ids are the Device ID profile's: `0x201` vendor, `0x202` product,
+  `0x203` version, `0x204` primary record, `0x205` vendor id source. A headset
+  looks it up first; the WH-1000XM5 searches it. Found by `0x1200` and `0x1002`.
+- `0x10004`: service class A/V Remote Control Target (`0x110c`), same protocol
+  and profile as `0x10002`, supported features category 1. The headset searches
+  it after the identity and opens our AVCTP channel at once instead of a wait;
+  commands from it are answered "not implemented", the volume notification is
+  the one we read. Found by `0x110c`, `0x0017`, `0x110e`, `0x0100` and `0x1002`.
 
 A pattern matches a record when it names any one of the record's UUIDs, so a
-search for L2CAP or the public browse group finds both records.
+search for L2CAP or the public browse group finds all of them.

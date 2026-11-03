@@ -70,8 +70,9 @@ class Avrcp
     void listen();
     // Forget the previous link.
     void reset();
-    // Waits briefly for the headset to open the channel, opens it otherwise,
-    // then registers for volume changes. Every link asks the headset again.
+    // Notes that the link is ready. The headset opens the channel itself a few
+    // seconds after it has found our target record; service() asks for it once
+    // if that did not happen, so the stream is never held up by this.
     void start();
     // Closes the channel.
     void stop();
@@ -100,6 +101,10 @@ class Avrcp
     L2Channel m_channel{"avctp", 0x44};
     std::uint8_t m_label = 0;
     bool m_registered = false;
+    // ticks before service() tries to open the channel itself; -1 when there is
+    // nothing to do (not started, already tried, or the headset is opening it)
+    int m_tryTicks = -1;
+    bool m_opening = false; // openChannel() polls, so service() must not re-enter
     std::atomic<int> m_volume{-1};
     std::atomic<int> m_wanted{-1};
 };

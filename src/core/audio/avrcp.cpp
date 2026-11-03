@@ -132,30 +132,33 @@ void Avrcp::reset()
 {
     m_channel.reset();
     m_registered = false;
+    m_tryTicks = -1;
+    m_opening = false;
     m_volume.store(-1);
     m_wanted.store(-1);
 }
 
 void Avrcp::start()
 {
-    const auto up = [this] { return m_channel.up && m_channel.configured; };
-
-    m_bt.wait(up, 1000);
-    if (up())
+    if (m_channel.up && m_channel.configured)
     {
         logLine("avrcp: the headset opened the channel");
-    }
-    else if (m_bt.openChannel(m_channel, avrcp::kAvctpPsm,
-                              [this](std::uint32_t, const std::uint8_t* frame, int length) { onFrame(frame, length); }))
-    {
-        logLine("avrcp: channel opened by us");
-    }
-    else
-    {
-        noVolumeControl("it did not open the channel and ours failed");
+        registerVolume();
         return;
     }
-    registerVolume();
+    if (m_channel.theirCid != 0 || m_bt.peerSearchedAvrcpTarget())
+    {
+        // it has asked for the channel, or searched our target record and is
+        // about to: wait for it instead of sending a request it answers
+        // "no resources"
+        logLine("avrcp: the headset is opening the channel");
+        m_tryTicks = -1;
+        return;
+    }
+    // Give the headset time to find our target record and open the channel
+    // itself; the audio does not wait for this.
+    m_tryTicks = 6;
+    logLine("avrcp: waiting for the headset to open the channel");
 }
 
 void Avrcp::stop()
@@ -168,24 +171,62 @@ void Avrcp::stop()
 
 void Avrcp::service()
 {
+    if (m_opening)
+    {
+        return; // openChannel() polls, and the tick can call this again
+    }
     const int wanted = m_wanted.exchange(-1);
 
-    if (!m_channel.up || !m_channel.configured)
+    if (m_channel.up && m_channel.configured)
     {
+        if (!m_registered)
+        {
+            registerVolume(); // the headset opened the channel after start()
+        }
+        if (wanted >= 0 && m_volume.load() >= 0)
+        {
+            std::uint8_t frame[14];
+            const std::size_t n = avrcp::buildSetVolume(m_label++, wanted, frame);
+
+            if (!m_bt.send(m_channel.theirCid, frame, static_cast<int>(n)))
+            {
+                logLine("avrcp: could not send the volume");
+            }
+        }
         return;
     }
-    if (!m_registered)
+    // the headset has had its time to open the channel; ask once if it did not
+    if (m_tryTicks > 0)
     {
-        registerVolume(); // the headset opened the channel after start() gave up waiting
+        m_tryTicks--;
+        return;
     }
-    if (wanted >= 0 && m_volume.load() >= 0)
+    if (m_tryTicks == 0 && m_channel.theirCid == 0)
     {
-        std::uint8_t frame[14];
-        const std::size_t n = avrcp::buildSetVolume(m_label++, wanted, frame);
-
-        if (!m_bt.send(m_channel.theirCid, frame, static_cast<int>(n)))
+        if (m_bt.peerSearchedAvrcpTarget())
         {
-            logLine("avrcp: could not send the volume");
+            // it looked for our target record: it will open the channel itself,
+            // so asking now only gets a refusal that may stop it from opening
+            m_tryTicks = -1;
+            return;
+        }
+        m_tryTicks = -1;
+        m_opening = true;
+        const bool opened =
+            m_bt.openChannel(m_channel, avrcp::kAvctpPsm,
+                             [this](std::uint32_t, const std::uint8_t* frame, int length) { onFrame(frame, length); });
+        m_opening = false;
+        if (opened)
+        {
+            logLine("avrcp: channel opened by us");
+            if (m_channel.up && m_channel.configured)
+            {
+                registerVolume();
+            }
+        }
+        else
+        {
+            logLine("avrcp: channel not open yet, waiting for the headset");
         }
     }
 }

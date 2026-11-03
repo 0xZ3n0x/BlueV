@@ -253,6 +253,14 @@ void BtStack::logControllerSettings()
     }
 }
 
+// The console's stack on the shared chip writes its own event mask when it does
+// Bluetooth work, which switches the inquiry results off (Command Status and
+// Complete cannot be masked, so a scan still looks alive). Put ours back.
+void BtStack::setEventMask(int attempts)
+{
+    hciSync(hci::kSetEventMask, kEventMask, 8, attempts);
+}
+
 // what we need from the controller: all events, simple pairing, extended
 // inquiry results, an audio device class, our name, and no scanning yet. The
 // console's chip keeps its class, name and scan setting: they are its stack's.
@@ -261,7 +269,7 @@ void BtStack::configureController()
     std::uint8_t name[248];
     const std::uint8_t scanOff = 0;
 
-    hciSync(hci::kSetEventMask, kEventMask, 8);
+    setEventMask();
     hciSync(hci::kWriteSimplePairing, &kSimplePairingOn, 1);
     hciSync(hci::kWriteInquiryMode, &kInquiryModeExtended, 1);
     if (!m_external)

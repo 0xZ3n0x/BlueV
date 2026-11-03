@@ -167,6 +167,60 @@ TEST_F(AvrcpChannel, ARejectedRegistrationMeansNoVolumeOnThisLinkOnly)
     EXPECT_EQ(1u, avctpOut().size());
 }
 
+TEST_F(AvrcpChannel, StartDoesNotWaitForTheHeadset)
+{
+    Avrcp avrcp(stack);
+
+    avrcp.reset();
+    avrcp.listen();
+    const auto t0 = clock.nowMs();
+    avrcp.start();
+    EXPECT_LT(clock.nowMs() - t0, 100u); // the stream is not held up
+    EXPECT_TRUE(sink.has("avrcp: waiting for the headset to open the channel"));
+
+    // six ticks for the headset to open it, then one attempt of ours
+    for (int i = 0; i < 6; i++)
+    {
+        avrcp.service();
+    }
+    EXPECT_FALSE(sink.has("avrcp: channel opened by us"));
+    avrcp.service();
+    EXPECT_TRUE(sink.has("avrcp: channel not open yet, waiting for the headset"));
+}
+
+TEST_F(AvrcpChannel, ATargetSearchStopsUsFromRacingTheHeadset)
+{
+    // the headset opens an SDP channel and searches for our target record
+    controller.l2cap(1, {0x02, 0x01, 4, 0, 0x00, 0x01, 0x60, 0x01});
+    stack.poll(10);
+    // Service Search, pattern {0x110c}, max 2 records
+    controller.l2cap(0x50, {0x02, 0x00, 0x01, 0x00, 0x08, 0x35, 0x03, 0x19, 0x11, 0x0c, 0x00, 0x02, 0x00});
+    stack.poll(10);
+
+    Avrcp avrcp(stack);
+
+    avrcp.reset();
+    avrcp.listen();
+    controller.aclOut.clear();
+    avrcp.start();
+    EXPECT_TRUE(sink.has("avrcp: the headset is opening the channel"));
+    // it never asks for psm 0x17 itself; that request is what the headset
+    // refuses while it is opening its own
+    bool asked = false;
+    for (const Bytes& pkt : controller.aclOut)
+    {
+        if (pkt.size() > 8 && (pkt[6] | pkt[7] << 8) == 1)
+        {
+            const Bytes payload(pkt.begin() + 8, pkt.end());
+            if (payload.size() >= 8 && payload[0] == 0x02 && (payload[6] | payload[7] << 8) == 0x17)
+            {
+                asked = true;
+            }
+        }
+    }
+    EXPECT_FALSE(asked);
+}
+
 TEST_F(AvrcpChannel, AHeadsetThatOpensTheChannelLateIsRegisteredByService)
 {
     Avrcp avrcp(stack);

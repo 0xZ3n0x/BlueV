@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // inquiry and the list of devices
+#include <algorithm>
 #include <cstring>
 
 #include "core/bluetooth/bt_stack.hpp"
@@ -17,6 +18,15 @@ namespace
 // Inquiry: GIAC LAP 0x9E8B33, ~10.24 s, unlimited responses
 const std::uint8_t kInquiryParams[5] = {0x33, 0x8b, 0x9e, 0x18, 0x00};
 constexpr std::size_t kMaxFound = 16;
+// The console's stack shares the controller and holds it while it inquires or
+// pages; the Inquiry then comes back "command not allowed now".
+constexpr int kInquiryTries = 6;
+constexpr std::uint32_t kInquiryStatusMs = 2500;
+// A device that does not name itself in its inquiry answer: how many get a name
+// request after a scan, and how long each may take
+constexpr std::size_t kMaxNames = 4;
+constexpr std::uint32_t kNameStatusMs = 1500;
+constexpr std::uint32_t kNameMs = 2000;
 } // namespace
 
 void BtStack::onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const std::uint8_t* eir, int eirLength)
@@ -86,19 +96,144 @@ void BtStack::onInquiryRecord(const std::uint8_t* rec, std::int32_t rssi, const 
     }
 }
 
-void BtStack::runInquiry(std::uint32_t timeoutMs)
+// A device that answers the inquiry without its name (Sony headsets do) is
+// named with a Remote Name Request, strongest first, at most a few. Without it
+// the list shows only the address and the device cannot be told apart.
+void BtStack::fetchNames()
 {
-    m_inqDone = false;
-    if (!cmd(hci::kInquiry, kInquiryParams, 5))
+    std::vector<BtDevice*> todo;
+
+    for (BtDevice& d : m_devices)
+    {
+        if (d.name.empty())
+        {
+            todo.push_back(&d);
+        }
+    }
+    std::sort(todo.begin(), todo.end(), [](const BtDevice* a, const BtDevice* b) { return a->rssi > b->rssi; });
+    for (std::size_t i = 0; i < todo.size() && i < kMaxNames; i++)
+    {
+        fetchName(*todo[i]);
+    }
+}
+
+void BtStack::fetchName(BtDevice& device)
+{
+    std::uint8_t request[10];
+
+    std::memcpy(request, device.address.data(), 6);
+    request[6] = device.pageScanRepMode;
+    request[7] = 0;
+    putLe16(request + 8, device.clockOffset);
+    m_nameStatusDone = false;
+    m_nameStatus = -1;
+    m_nameDone = false;
+    m_namePeer = device.address;
+    m_name.clear();
+    if (!cmd(hci::kRemoteNameRequest, request, 10))
     {
         return;
     }
-    // until the inquiry ends, or the device we dialled for has connected
-    wait([this] { return m_inqDone || (m_connDone && m_connStatus == 0); }, timeoutMs, false);
+    wait([this] { return m_nameStatusDone; }, kNameStatusMs, false);
+    if (!m_nameStatusDone || m_nameStatus != 0)
+    {
+        logLine("scan: name of %s not requested (%s, status %#04x)", addressText(device.address).c_str(),
+                m_nameStatusDone ? hciStatusName(static_cast<unsigned>(m_nameStatus)) : "no answer", m_nameStatus);
+        return;
+    }
+    wait([this] { return m_nameDone; }, kNameMs, false);
+    if (m_nameDone && m_nameStatus == 0 && !m_name.empty())
+    {
+        device.name = m_name;
+        logLine("scan: %s is '%s'", addressText(device.address).c_str(), device.name.c_str());
+        return;
+    }
+    // a request still running holds the controller for the next one
+    cmd(hci::kRemoteNameRequestCancel, device.address.data(), 6);
+    poll(100);
+}
+
+void BtStack::runInquiry(std::uint32_t timeoutMs)
+{
+    m_inqDone = false;
+    m_inqStatusDone = false;
+    m_inqStatus = -1;
+    m_inqResults = 0;
+    const std::uint64_t deadline = m_clock.nowMs() + timeoutMs;
+
+    // On the console's chip the console's stack writes its own event mask while
+    // it works, and that turns the inquiry results off. Put ours back first.
+    if (!m_external)
+    {
+        setEventMask();
+    }
+
+    bool started = false;
+    for (int attempt = 1; attempt <= kInquiryTries && !started; attempt++)
+    {
+        if (!cmd(hci::kInquiry, kInquiryParams, 5))
+        {
+            logLine("scan: the inquiry was not sent");
+            return;
+        }
+        m_inqStatusDone = false;
+        wait([this] { return m_inqStatusDone; }, kInquiryStatusMs, false);
+        if (m_inqStatusDone && m_inqStatus == 0)
+        {
+            started = true;
+            break;
+        }
+        if (!m_inqStatusDone)
+        {
+            logLine("scan: no answer to the inquiry (try %d)", attempt);
+            continue;
+        }
+        logLine("scan: inquiry refused (%s, status %#04x, try %d)", hciStatusName(static_cast<unsigned>(m_inqStatus)),
+                m_inqStatus, attempt);
+        // the console's stack is inquiring or paging; wait for it to be done
+        if (m_inqStatus != 0x0c && m_inqStatus != 0x0d && m_inqStatus != 0x3a)
+        {
+            break;
+        }
+        poll(1000);
+    }
+    if (!started)
+    {
+        logLine("scan: the inquiry did not start");
+        return;
+    }
+
+    // until the inquiry ends, or the device we dialled for has connected.
+    // The console's stack can write its mask again during the scan, so a scan
+    // that hears no result re-arms it a few times before it gives up.
+    const std::uint64_t end = m_clock.nowMs() + (deadline > m_clock.nowMs() ? deadline - m_clock.nowMs() : 1000);
+    std::uint64_t lastResult = m_clock.nowMs();
+    int resultsSeen = m_inqResults;
+    unsigned rearmed = 0;
+    while (!m_inqDone && !(m_connDone && m_connStatus == 0) && m_clock.nowMs() < end)
+    {
+        poll(200);
+        if (m_inqResults != resultsSeen)
+        {
+            resultsSeen = m_inqResults;
+            lastResult = m_clock.nowMs();
+        }
+        // a scan that has heard nothing for 3 s: the mask is ours again
+        if (!m_external && rearmed < 3 && m_clock.nowMs() - lastResult >= 3000)
+        {
+            rearmed++;
+            lastResult = m_clock.nowMs();
+            setEventMask(2);
+        }
+    }
     if (!m_inqDone)
     {
         cmd(hci::kInquiryCancel);
         poll(200);
+    }
+    if (rearmed > 0)
+    {
+        logLine("scan: the event mask was written %u more time(s) during the scan", rearmed);
     }
 }
 
@@ -106,19 +241,28 @@ int BtStack::scan(std::uint32_t timeoutMs)
 {
     m_devices.clear();
     logLine("scan: %u s", timeoutMs / 1000);
-    // the console's own inquiry scan takes the time an inquiry needs; page scan
-    // stays, a gamepad can always reach the console
-    const bool pauseInquiryScan = !m_external && (m_systemScan & 1) != 0;
-    if (pauseInquiryScan)
+    // On the console's chip the console's page scan runs at nearly full duty and
+    // leaves an inquiry little radio time, so both scans are off for the scan.
+    // A gamepad cannot reach the console for those seconds.
+    const bool pauseScan = !m_external && m_systemScan != 0;
+    if (pauseScan)
     {
-        setScan(m_systemScan & 2);
+        setScan(0);
     }
     runInquiry(timeoutMs);
-    if (pauseInquiryScan)
+    if (pauseScan)
     {
         restoreScan();
     }
+    if (m_inqResults > 0)
+    {
+        fetchNames();
+    }
     logLine("scan: %d device(s)", static_cast<int>(m_devices.size()));
+    if (m_devices.empty() && m_inqResults == 0)
+    {
+        logLine("scan: no inquiry result came back; the controller's event mask may have been changed");
+    }
     if (m_devices.empty() && m_external && m_family != FirmwareFamily::Unknown && m_family != FirmwareFamily::Csr &&
         !firmwareUploadSupported(m_family))
     {

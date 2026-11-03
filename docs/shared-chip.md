@@ -17,6 +17,10 @@ connected over Bluetooth:
 | one event read and one ACL read, no commands | does not reconnect |
 | 48 + 16 reads (this program) | does not reconnect |
 
+On a PS5 Pro (CFI-7119, MediaTek `0e8d:3605`) the chip is shared the same way:
+the 2026-11-02 runs show the same `ACL from handle ... before a link of ours`
+and 2-8% of media packets without a completion report (`reports missing`).
+
 The harm is lasting: after the reads stopped the console still did not accept
 the controller until it was restarted. The log shows what happens: with a
 single read we took the console's own `Command Status` (`Exit Sniff Mode`),
@@ -31,6 +35,14 @@ use the HCI event/ACL endpoints that we read (no packet of it ever appeared in
 the dumps), which is why audio and a connected controller work together. What
 breaks is every moment when the console needs HCI events for the controller:
 connecting, disconnecting, reconnecting, link changes.
+
+The console's stack also writes its own event mask while it works, and that
+switches the inquiry results off for whoever reads the events. The command
+answers and the completion still come, because those cannot be masked, so a
+scan looks alive and finds nothing. BlueV sends its mask again before a scan on
+this chip, and again when the scan hears nothing for 3 s
+([section 6](bluetooth.md#6-connections-and-pairing-corebluetoothbt_stack_linkcpp-bt_stack_inquirycpp));
+without that, finding a new device is a matter of luck.
 
 What the program does about it: **nothing yet.** The radio is opened at
 start and read continuously, so a controller must not connect, disconnect or

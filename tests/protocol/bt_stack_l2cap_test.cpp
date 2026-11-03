@@ -144,8 +144,9 @@ TEST_F(L2cap, ARefusedChannelIsReported)
     EXPECT_TRUE(sink.has("l2cap: media connection refused (3)"));
 }
 
-TEST_F(L2cap, ABusyPeerIsAskedAgain)
+TEST_F(L2cap, ARefusedChannelIsNotAskedAgain)
 {
+    // the device answers "no resources"; on the same link a retry does not help
     connected();
     int attempts = 0;
     controller.onAclOut = [&](const Bytes& pkt) {
@@ -155,29 +156,29 @@ TEST_F(L2cap, ABusyPeerIsAskedAgain)
             return;
         }
         const std::uint16_t scid = s.data[2] | s.data[3] << 8;
-        const std::uint8_t result = ++attempts <= 2 ? 4 : 0;
+        attempts++;
         controller.l2cap(1, {0x03, s.id, 8, 0, 0x40, 0x01, static_cast<std::uint8_t>(scid & 0xff),
-                             static_cast<std::uint8_t>(scid >> 8), result, 0, 0, 0});
-        if (result == 0)
-        {
-            controller.l2cap(1, {0x04, 0x31, 8, 0, static_cast<std::uint8_t>(scid & 0xff),
-                                 static_cast<std::uint8_t>(scid >> 8), 0, 0, 1, 2, 0xa0, 0x02});
-        }
+                             static_cast<std::uint8_t>(scid >> 8), 4, 0, 0, 0});
     };
+    L2Channel ch("media", 0x42);
+    EXPECT_FALSE(stack.openChannel(ch, 0x19, nullptr));
+    EXPECT_EQ(1, attempts);
+    EXPECT_TRUE(sink.has("l2cap: media connection refused (4)"));
+}
+
+TEST_F(L2cap, AChannelTheDeviceOpensIsUpOnceItConfiguredIt)
+{
+    // the device dialled in and opened the channel; its configure request makes
+    // the channel usable even if it never answers ours
+    connected();
     L2Channel ch("signaling", 0x40);
-    // the configure request of ours is answered too
-    const auto first = controller.onAclOut;
-    controller.onAclOut = [&, first](const Bytes& pkt) {
-        first(pkt);
-        Sig s;
-        if (signalingOf(pkt, s) && s.code == 0x04)
-        {
-            controller.l2cap(1, {0x05, s.id, 6, 0, 0x40, 0x00, 0, 0, 0, 0});
-        }
-    };
-    ASSERT_TRUE(stack.openChannel(ch, 0x19, nullptr)) << sink.all();
-    EXPECT_EQ(3, attempts);
-    EXPECT_EQ(2, sink.count("peer busy, asking again"));
+    stack.bindInbound(0x19, ch, nullptr);
+    controller.l2cap(1, {0x02, 0x21, 4, 0, 0x19, 0x00, 0x77, 0x00}); // connect psm 0x19
+    stack.poll(10);
+    controller.l2cap(1, {0x04, 0x22, 8, 0, 0x40, 0x00, 0, 0, 1, 2, 0xa0, 0x02}); // configure our cid
+    stack.poll(10);
+    EXPECT_TRUE(ch.up);
+    EXPECT_TRUE(ch.configured);
 }
 
 TEST_F(L2cap, NoAnswerTimesOutAfterTenSeconds)
@@ -265,10 +266,11 @@ TEST_F(L2cap, TheConsolesChipTakesItsConfigurationAsAcceptedWhenTheDeviceConfigu
     EXPECT_TRUE(sink.has("no configure response seen"));
 }
 
-TEST_F(L2cap, TheConsolesChipOpensAChannelAgainWhenTheDevicesConfigureNeverCame)
+TEST_F(L2cap, TheConsolesChipUsesAChannelWithoutTheDevicesConfigure)
 {
+    // its configure request went to the console; the channel is open all the
+    // same, so it is used instead of closing it and asking again
     connectedOnTheConsolesChip();
-    int connections = 0;
     controller.onAclOut = [&](const Bytes& pkt) {
         Sig s;
         if (!signalingOf(pkt, s))
@@ -278,27 +280,46 @@ TEST_F(L2cap, TheConsolesChipOpensAChannelAgainWhenTheDevicesConfigureNeverCame)
         if (s.code == 0x02)
         {
             answerConnection(s);
-            if (++connections == 2)
-            { // the second time its configure request reaches us
-                controller.l2cap(1, {0x04, 0x31, 8, 0, 0x40, 0x00, 0, 0, 1, 2, 0x4f, 0x01});
-            }
         }
         if (s.code == 0x04)
         {
             controller.l2cap(1, {0x05, s.id, 6, 0, 0x40, 0x00, 0, 0, 0, 0});
         }
-        if (s.code == 0x06)
-        {
-            controller.l2cap(1, {0x07, s.id, 4, 0, s.data[0], s.data[1], s.data[2], s.data[3]});
-        }
     };
     L2Channel ch("signaling", 0x40);
     ASSERT_TRUE(stack.openChannel(ch, 0x19, nullptr)) << sink.all();
 
-    EXPECT_TRUE(ch.configured);
-    EXPECT_EQ(2, countSent(0x02));
-    EXPECT_EQ(1, countSent(0x06));
-    EXPECT_TRUE(sink.has("l2cap: signaling: opening it again"));
+    EXPECT_TRUE(ch.up);
+    EXPECT_FALSE(ch.configured);
+    EXPECT_EQ(1, countSent(0x02)); // not asked again
+    EXPECT_EQ(0, countSent(0x06));
+}
+
+TEST_F(L2cap, TheConsolesChipRefusesAMediaChannelWithoutTheDevicesConfigure)
+{
+    // its configure request went to the console: unlike a signaling channel,
+    // the media channel carries no audio then, so it is a failed setup
+    connectedOnTheConsolesChip();
+    controller.onAclOut = [&](const Bytes& pkt) {
+        Sig s;
+        if (!signalingOf(pkt, s))
+        {
+            return;
+        }
+        if (s.code == 0x02)
+        {
+            answerConnection(s);
+        }
+        if (s.code == 0x04)
+        {
+            controller.l2cap(1, {0x05, s.id, 6, 0, 0x40, 0x00, 0, 0, 0, 0});
+        }
+    };
+    L2Channel ch("media", 0x40);
+    EXPECT_FALSE(stack.openChannel(ch, 0x19, nullptr, true));
+    EXPECT_TRUE(ch.up);
+    EXPECT_FALSE(ch.configured);
+    EXPECT_TRUE(sink.has("l2cap: media: the device did not configure its side"));
 }
 
 TEST_F(L2cap, ASilentPeerAfterConnectContinuesAfterAGracePeriod)

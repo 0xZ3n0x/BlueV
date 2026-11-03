@@ -112,15 +112,15 @@ TEST_F(Session, CapabilitiesWeCannotUseEndTheSession)
     EXPECT_TRUE(sink.has("sbc: the device takes neither 44.1 nor 48 kHz"));
 }
 
-TEST_F(Session, ASpeakerThatNeverAnswersFailsAfterTwoTries)
+TEST_F(Session, ASpeakerThatNeverAnswersFailsAfterOneTry)
 {
     speaker.silentAvdtp = true;
     const auto t0 = clock.nowMs();
     EXPECT_FALSE(session.start(true));
     EXPECT_TRUE(sink.has("avdtp: signal 0x01 unanswered"));
     EXPECT_TRUE(sink.has("avdtp: discover failed"));
-    EXPECT_GE(clock.nowMs() - t0, 16000u); // 8 s, twice
-    EXPECT_EQ(2u, speaker.signals.size());
+    EXPECT_GE(clock.nowMs() - t0, 8000u); // one 8 s wait
+    EXPECT_EQ(1u, speaker.signals.size());
 }
 
 TEST_F(Session, TheSpeakerDrivesTheProcedureItself)
@@ -174,14 +174,15 @@ TEST_F(Session, WeStartTheStreamWhenTheSpeakerConfiguredButDoesNotStart)
     EXPECT_TRUE(sink.has("(the device drove it, started=1)"));
 }
 
-TEST_F(Session, AnAdapterTakesARefusalOfARepeatAsARefusal)
+TEST_F(Session, AnAdapterDoesNotAskAgainWhenAnAnswerIsLost)
 {
     speaker.loseAnswerTo = 3;
     speaker.refuseRepeats = true;
     const auto t0 = clock.nowMs();
     EXPECT_FALSE(session.start(true));
-    EXPECT_TRUE(sink.has("avdtp: configuration refused"));
-    EXPECT_GE(clock.nowMs() - t0, 8000u); // waited the full 8 s before asking again
+    EXPECT_TRUE(sink.has("avdtp: configuration unanswered"));
+    EXPECT_EQ(1, std::count(speaker.signals.begin(), speaker.signals.end(), 3));
+    EXPECT_GE(clock.nowMs() - t0, 8000u); // waited the full 8 s
 }
 
 TEST_F(SessionOnTheConsolesChip, ASpeakerThatStartsWhileWeAskIsFollowed)
@@ -211,20 +212,22 @@ TEST_F(Session, AnAdapterDoesNotFollowASpeakerThatStartsWhileWeAsk)
     EXPECT_EQ(1, std::count(speaker.signals.begin(), speaker.signals.end(), 3));
 }
 
-TEST_F(SessionOnTheConsolesChip, ALostAnswerIsAskedAgain)
+TEST_F(SessionOnTheConsolesChip, ALostAnswerFailsTheSetup)
 {
     speaker.loseAnswerTo = 6;
-    ASSERT_TRUE(session.start(true)) << sink.all();
-    EXPECT_EQ((std::vector<std::uint8_t>{1, 2, 3, 6, 6, 7}), speaker.signals);
+    EXPECT_FALSE(session.start(true)) << sink.all();
+    EXPECT_TRUE(sink.has("avdtp: signal 0x06 unanswered"));
+    EXPECT_EQ((std::vector<std::uint8_t>{1, 2, 3, 6}), speaker.signals); // not asked again
 }
 
-TEST_F(SessionOnTheConsolesChip, ARefusalOfARepeatMeansTheFirstWasCarriedOut)
+TEST_F(SessionOnTheConsolesChip, ALostConfigurationAnswerFailsTheSetup)
 {
     speaker.loseAnswerTo = 3;
     speaker.refuseRepeats = true;
-    ASSERT_TRUE(session.start(true)) << sink.all();
-    EXPECT_TRUE(sink.has("refused when repeated, taking the first as done"));
-    EXPECT_TRUE(speaker.started);
+    EXPECT_FALSE(session.start(true)) << sink.all();
+    EXPECT_TRUE(sink.has("avdtp: configuration unanswered"));
+    EXPECT_FALSE(sink.has("refused when repeated"));
+    EXPECT_FALSE(speaker.started);
 }
 
 TEST_F(SessionOnTheConsolesChip, ARefusalAtTheFirstAskingIsARefusal)
@@ -234,18 +237,18 @@ TEST_F(SessionOnTheConsolesChip, ARefusalAtTheFirstAskingIsARefusal)
     EXPECT_TRUE(sink.has("avdtp: configuration refused"));
 }
 
-TEST_F(SessionOnTheConsolesChip, ASpeakerThatNeverAnswersFailsAfterFourTries)
+TEST_F(SessionOnTheConsolesChip, ASpeakerThatNeverAnswersFailsAfterOneTry)
 {
     speaker.silentAvdtp = true;
     EXPECT_FALSE(session.start(true));
     EXPECT_TRUE(sink.has("avdtp: signal 0x01 unanswered"));
-    EXPECT_EQ(4u, speaker.signals.size());
+    EXPECT_EQ(1u, speaker.signals.size());
 }
 
 TEST_F(Session, ASpeakerThatDialsInWhileWeWaitIsAccepted)
 {
     session.listen();
-    speaker.dialIn(2000);
+    speaker.dialIn(500);
     ASSERT_TRUE(session.start(false)) << sink.all();
     EXPECT_TRUE(sink.has("avdtp: the device opened the signaling channel"));
     // it was quiet, so we ran the procedure
@@ -263,11 +266,13 @@ TEST_F(Session, AfterAConnectionWeMakeWeWaitOnlyOneSecondBeforeOpeningTheChannel
     EXPECT_GE(clock.nowMs() - t0, 1000u);
 }
 
-TEST_F(Session, WithoutOurConnectionTheSpeakerGetsTwentySeconds)
+TEST_F(Session, WithoutOurConnectionWeGiveTheDeviceTenSecondsBeforeOpeningTheChannel)
 {
     const auto t0 = clock.nowMs();
     ASSERT_TRUE(session.start(false));
-    EXPECT_GE(clock.nowMs() - t0, 20000u);
+    EXPECT_TRUE(sink.has("avdtp: signaling channel opened by us"));
+    EXPECT_GE(clock.nowMs() - t0, 10000u); // the device dialled in: it drives
+    EXPECT_LT(clock.nowMs() - t0, 20000u);
 }
 
 TEST_F(Session, TheSpeakersDiscoverIsAnsweredWithOneSourceEndpoint)
