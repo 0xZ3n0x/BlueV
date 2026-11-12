@@ -112,6 +112,7 @@ class FakeController final : public IHciTransport
         } page = Page::Accept;
         std::uint8_t failStatus = 0x04;
         std::uint32_t pageDelayMs = 300;
+        int busyPages = 0;      // the next pages are refused as "command not allowed now" (0x0c)
         bool authFails = false; // authentication status 0x06 (a stale key)
         bool encrypts = true;   // encryption change after authentication
         std::uint16_t handle = 0x0042;

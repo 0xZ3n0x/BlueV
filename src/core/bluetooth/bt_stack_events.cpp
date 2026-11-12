@@ -151,6 +151,27 @@ void BtStack::onVendorEvent(const std::uint8_t* evt, int n)
     logLine("chip vendor event, raw (%d bytes): %s", n, dump);
 }
 
+// While a link is being set up, an event nothing else handles (pairing steps, mode and
+// role changes) is logged with its first bytes, so that a connection that goes
+// wrong can be read from the log.
+void BtStack::logUnhandledEvent(const std::uint8_t* evt, int n)
+{
+    char bytes[3 * 12 + 1];
+    int off = 0;
+
+    if (m_unhandledEventBudget <= 0)
+    {
+        return;
+    }
+    m_unhandledEventBudget--;
+    for (int i = 2; i < n && i < 2 + 12; i++)
+    {
+        off += std::snprintf(bytes + off, sizeof bytes - off, "%02x ", evt[i]);
+    }
+    bytes[off] = 0;
+    logLine("event: %s (%#04x), %d byte(s): %s", hciEventName(evt[0]), evt[0], n - 2, bytes);
+}
+
 void BtStack::handleEvent(const std::uint8_t* evt, int n)
 {
     const std::uint8_t* e = evt + 2; // skip code+len
@@ -216,6 +237,7 @@ void BtStack::handleEvent(const std::uint8_t* evt, int n)
         onVendorEvent(evt, n);
         break;
     default:
+        logUnhandledEvent(evt, n);
         break;
     }
 }
@@ -379,6 +401,13 @@ void BtStack::onCommandStatus(const std::uint8_t* e)
     const std::uint32_t status = e[0];
     const bool ours = noteForeignReply(op, e[0]);
 
+    // the answers to the security and teardown commands of our link tell whether the
+    // controller took them (the clean-up of old links at the start has no link yet)
+    if (ours && m_handle != 0 && (op == hci::kAuthRequested || op == hci::kSetConnEncryption || op == hci::kDisconnect))
+    {
+        logLine("command status: %s -> %s (status 0x%02x)", hciOpcodeName(op), hciStatusName(status),
+                static_cast<unsigned>(status));
+    }
     if (op == hci::kInquiry && ours)
     {
         m_inqStatusDone = true;

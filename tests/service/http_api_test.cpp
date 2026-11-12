@@ -591,6 +591,39 @@ TEST_F(WithRadioOn, AudioSetupFailureStopsTheAudioAndSaysSo)
     ASSERT_TRUE(waitFor([&] { return status().find("audio setup failed") != std::string::npos; }, 3000));
 }
 
+TEST_F(WithRadioOn, APairedDeviceIsTriedAgainWhenTheAudioSetupFails)
+{
+    std::string body;
+
+    ON_CALL(radio, hasBond(_)).WillByDefault(Return(true));
+    EXPECT_CALL(radio, connectTo(_)).Times(2).WillRepeatedly(Return(true));
+    EXPECT_CALL(radio, startAudio(true)).WillOnce(Return(false)).WillOnce(Return(true));
+    EXPECT_CALL(radio, stopAudio()).Times(::testing::AtLeast(1));
+    request("POST", std::string("/api/connect?addr=") + kSpeakerAddress, body);
+    ASSERT_TRUE(waitForState("streaming", 3000));
+}
+
+TEST_F(WithRadioOn, APairedDeviceIsGivenUpAfterThreeTries)
+{
+    std::string body;
+
+    ON_CALL(radio, hasBond(_)).WillByDefault(Return(true));
+    EXPECT_CALL(radio, connectTo(_)).Times(3).WillRepeatedly(Return(false));
+    EXPECT_CALL(radio, startAudio(_)).Times(0);
+    request("POST", std::string("/api/connect?addr=") + kSpeakerAddress, body);
+    ASSERT_TRUE(waitFor([&] { return status().find("press Connect again") != std::string::npos; }, 3000));
+}
+
+TEST_F(WithRadioOn, ANewDeviceIsNotTriedAgain)
+{
+    std::string body;
+
+    ON_CALL(radio, hasBond(_)).WillByDefault(Return(false));
+    EXPECT_CALL(radio, connectTo(_)).Times(1).WillOnce(Return(false));
+    request("POST", std::string("/api/connect?addr=") + kSpeakerAddress, body);
+    ASSERT_TRUE(waitFor([&] { return status().find("could not connect") != std::string::npos; }, 3000));
+}
+
 TEST_F(WithRadioOn, ADeviceThatDialsInIsAdoptedAndStreams)
 {
     std::string body;

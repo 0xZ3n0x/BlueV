@@ -11,6 +11,33 @@
 namespace bluev
 {
 
+namespace
+{
+
+// How many events nothing else handles are logged while a link is set up.
+constexpr int kUnhandledEventLines = 40;
+
+// While it lives, BtStack::logUnhandledEvent has lines to spend.
+class EventLogScope
+{
+  public:
+    explicit EventLogScope(int& budget) : m_budget(budget)
+    {
+        m_budget = kUnhandledEventLines;
+    }
+    ~EventLogScope()
+    {
+        m_budget = 0;
+    }
+    EventLogScope(const EventLogScope&) = delete;
+    EventLogScope& operator=(const EventLogScope&) = delete;
+
+  private:
+    int& m_budget;
+};
+
+} // namespace
+
 // The Create Connection parameters: the device, the packet types, the page scan
 // repetition mode and clock offset the inquiry reported, and whether a role
 // switch is allowed. Fixed offsets, shared by every try.
@@ -27,6 +54,12 @@ using CreateConn = std::uint8_t[kCreateConnLength];
 constexpr std::uint32_t kAuthMs = 18000;
 constexpr std::uint32_t kAuthResendMs = 5000;
 constexpr std::uint32_t kEncryptionMs = 10000;
+
+// After our Disconnect the old link often stays up until its supervision
+// timeout (seen: up to 18 s) and every Create Connection is refused as "not
+// allowed now" meanwhile. That is waited out, one second at a time: the first
+// kBusyTries - 1 waits cost no page try, the rest use up the 3 tries, so 22 in all.
+constexpr int kBusyTries = 20;
 
 // Alternates between the tries: the odd ones use DM1 only and no role switch,
 // the even ones every packet type.
@@ -47,6 +80,8 @@ void setPageVariant(CreateConn req, int attempt)
 // tells).
 bool BtStack::pageAttempts(std::uint8_t* req)
 {
+    int busy = 0;
+
     for (int attempt = 1; attempt <= 3; attempt++)
     {
         setPageVariant(req, attempt);
@@ -64,9 +99,13 @@ bool BtStack::pageAttempts(std::uint8_t* req)
             // the controller is still tearing the last link down
             if (m_connStatus == 0x0c || m_connStatus == 0x0d || m_connStatus == 0x3a)
             {
-                logLine("connection: %s (try %d)", hciStatusName(static_cast<unsigned>(m_connStatus)), attempt);
+                logLine("connection: %s (wait %d)", hciStatusName(static_cast<unsigned>(m_connStatus)), ++busy);
                 clearConnectResult();
                 poll(1000);
+                if (busy < kBusyTries)
+                {
+                    attempt--; // waiting for the old link does not use up a page try
+                }
                 continue;
             }
             return true;
@@ -310,6 +349,7 @@ void BtStack::linkReset()
 // connect to (and pair with, when no bond exists) a chosen device
 bool BtStack::connectTo(const BdAddr& peer)
 {
+    EventLogScope eventLog(m_unhandledEventBudget);
     const BtDevice* d = nullptr;
     std::uint8_t psrm = 1;
     std::uint16_t clock = 0;
@@ -379,6 +419,7 @@ bool BtStack::connectTo(const BdAddr& peer)
 // a paired device dialed in while idle; authenticate and encrypt
 bool BtStack::adoptIncoming()
 {
+    EventLogScope eventLog(m_unhandledEventBudget);
     m_peerMac = addressString(m_target);
     logLine("%s connected by itself", m_peerName.empty() ? m_peerMac.c_str() : m_peerName.c_str());
     const std::uint64_t began = m_clock.nowMs();

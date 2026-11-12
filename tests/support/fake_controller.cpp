@@ -266,7 +266,12 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
     }
     case kCreateConn: {
         status(opcode, 0);
-        if (remote.page == Remote::Page::Accept)
+        if (remote.busyPages > 0)
+        {
+            remote.busyPages--;
+            connectionComplete(0x0c, 0);
+        }
+        else if (remote.page == Remote::Page::Accept)
         {
             connectionComplete(0, remote.pageDelayMs);
         }

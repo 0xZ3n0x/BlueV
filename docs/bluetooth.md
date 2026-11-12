@@ -110,7 +110,12 @@ comes. Without that the list holds only its address.
 
 **Outbound** (`BtStack::connectTo`): selects the device's bond (`setBond`), then
 `page_device`: up to 3 Create Connection rounds of 12 s each. Packet types and
-role switch alternate between rounds (all types / DM1 only). A late "ACL already
+role switch alternate between rounds (all types / DM1 only). After our own
+Disconnect the old link often stays up until its supervision timeout (seen on the
+console's chip: 9-18 s) and every Create Connection is refused as "command not
+allowed now" (0x0c, also 0x0d and 0x3a) meanwhile. That is waited out, a second at
+a time and up to 22 times, without using up a round (`connection: ... (wait N)`).
+A late "ACL already
 exists" (`0x0b`) is first given time to complete as our own link before any
 cleanup. Then `encryptLink`. A headset that was just paired does not encrypt that
 link and answers no AVDTP on it either (Discover and configure stay unanswered
@@ -122,6 +127,16 @@ dropped link for a moment and refuses the transport
 channel until it has cleared it. If that second link fails, the session ends and
 the page asks for another Connect; the key is kept, so the next attempt is a
 plain paired connect.
+
+`Service::connectOut` makes that retry itself for a device with a bond: when the
+link or the audio setup fails it drops the link and connects again, up to three
+tries (`connect: try N of 3 failed, trying again`). The failures are scattered over
+every step (authentication, encryption, the L2CAP request, an AVDTP command), the
+signature of answers lost on the shared chip, so one more try usually works. A new
+device is not retried (pairing is asked of the user once), and a Disconnect from
+the page ends the tries. Measured on a PS5 Slim with Sony WH-CH720N headphones on
+the internal chip (2026-11-12): 2 of 10 connects worked before, 8 of 10 with the
+wait and the retry. Not measured on a fat console or with other headsets.
 
 **On the console's chip** the stack's own page scan runs at nearly full duty and
 leaves a page almost no radio time, so it is off for the whole page (all the
@@ -164,6 +179,15 @@ for, 4 s after a new pairing) and forces it once with Set Connection Encryption
 Creative speaker does within 0.2 s; the wait used to be 2 s for all and cost
 every connection that long (2026-10-30). A failed authentication with a stored
 key deletes that bond.
+The Command Status of Authentication Requested, Set Connection Encryption and Disconnect is
+logged (`command status: ...`). A Read Encryption Key Size was tried to tell whether a
+link is encrypted when the Encryption Change event is missing (2026-11-12, a PS5 with the
+MediaTek chip and a Sony headset): it answered 16 for a link whose encryption then failed
+with `LMP response timeout`, so it cannot be used for that.
+While a connection is made (`connectTo`, `adoptIncoming`) the first 40 events that
+nothing handles are logged with their first bytes (`event: Mode Change (0x14), 6
+byte(s): ...`), so that a pairing or encryption that goes wrong can be read from
+the log.
 The link's packet types are left to the controller: forcing multi-slot types with Change
 Connection Packet Type right after encryption was tried on the Slim and
 coincided with the speaker dropping the link a second later (reason 0x08)

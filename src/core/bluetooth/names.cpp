@@ -248,4 +248,58 @@ const char* hciVersionName(unsigned version)
     return version < sizeof names / sizeof names[0] ? names[version] : "newer than 5.4";
 }
 
+const char* hciEventName(unsigned code)
+{
+    switch (code)
+    {
+    case 0x01:
+        return "Inquiry Complete";
+    case 0x03:
+        return "Connection Complete";
+    case 0x04:
+        return "Connection Request";
+    case 0x05:
+        return "Disconnection Complete";
+    case 0x06:
+        return "Authentication Complete";
+    case 0x08:
+        return "Encryption Change";
+    case 0x0e:
+        return "Command Complete";
+    case 0x0f:
+        return "Command Status";
+    case 0x12:
+        return "Role Change";
+    case 0x13:
+        return "Number Of Completed Packets";
+    case 0x14:
+        return "Mode Change";
+    case 0x17:
+        return "Link Key Request";
+    case 0x18:
+        return "Link Key Notification";
+    case 0x1b:
+        return "Max Slots Change";
+    case 0x1d:
+        return "Read Remote Version Information Complete";
+    case 0x2c:
+        return "Synchronous Connection Complete";
+    case 0x30:
+        return "Encryption Key Refresh Complete";
+    case 0x31:
+        return "IO Capability Request";
+    case 0x32:
+        return "IO Capability Response";
+    case 0x33:
+        return "User Confirmation Request";
+    case 0x36:
+        return "Simple Pairing Complete";
+    case 0x3b:
+        return "Link Supervision Timeout Changed";
+    case 0xff:
+        return "Vendor";
+    }
+    return "unknown event";
+}
+
 } // namespace bluev

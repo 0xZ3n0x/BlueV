@@ -212,6 +212,40 @@ TEST_F(Link, EncryptionThatDoesNotComeOnFailsTheLink)
     EXPECT_TRUE(sink.has("(failed)"));
 }
 
+TEST_F(Link, TheAnswersToTheSecurityCommandsAreLogged)
+{
+    bondedAndStarted();
+    controller.remote.encrypts = false;
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    stack.disconnect();
+
+    EXPECT_TRUE(sink.has("command status: Authentication Requested -> success (status 0x00)"));
+    EXPECT_TRUE(sink.has("command status: Set Connection Encryption -> success (status 0x00)"));
+    EXPECT_TRUE(sink.has("command status: Disconnect -> success (status 0x00)"));
+    EXPECT_EQ(1, sink.count("command status: Disconnect"));
+}
+
+TEST_F(Link, EventsNothingHandlesAreLoggedWhileTheLinkIsSetUp)
+{
+    bondedAndStarted();
+    // Mode Change and Max Slots Change come while the link is being secured
+    controller.event(0x14, {0, 0x33, 0x00, 0, 0, 0}, 50);
+    controller.event(0x1b, {0x33, 0x00, 5}, 60);
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    EXPECT_TRUE(sink.has("event: Mode Change (0x14), 6 byte(s):"));
+    EXPECT_TRUE(sink.has("event: Max Slots Change (0x1b), 3 byte(s):"));
+}
+
+TEST_F(Link, EventsNothingHandlesAreNotLoggedOutsideASetUp)
+{
+    bondedAndStarted();
+    controller.event(0x14, {0, 0x33, 0x00, 0, 0, 0});
+    stack.poll(10);
+
+    EXPECT_FALSE(sink.has("event: Mode Change"));
+}
+
 TEST_F(Link, PagesThreeTimesWhenTheDeviceIsSilent)
 {
     bondedAndStarted();
@@ -448,4 +482,25 @@ TEST_F(Link, ADeviceThatReconnectsWhileTearingDownKeepsItsLink)
     stack.disconnect();
     EXPECT_TRUE(stack.linkUp()) << sink.all();
     EXPECT_EQ(0x43, stack.handle()) << sink.all();
+}
+
+TEST_F(Link, ALinkThatIsStillBeingTornDownIsWaitedOutWithoutUsingUpThePageTries)
+{
+    bondedAndStarted();
+    controller.remote.busyPages = 8; // more than the 3 page tries
+
+    EXPECT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    EXPECT_TRUE(sink.has("connection: command not allowed now (wait 8)"));
+    EXPECT_FALSE(sink.has("connection: no answer"));
+}
+
+TEST_F(Link, AControllerThatStaysBusyEndsInNoLinkAfterTheWait)
+{
+    bondedAndStarted();
+    controller.remote.busyPages = 1000;
+
+    EXPECT_FALSE(stack.connectTo(remoteAddress()));
+    EXPECT_TRUE(sink.has("connection: command not allowed now (wait 22)"));
+    EXPECT_FALSE(sink.has("(wait 23)"));
+    EXPECT_TRUE(sink.has("connect: no link after"));
 }

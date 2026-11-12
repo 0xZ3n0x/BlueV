@@ -252,6 +252,7 @@ class BtStack
     void onIoCapabilityRequest(const std::uint8_t* e);
     void onUserConfirmRequest(const std::uint8_t* e);
     void onVendorEvent(const std::uint8_t* evt, int n);
+    void logUnhandledEvent(const std::uint8_t* evt, int n);
     void onConnectionComplete(const std::uint8_t* e);
     void onConnectionRequest(const std::uint8_t* e);
     void onDisconnectionComplete(const std::uint8_t* e);
@@ -344,9 +345,10 @@ class BtStack
     std::uint16_t m_ccOp = 0;
     std::uint32_t m_ccLen = 0;
     std::uint8_t m_cc[0x44c] = {};
-    long m_systemReplies = 0; // replies that were not ours, logged up to 50
-    int m_vendorDumps = 0;    // vendor events dumped raw, up to 5
-    int m_otherAclLogged = 0; // data of other links logged before ours is up, up to 20
+    long m_systemReplies = 0;       // replies that were not ours, logged up to 50
+    int m_unhandledEventBudget = 0; // events nothing handles that are still logged (while a link is being set up)
+    int m_vendorDumps = 0;          // vendor events dumped raw, up to 5
+    int m_otherAclLogged = 0;       // data of other links logged before ours is up, up to 20
 
     // the link
     BdAddr m_target{};

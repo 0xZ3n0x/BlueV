@@ -160,6 +160,8 @@ class Service final
     void applyNetwork();
     // One connection from start to end; `address` null = a device dialled in.
     void runSession(bool capturing, const BdAddr* address);
+    const char* setUpAudio(bool initiatedByUs);
+    const char* connectOut(const BdAddr& address);
     // Opens the controller (empty node = the console's chip); false, with the
     // reason shown, when it does not start.
     bool openRadio(const std::string& node);
