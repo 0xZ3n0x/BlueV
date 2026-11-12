@@ -212,6 +212,75 @@ TEST_F(Link, EncryptionThatDoesNotComeOnFailsTheLink)
     EXPECT_TRUE(sink.has("(failed)"));
 }
 
+TEST_F(Link, OnTheConsolesChipTheEventMaskIsSentAgainBeforePairingAndEncryption)
+{
+    bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
+    startInternal();
+    controller.remote.encrypts = false;
+    const int atStart = controller.countCommand(kSetEventMask);
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    // once before the authentication, once before the forced encryption
+    EXPECT_EQ(atStart + 2, controller.countCommand(kSetEventMask));
+}
+
+TEST_F(Link, AnAdapterKeepsItsEventMaskWhileConnecting)
+{
+    bondedAndStarted();
+    controller.remote.encrypts = false;
+    const int atStart = controller.countCommand(kSetEventMask);
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    EXPECT_EQ(atStart, controller.countCommand(kSetEventMask));
+}
+
+TEST_F(Link, AnEncryptedLinkWhoseEventIsMissingIsAccepted)
+{
+    // the console's stack can mask the Encryption Change event away
+    bondedAndStarted();
+    controller.remote.encrypts = false;
+    controller.encryptionSilentTries = 1;
+    controller.silentEncryptionWorks = true;
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    EXPECT_TRUE(controller.sawCommand(kReadEncryptionKeySize));
+    EXPECT_TRUE(sink.has("the link is encrypted (key size 16) although no Encryption Change event came"));
+    EXPECT_FALSE(sink.has("(failed)"));
+}
+
+TEST_F(Link, TheControllerSayingTheLinkIsNotEncryptedKeepsItFailing)
+{
+    bondedAndStarted();
+    controller.remote.encrypts = false;
+    controller.encryptionSilentTries = 1;
+    EXPECT_FALSE(stack.connectTo(remoteAddress()));
+
+    EXPECT_TRUE(controller.sawCommand(kReadEncryptionKeySize));
+    EXPECT_TRUE(sink.has("the controller says the link is not encrypted"));
+    EXPECT_TRUE(sink.has("encryption did not come on (no Encryption Change event)"));
+}
+
+TEST_F(Link, EventsNothingHandlesAreLoggedWhileTheLinkIsSetUp)
+{
+    bondedAndStarted();
+    // Mode Change and Max Slots Change come while the link is being secured
+    controller.event(0x14, {0, 0x33, 0x00, 0, 0, 0}, 50);
+    controller.event(0x1b, {0x33, 0x00, 5}, 60);
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    EXPECT_TRUE(sink.has("event: Mode Change (0x14), 6 byte(s):"));
+    EXPECT_TRUE(sink.has("event: Max Slots Change (0x1b), 3 byte(s):"));
+}
+
+TEST_F(Link, EventsNothingHandlesAreNotLoggedOutsideASetUp)
+{
+    bondedAndStarted();
+    controller.event(0x14, {0, 0x33, 0x00, 0, 0, 0});
+    stack.poll(10);
+
+    EXPECT_FALSE(sink.has("event: Mode Change"));
+}
+
 TEST_F(Link, PagesThreeTimesWhenTheDeviceIsSilent)
 {
     bondedAndStarted();

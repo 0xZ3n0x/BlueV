@@ -11,6 +11,33 @@
 namespace bluev
 {
 
+namespace
+{
+
+// How many events nothing else handles are logged while a link is set up.
+constexpr int kUnhandledEventLines = 40;
+
+// While it lives, BtStack::logUnhandledEvent has lines to spend.
+class EventLogScope
+{
+  public:
+    explicit EventLogScope(int& budget) : m_budget(budget)
+    {
+        m_budget = kUnhandledEventLines;
+    }
+    ~EventLogScope()
+    {
+        m_budget = 0;
+    }
+    EventLogScope(const EventLogScope&) = delete;
+    EventLogScope& operator=(const EventLogScope&) = delete;
+
+  private:
+    int& m_budget;
+};
+
+} // namespace
+
 // The Create Connection parameters: the device, the packet types, the page scan
 // repetition mode and clock offset the inquiry reported, and whether a role
 // switch is allowed. Fixed offsets, shared by every try.
@@ -172,6 +199,12 @@ bool BtStack::authenticateLink()
 {
     std::uint8_t req[3];
 
+    // The console's stack writes its own event mask while it works (as before a
+    // scan), and the pairing events must reach us.
+    if (!m_external)
+    {
+        setEventMask();
+    }
     putLe16(req, m_handle);
     // The headset takes up to about ten seconds to start pairing by itself; our
     // request before that is answered with "no answer" or "LMP error transaction
@@ -232,6 +265,28 @@ bool BtStack::authenticateLink()
     return true;
 }
 
+// Asks the controller whether the link is encrypted. The console's stack on the
+// shared chip sets the event mask too, so the Encryption Change event can be
+// masked away while the encryption itself came on; a controller answers the
+// key size only for an encrypted link.
+bool BtStack::linkIsEncrypted()
+{
+    std::uint8_t req[2];
+
+    putLe16(req, m_handle);
+    if (!hciSync(hci::kReadEncryptionKeySize, req, 2) || m_ccLen < 9)
+    {
+        if (m_ccOp == hci::kReadEncryptionKeySize && m_ccLen > 5)
+        {
+            logLine("encryption: the controller says the link is not encrypted: %s (status %#04x)",
+                    hciStatusName(m_cc[5]), m_cc[5]);
+        }
+        return false;
+    }
+    logLine("encryption: the link is encrypted (key size %u) although no Encryption Change event came", m_cc[8]);
+    return m_cc[8] > 0;
+}
+
 // Authenticates the link and turns encryption on. False when either fails.
 bool BtStack::encryptLink()
 {
@@ -252,6 +307,10 @@ bool BtStack::encryptLink()
     wait([this] { return m_encOn || m_disconnected; }, encryptionGraceMs, false);
     if (!m_encOn && !m_disconnected)
     {
+        if (!m_external)
+        {
+            setEventMask(); // the Encryption Change event must reach us
+        }
         putLe16(req, m_handle);
         req[2] = 1;
         if (!cmd(hci::kSetConnEncryption, req, 3))
@@ -259,6 +318,10 @@ bool BtStack::encryptLink()
             return false;
         }
         wait([this] { return m_encOn || m_disconnected; }, kEncryptionMs, false);
+    }
+    if (!m_encOn && !m_disconnected && m_encStatus == 0 && linkIsEncrypted())
+    {
+        m_encOn = true;
     }
     if (!m_encOn)
     {
@@ -310,6 +373,7 @@ void BtStack::linkReset()
 // connect to (and pair with, when no bond exists) a chosen device
 bool BtStack::connectTo(const BdAddr& peer)
 {
+    EventLogScope eventLog(m_unhandledEventBudget);
     const BtDevice* d = nullptr;
     std::uint8_t psrm = 1;
     std::uint16_t clock = 0;
@@ -379,6 +443,7 @@ bool BtStack::connectTo(const BdAddr& peer)
 // a paired device dialed in while idle; authenticate and encrypt
 bool BtStack::adoptIncoming()
 {
+    EventLogScope eventLog(m_unhandledEventBudget);
     m_peerMac = addressString(m_target);
     logLine("%s connected by itself", m_peerName.empty() ? m_peerMac.c_str() : m_peerName.c_str());
     const std::uint64_t began = m_clock.nowMs();

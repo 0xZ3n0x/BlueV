@@ -151,6 +151,27 @@ void BtStack::onVendorEvent(const std::uint8_t* evt, int n)
     logLine("chip vendor event, raw (%d bytes): %s", n, dump);
 }
 
+// While a link is being set up, an event nothing else handles (pairing steps, mode and
+// role changes) is logged with its first bytes, so that a connection that goes
+// wrong can be read from the log.
+void BtStack::logUnhandledEvent(const std::uint8_t* evt, int n)
+{
+    char bytes[3 * 12 + 1];
+    int off = 0;
+
+    if (m_unhandledEventBudget <= 0)
+    {
+        return;
+    }
+    m_unhandledEventBudget--;
+    for (int i = 2; i < n && i < 2 + 12; i++)
+    {
+        off += std::snprintf(bytes + off, sizeof bytes - off, "%02x ", evt[i]);
+    }
+    bytes[off] = 0;
+    logLine("event: %s (%#04x), %d byte(s): %s", hciEventName(evt[0]), evt[0], n - 2, bytes);
+}
+
 void BtStack::handleEvent(const std::uint8_t* evt, int n)
 {
     const std::uint8_t* e = evt + 2; // skip code+len
@@ -216,6 +237,7 @@ void BtStack::handleEvent(const std::uint8_t* evt, int n)
         onVendorEvent(evt, n);
         break;
     default:
+        logUnhandledEvent(evt, n);
         break;
     }
 }

@@ -116,9 +116,10 @@ class FakeController final : public IHciTransport
         bool encrypts = true;   // encryption change after authentication
         std::uint16_t handle = 0x0042;
     } remote;
-    int authSilentTries = 0;       // accepted Authentication Requests that get no pairing answer
-    int authCollisionTries = 0;    // Authentication Requests answered "LMP transaction collision"
-    int encryptionSilentTries = 0; // accepted encryption requests that leave the link clear
+    int authSilentTries = 0;            // accepted Authentication Requests that get no pairing answer
+    int authCollisionTries = 0;         // Authentication Requests answered "LMP transaction collision"
+    int encryptionSilentTries = 0;      // accepted encryption requests that leave the link clear
+    bool silentEncryptionWorks = false; // a silent request does encrypt the link, only its event is missing
     std::vector<InquiryDevice> inquiryDevices;
     std::uint32_t inquiryDurationMs = 3000;
     std::uint8_t scanSetting = 2; // what Read Scan Enable answers

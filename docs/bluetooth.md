@@ -164,6 +164,18 @@ for, 4 s after a new pairing) and forces it once with Set Connection Encryption
 Creative speaker does within 0.2 s; the wait used to be 2 s for all and cost
 every connection that long (2026-10-30). A failed authentication with a stored
 key deletes that bond.
+On the console's chip the event mask is sent again before the authentication and before
+the forced encryption, as before a scan, because the console's stack may have
+written its own in the meantime. When the forced request is accepted but no Encryption Change event comes, the
+controller is asked with Read Encryption Key Size (`linkIsEncrypted`): it
+answers a key size only for an encrypted link, and the console's stack on the
+shared chip writes the event mask too, so the event can be masked away while the
+encryption came on. An answer with a key size lets the connection go on, a
+refusal keeps the failure (`encryption did not come on`); both are logged.
+While a connection is made (`connectTo`, `adoptIncoming`) the first 40 events that
+nothing handles are logged with their first bytes (`event: Mode Change (0x14), 6
+byte(s): ...`), so that a pairing or encryption that goes wrong can be read from
+the log.
 The link's packet types are left to the controller: forcing multi-slot types with Change
 Connection Packet Type right after encryption was tried on the Slim and
 coincided with the speaker dropping the link a second later (reason 0x08)

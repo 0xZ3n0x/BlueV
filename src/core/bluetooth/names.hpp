@@ -11,6 +11,7 @@ namespace bluev
 
 const char* hciStatusName(unsigned code);                 // HCI error code
 const char* hciOpcodeName(std::uint16_t opcode);          // command opcode (OGF/OCF)
+const char* hciEventName(unsigned code);                  // event code
 const char* deviceClassName(std::uint32_t classOfDevice); // major class of a class-of-device
 const char* manufacturerName(unsigned id);                // company id from Read Local Version
 const char* hciVersionName(unsigned version);             // "4.0" for 6, and so on

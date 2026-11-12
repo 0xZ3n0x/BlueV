@@ -343,6 +343,10 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
     case kRoleDiscovery:
         complete(opcode, {0, lo, hi, 0});
         break;
+    case kReadEncryptionKeySize:
+        // 0x2f: insufficient security, the answer for a link that is not encrypted
+        complete(opcode, silentEncryptionWorks ? Bytes{0, lo, hi, 16} : Bytes{0x2f, lo, hi, 0});
+        break;
     default:
         complete(opcode, {0});
         break;
