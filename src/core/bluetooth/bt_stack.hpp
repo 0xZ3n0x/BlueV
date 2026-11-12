@@ -277,7 +277,6 @@ class BtStack
     bool recoverExistingLink(std::uint8_t* request);
     bool pageDevice(const BdAddr& peer, std::uint8_t psrm, std::uint16_t clock);
     bool encryptLink();
-    bool linkIsEncrypted();
     bool authenticateLink();
     void resetLinkState(); // keeps the target
     void setBond(const BdAddr& peer);

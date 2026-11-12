@@ -36,6 +36,5 @@ constexpr std::uint16_t kReadLocalVersion = 0x1001;
 constexpr std::uint16_t kReadLocalFeatures = 0x1003;
 constexpr std::uint16_t kReadBufferSize = 0x1005;
 constexpr std::uint16_t kReadBdAddr = 0x1009;
-constexpr std::uint16_t kReadEncryptionKeySize = 0x1408;
 
 } // namespace bluev::hci

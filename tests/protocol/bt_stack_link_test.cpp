@@ -212,52 +212,17 @@ TEST_F(Link, EncryptionThatDoesNotComeOnFailsTheLink)
     EXPECT_TRUE(sink.has("(failed)"));
 }
 
-TEST_F(Link, OnTheConsolesChipTheEventMaskIsSentAgainBeforePairingAndEncryption)
-{
-    bonds.put(controller.localAddress, remoteAddress(), 0x5a, "Creative");
-    startInternal();
-    controller.remote.encrypts = false;
-    const int atStart = controller.countCommand(kSetEventMask);
-    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
-
-    // once before the authentication, once before the forced encryption
-    EXPECT_EQ(atStart + 2, controller.countCommand(kSetEventMask));
-}
-
-TEST_F(Link, AnAdapterKeepsItsEventMaskWhileConnecting)
+TEST_F(Link, TheAnswersToTheSecurityCommandsAreLogged)
 {
     bondedAndStarted();
     controller.remote.encrypts = false;
-    const int atStart = controller.countCommand(kSetEventMask);
     ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    stack.disconnect();
 
-    EXPECT_EQ(atStart, controller.countCommand(kSetEventMask));
-}
-
-TEST_F(Link, AnEncryptedLinkWhoseEventIsMissingIsAccepted)
-{
-    // the console's stack can mask the Encryption Change event away
-    bondedAndStarted();
-    controller.remote.encrypts = false;
-    controller.encryptionSilentTries = 1;
-    controller.silentEncryptionWorks = true;
-    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
-
-    EXPECT_TRUE(controller.sawCommand(kReadEncryptionKeySize));
-    EXPECT_TRUE(sink.has("the link is encrypted (key size 16) although no Encryption Change event came"));
-    EXPECT_FALSE(sink.has("(failed)"));
-}
-
-TEST_F(Link, TheControllerSayingTheLinkIsNotEncryptedKeepsItFailing)
-{
-    bondedAndStarted();
-    controller.remote.encrypts = false;
-    controller.encryptionSilentTries = 1;
-    EXPECT_FALSE(stack.connectTo(remoteAddress()));
-
-    EXPECT_TRUE(controller.sawCommand(kReadEncryptionKeySize));
-    EXPECT_TRUE(sink.has("the controller says the link is not encrypted"));
-    EXPECT_TRUE(sink.has("encryption did not come on (no Encryption Change event)"));
+    EXPECT_TRUE(sink.has("command status: Authentication Requested -> success (status 0x00)"));
+    EXPECT_TRUE(sink.has("command status: Set Connection Encryption -> success (status 0x00)"));
+    EXPECT_TRUE(sink.has("command status: Disconnect -> success (status 0x00)"));
+    EXPECT_EQ(1, sink.count("command status: Disconnect"));
 }
 
 TEST_F(Link, EventsNothingHandlesAreLoggedWhileTheLinkIsSetUp)
@@ -517,4 +482,25 @@ TEST_F(Link, ADeviceThatReconnectsWhileTearingDownKeepsItsLink)
     stack.disconnect();
     EXPECT_TRUE(stack.linkUp()) << sink.all();
     EXPECT_EQ(0x43, stack.handle()) << sink.all();
+}
+
+TEST_F(Link, ALinkThatIsStillBeingTornDownIsWaitedOutWithoutUsingUpThePageTries)
+{
+    bondedAndStarted();
+    controller.remote.busyPages = 8; // more than the 3 page tries
+
+    EXPECT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    EXPECT_TRUE(sink.has("connection: command not allowed now (wait 8)"));
+    EXPECT_FALSE(sink.has("connection: no answer"));
+}
+
+TEST_F(Link, AControllerThatStaysBusyEndsInNoLinkAfterTheWait)
+{
+    bondedAndStarted();
+    controller.remote.busyPages = 1000;
+
+    EXPECT_FALSE(stack.connectTo(remoteAddress()));
+    EXPECT_TRUE(sink.has("connection: command not allowed now (wait 22)"));
+    EXPECT_FALSE(sink.has("(wait 23)"));
+    EXPECT_TRUE(sink.has("connect: no link after"));
 }

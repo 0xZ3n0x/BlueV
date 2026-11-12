@@ -401,6 +401,13 @@ void BtStack::onCommandStatus(const std::uint8_t* e)
     const std::uint32_t status = e[0];
     const bool ours = noteForeignReply(op, e[0]);
 
+    // the answers to the security and teardown commands of our link tell whether the
+    // controller took them (the clean-up of old links at the start has no link yet)
+    if (ours && m_handle != 0 && (op == hci::kAuthRequested || op == hci::kSetConnEncryption || op == hci::kDisconnect))
+    {
+        logLine("command status: %s -> %s (status 0x%02x)", hciOpcodeName(op), hciStatusName(status),
+                static_cast<unsigned>(status));
+    }
     if (op == hci::kInquiry && ours)
     {
         m_inqStatusDone = true;

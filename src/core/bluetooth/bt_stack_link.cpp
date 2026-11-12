@@ -55,6 +55,12 @@ constexpr std::uint32_t kAuthMs = 18000;
 constexpr std::uint32_t kAuthResendMs = 5000;
 constexpr std::uint32_t kEncryptionMs = 10000;
 
+// After our Disconnect the old link often stays up until its supervision
+// timeout (seen: up to 18 s) and every Create Connection is refused as "not
+// allowed now" meanwhile. That is waited out, one second at a time: the first
+// kBusyTries - 1 waits cost no page try, the rest use up the 3 tries, so 22 in all.
+constexpr int kBusyTries = 20;
+
 // Alternates between the tries: the odd ones use DM1 only and no role switch,
 // the even ones every packet type.
 void setPageVariant(CreateConn req, int attempt)
@@ -74,6 +80,8 @@ void setPageVariant(CreateConn req, int attempt)
 // tells).
 bool BtStack::pageAttempts(std::uint8_t* req)
 {
+    int busy = 0;
+
     for (int attempt = 1; attempt <= 3; attempt++)
     {
         setPageVariant(req, attempt);
@@ -91,9 +99,13 @@ bool BtStack::pageAttempts(std::uint8_t* req)
             // the controller is still tearing the last link down
             if (m_connStatus == 0x0c || m_connStatus == 0x0d || m_connStatus == 0x3a)
             {
-                logLine("connection: %s (try %d)", hciStatusName(static_cast<unsigned>(m_connStatus)), attempt);
+                logLine("connection: %s (wait %d)", hciStatusName(static_cast<unsigned>(m_connStatus)), ++busy);
                 clearConnectResult();
                 poll(1000);
+                if (busy < kBusyTries)
+                {
+                    attempt--; // waiting for the old link does not use up a page try
+                }
                 continue;
             }
             return true;
@@ -199,12 +211,6 @@ bool BtStack::authenticateLink()
 {
     std::uint8_t req[3];
 
-    // The console's stack writes its own event mask while it works (as before a
-    // scan), and the pairing events must reach us.
-    if (!m_external)
-    {
-        setEventMask();
-    }
     putLe16(req, m_handle);
     // The headset takes up to about ten seconds to start pairing by itself; our
     // request before that is answered with "no answer" or "LMP error transaction
@@ -265,28 +271,6 @@ bool BtStack::authenticateLink()
     return true;
 }
 
-// Asks the controller whether the link is encrypted. The console's stack on the
-// shared chip sets the event mask too, so the Encryption Change event can be
-// masked away while the encryption itself came on; a controller answers the
-// key size only for an encrypted link.
-bool BtStack::linkIsEncrypted()
-{
-    std::uint8_t req[2];
-
-    putLe16(req, m_handle);
-    if (!hciSync(hci::kReadEncryptionKeySize, req, 2) || m_ccLen < 9)
-    {
-        if (m_ccOp == hci::kReadEncryptionKeySize && m_ccLen > 5)
-        {
-            logLine("encryption: the controller says the link is not encrypted: %s (status %#04x)",
-                    hciStatusName(m_cc[5]), m_cc[5]);
-        }
-        return false;
-    }
-    logLine("encryption: the link is encrypted (key size %u) although no Encryption Change event came", m_cc[8]);
-    return m_cc[8] > 0;
-}
-
 // Authenticates the link and turns encryption on. False when either fails.
 bool BtStack::encryptLink()
 {
@@ -307,10 +291,6 @@ bool BtStack::encryptLink()
     wait([this] { return m_encOn || m_disconnected; }, encryptionGraceMs, false);
     if (!m_encOn && !m_disconnected)
     {
-        if (!m_external)
-        {
-            setEventMask(); // the Encryption Change event must reach us
-        }
         putLe16(req, m_handle);
         req[2] = 1;
         if (!cmd(hci::kSetConnEncryption, req, 3))
@@ -318,10 +298,6 @@ bool BtStack::encryptLink()
             return false;
         }
         wait([this] { return m_encOn || m_disconnected; }, kEncryptionMs, false);
-    }
-    if (!m_encOn && !m_disconnected && m_encStatus == 0 && linkIsEncrypted())
-    {
-        m_encOn = true;
     }
     if (!m_encOn)
     {

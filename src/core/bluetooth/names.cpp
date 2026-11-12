@@ -170,8 +170,6 @@ const char* hciOpcodeName(std::uint16_t op)
         return "Read BD_ADDR";
     case 0x1405:
         return "Read RSSI";
-    case 0x1408:
-        return "Read Encryption Key Size";
     }
     return "command";
 }

@@ -266,7 +266,12 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
     }
     case kCreateConn: {
         status(opcode, 0);
-        if (remote.page == Remote::Page::Accept)
+        if (remote.busyPages > 0)
+        {
+            remote.busyPages--;
+            connectionComplete(0x0c, 0);
+        }
+        else if (remote.page == Remote::Page::Accept)
         {
             connectionComplete(0, remote.pageDelayMs);
         }
@@ -342,10 +347,6 @@ void FakeController::respond(std::uint16_t opcode, const Bytes& p)
         break;
     case kRoleDiscovery:
         complete(opcode, {0, lo, hi, 0});
-        break;
-    case kReadEncryptionKeySize:
-        // 0x2f: insufficient security, the answer for a link that is not encrypted
-        complete(opcode, silentEncryptionWorks ? Bytes{0, lo, hi, 16} : Bytes{0x2f, lo, hi, 0});
         break;
     default:
         complete(opcode, {0});

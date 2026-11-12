@@ -112,14 +112,14 @@ class FakeController final : public IHciTransport
         } page = Page::Accept;
         std::uint8_t failStatus = 0x04;
         std::uint32_t pageDelayMs = 300;
+        int busyPages = 0;      // the next pages are refused as "command not allowed now" (0x0c)
         bool authFails = false; // authentication status 0x06 (a stale key)
         bool encrypts = true;   // encryption change after authentication
         std::uint16_t handle = 0x0042;
     } remote;
-    int authSilentTries = 0;            // accepted Authentication Requests that get no pairing answer
-    int authCollisionTries = 0;         // Authentication Requests answered "LMP transaction collision"
-    int encryptionSilentTries = 0;      // accepted encryption requests that leave the link clear
-    bool silentEncryptionWorks = false; // a silent request does encrypt the link, only its event is missing
+    int authSilentTries = 0;       // accepted Authentication Requests that get no pairing answer
+    int authCollisionTries = 0;    // Authentication Requests answered "LMP transaction collision"
+    int encryptionSilentTries = 0; // accepted encryption requests that leave the link clear
     std::vector<InquiryDevice> inquiryDevices;
     std::uint32_t inquiryDurationMs = 3000;
     std::uint8_t scanSetting = 2; // what Read Scan Enable answers

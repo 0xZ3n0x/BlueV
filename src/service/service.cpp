@@ -544,6 +544,49 @@ void Service::announceVolume()
     }
 }
 
+// Sets up the audio on the secured link; null when it worked.
+const char* Service::setUpAudio(bool initiatedByUs)
+{
+    setState(State::Connecting, "setting up audio");
+    if (m_radio.startAudio(initiatedByUs))
+    {
+        return nullptr;
+    }
+    m_radio.stopAudio();
+    return "audio setup failed; press Connect again";
+}
+
+// Connects out and sets the audio up. On the console's chip the link or the
+// audio setup fails now and then (answers lost on the shared chip), so a paired
+// device is tried up to three times before the user is asked to press Connect.
+// Null when it worked.
+const char* Service::connectOut(const BdAddr& address)
+{
+    constexpr int kTries = 3;
+    const char* failure = nullptr;
+
+    for (int attempt = 1; attempt <= kTries; attempt++)
+    {
+        failure = nullptr;
+        if (!m_radio.connectTo(address))
+        {
+            failure = m_radio.hasBond(address) ? "could not connect; press Connect again" : "could not connect";
+        }
+        else
+        {
+            failure = setUpAudio(true);
+        }
+        if (failure == nullptr || attempt == kTries || !m_radio.hasBond(address) || m_disconnectRequested.load())
+        {
+            return failure;
+        }
+        logLine("connect: try %d of %d failed, trying again", attempt, kTries);
+        m_radio.disconnect();
+        m_radio.resetAudio();
+    }
+    return failure;
+}
+
 // Connects out (address) or takes over a link a paired device opened
 // (address == nullptr), then streams until the device leaves.
 void Service::runSession(bool capturing, const BdAddr* address)
@@ -563,12 +606,7 @@ void Service::runSession(bool capturing, const BdAddr* address)
         m_radio.resetAudio();
         m_current = *address;
         setState(State::Connecting, "connecting to %s", addressText(*address).c_str());
-        if (!m_radio.connectTo(*address))
-        {
-            // a paired device that failed to connect is tried again from the
-            // page: the key is kept, so the next Connect is a short one
-            failure = m_radio.hasBond(*address) ? "could not connect; press Connect again" : "could not connect";
-        }
+        failure = connectOut(*address);
     }
     else
     {
@@ -580,14 +618,9 @@ void Service::runSession(bool capturing, const BdAddr* address)
     }
     const double linkSeconds = secondsSince(begun);
 
-    if (failure == nullptr)
+    if (failure == nullptr && address == nullptr)
     {
-        setState(State::Connecting, "setting up audio");
-        if (!m_radio.startAudio(address != nullptr))
-        {
-            failure = "audio setup failed; press Connect again";
-            m_radio.stopAudio();
-        }
+        failure = setUpAudio(false);
     }
     if (failure == nullptr)
     {
