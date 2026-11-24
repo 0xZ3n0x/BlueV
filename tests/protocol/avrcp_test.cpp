@@ -188,6 +188,25 @@ TEST_F(AvrcpChannel, StartDoesNotWaitForTheHeadset)
     EXPECT_TRUE(sink.has("avrcp: channel not open yet, waiting for the headset"));
 }
 
+TEST_F(AvrcpChannel, NothingIsAskedOfTheHeadsetWhileTheAclReadsAreOff)
+{
+    Avrcp avrcp(stack);
+
+    avrcp.reset();
+    avrcp.listen();
+    avrcp.start();
+    stack.setReadBudget(1, 0);
+    const auto t0 = clock.nowMs();
+    for (int i = 0; i < 10; i++)
+    {
+        avrcp.service(); // would have opened the channel and waited ten seconds for the answer
+    }
+    EXPECT_LT(clock.nowMs() - t0, 100u);
+    EXPECT_FALSE(sink.has("avrcp: channel not open yet, waiting for the headset"));
+    EXPECT_FALSE(sink.has("avrcp: channel opened by us"));
+    EXPECT_TRUE(controller.aclOut.empty());
+}
+
 TEST_F(AvrcpChannel, ATargetSearchStopsUsFromRacingTheHeadset)
 {
     // the headset opens an SDP channel and searches for our target record

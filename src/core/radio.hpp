@@ -90,6 +90,20 @@ class IRadio
     virtual void setVolume(int volume) = 0;
     // The sound quality (kQualityNormal or kQualityHigh) of the next stream. From any thread.
     virtual void setQuality(int quality) = 0;
+    // The reads to keep waiting while streaming (events, ACL; negative = all). From any thread.
+    virtual void setStreamReads(int events, int acl) = 0;
+    // Whether the controller's reads wait for packets at all. Every read that waits takes
+    // packets of the console's own Bluetooth (the gamepad's, the replies to its commands) and
+    // can leave the console's stack stuck, so they are kept only while something of ours needs
+    // an answer (starting, scanning, connecting, hanging up) and not while idle or streaming.
+    virtual void setReadsActive(bool /*active*/)
+    {
+    }
+    // The controller's USB device is gone (the console reset its Bluetooth chip, say); close the radio.
+    virtual bool deviceLost()
+    {
+        return false;
+    }
 };
 
 class Radio final : public IRadio
@@ -209,6 +223,18 @@ class Radio final : public IRadio
     void setQuality(int quality) override
     {
         m_session.setQuality(quality);
+    }
+    void setStreamReads(int events, int acl) override
+    {
+        m_session.setStreamReads(events, acl);
+    }
+    void setReadsActive(bool active) override
+    {
+        m_bt.setReadBudget(active ? 1000 : 0, active ? 1000 : 0);
+    }
+    bool deviceLost() override
+    {
+        return m_bt.deviceLost();
     }
 
   private:

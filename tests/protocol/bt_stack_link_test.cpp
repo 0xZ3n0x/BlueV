@@ -31,6 +31,76 @@ class Link : public BtFixture
 
 } // namespace
 
+TEST_F(Link, TheLinkIsTunedOnceItIsEncrypted)
+{
+    bondedAndStarted();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    // every packet type allowed, no sniff or hold, packets flushed after 150 ms
+    const SentCommand* type = controller.lastCommand(0x040f);
+    ASSERT_NE(nullptr, type);
+    EXPECT_EQ((Bytes{0x42, 0x00, 0x18, 0xcc}), type->params);
+    const SentCommand* policy = controller.lastCommand(0x080d);
+    ASSERT_NE(nullptr, policy);
+    EXPECT_EQ((Bytes{0x42, 0x00, 0x00, 0x00}), policy->params);
+    const SentCommand* flush = controller.lastCommand(0x0c28);
+    ASSERT_NE(nullptr, flush);
+    EXPECT_EQ((Bytes{0x42, 0x00, 240, 0x00}), flush->params);
+}
+
+TEST_F(Link, TheEventsAboutTheLinkAreLoggedAndCounted)
+{
+    bondedAndStarted();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+
+    controller.event(0x1d, {0x00, 0x42, 0x00, 0x18, 0xcc});       // connection packet type changed
+    controller.event(0x1b, {0x42, 0x00, 0x05});                   // max slots change
+    controller.event(0x14, {0x00, 0x42, 0x00, 0x02, 0x10, 0x00}); // mode change: sniff
+    controller.event(0x11, {0x02, 0x00, 0x00, 0x00});             // flush occurred
+    stack.poll(10);
+    EXPECT_TRUE(sink.has("link: packet types 0xcc18 in use on handle 0x042"));
+    EXPECT_TRUE(sink.has("link: max slots 5 on handle 0x042"));
+    EXPECT_TRUE(sink.has("link: mode change, status 0000, handle 0x042, mode 2, interval 16 slots"));
+    EXPECT_TRUE(sink.has("link: event 0x11,"));
+
+    stack.logEventCounts();
+    EXPECT_TRUE(sink.has("events:")) << sink.all();
+    EXPECT_TRUE(sink.has(" 11=1")) << sink.all();
+    EXPECT_TRUE(sink.has(" 1d=1"));
+}
+
+TEST_F(Link, WhenTheDeviceIsGoneTheLinkIsLostAndDisconnectDoesNotWait)
+{
+    bondedAndStarted();
+    ASSERT_TRUE(stack.connectTo(remoteAddress())) << sink.all();
+    EXPECT_FALSE(stack.linkLost());
+
+    controller.deviceGone = true;
+    EXPECT_TRUE(stack.deviceLost());
+    EXPECT_TRUE(stack.linkLost());
+    const auto t0 = clock.nowMs();
+    stack.disconnect();
+    EXPECT_LT(clock.nowMs() - t0, 100u) << "no Disconnect is sent and waited for";
+}
+
+TEST_F(Link, TheReadBudgetGoesToTheTransportAndTheStackKnowsWhatItCanHear)
+{
+    bondedAndStarted();
+    EXPECT_TRUE(stack.aclReadsOn());
+    EXPECT_TRUE(stack.eventReadsOn());
+
+    stack.setReadBudget(0, 0);
+    EXPECT_FALSE(stack.aclReadsOn());
+    EXPECT_FALSE(stack.eventReadsOn());
+    stack.setReadBudget(1, 0);
+    EXPECT_TRUE(stack.eventReadsOn());
+    EXPECT_FALSE(stack.aclReadsOn());
+    stack.setReadBudget(1000, 1000);
+    EXPECT_TRUE(stack.aclReadsOn());
+    ASSERT_GE(controller.readBudgets.size(), 3u);
+    EXPECT_EQ(std::make_pair(1000, 1000), controller.readBudgets.back());
+}
+
 TEST_F(Link, ConnectsToAPairedDeviceAndEncryptsTheLink)
 {
     bondedAndStarted();

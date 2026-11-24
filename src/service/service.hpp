@@ -80,11 +80,21 @@ class Service final
     // The sound quality of the next stream, "0" normal or "1" high; saved for
     // the next run too. Always accepted.
     PostResult setQuality(std::string_view quality);
+    // The number of Bluetooth reads to keep waiting while a stream runs (events, ACL; -1
+    // for all), for trying how much of the console's own Bluetooth traffic the stream
+    // may take. Not saved: the next run starts with 0 and 0.
+    PostResult setReads(std::string_view events, std::string_view acl);
     // Who can open the web page: "lan" (anyone on the network) or "local" (only
     // this console, on its loopback address). Saved for the next run; the
     // server is started again on the radio thread, so the answer to this
     // request is sent first. Always accepted.
     PostResult setNetwork(std::string_view who);
+    // For tests: breaks the web server's listening socket the way a network reset can; the service
+    // notices within a second and starts the server again.
+    void breakWebServerForTest()
+    {
+        m_server.breakListenSocketForTest();
+    }
     // The state, the peer, the stream numbers and the radio, as JSON for /api/status.
     std::string statusJson();
     // The last scan plus the paired devices, as JSON for /api/devices.

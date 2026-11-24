@@ -155,8 +155,19 @@ void BtStack::handleEvent(const std::uint8_t* evt, int n)
 {
     const std::uint8_t* e = evt + 2; // skip code+len
 
+    m_eventCounts[evt[0]]++;
     switch (evt[0])
     {
+    case 0x10: // hardware error
+    case 0x11: // flush occurred (the flush timeout dropped a packet)
+    case 0x1a: // data buffer overflow
+    case 0x1e: // QoS violation
+        if (m_oddEventsLogged < 40)
+        {
+            m_oddEventsLogged++;
+            logLine("link: event %#04x, %d byte(s): %02x %02x %02x %02x", evt[0], n - 2, e[0], e[1], e[2], e[3]);
+        }
+        break;
     case 0x01: // inquiry complete
         m_inqDone = true;
         break;
@@ -189,6 +200,17 @@ void BtStack::handleEvent(const std::uint8_t* evt, int n)
         break;
     case 0x13:
         onCompletedPackets(e, n);
+        break;
+    case 0x14: // mode change: 0 active, 1 hold, 2 sniff, 3 park
+        logLine("link: mode change, status %#04x, handle %#05x, mode %d, interval %u slots", e[0],
+                getLe16(e + 1) & 0xfff, e[3], getLe16(e + 4));
+        break;
+    case 0x1b: // max slots change
+        logLine("link: max slots %d on handle %#05x", e[2], getLe16(e) & 0xfff);
+        break;
+    case 0x1d: // connection packet type changed
+        logLine("link: packet types %#06x in use on handle %#05x (status %#04x)", getLe16(e + 3),
+                getLe16(e + 1) & 0xfff, e[0]);
         break;
     case 0x16:
         onPinCodeRequest(e);
@@ -364,6 +386,18 @@ void BtStack::onCommandComplete(const std::uint8_t* evt, int n)
     const std::uint16_t op = getLe16(e + 1);
 
     noteForeignReply(op, e[3]);
+    if (op == hci::kWriteAutoFlushTimeout)
+    {
+        logLine("link: flush timeout set, status %#04x", e[3]);
+    }
+    else if (op == hci::kReadRssi && n >= 9)
+    {
+        logLine("link: rssi %d dBm (status %#04x)", static_cast<int>(static_cast<std::int8_t>(e[6])), e[3]);
+    }
+    else if (op == hci::kReadLinkQuality && n >= 9)
+    {
+        logLine("link: quality %d of 255 (status %#04x)", e[6], e[3]);
+    }
     if (op == hci::kRoleDiscovery && e[3] == 0)
     {
         logLine("link role: handle %#05x, we are the %s", getLe16(e + 4) & 0xfff, e[6] == 0 ? "master" : "slave");

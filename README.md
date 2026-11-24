@@ -70,11 +70,24 @@ to end the stream, **Turn off** to give the adapter back, **Stop BlueV** to quit
 
 ## Good to know
 
-- **Internal chip and your gamepad.** The console's own chip is shared with the system's
-  Bluetooth, which your gamepad uses. While the internal radio is on, switching the gamepad
-  off and on can leave it connected but without input until the console restarts.
-  Switch the gamepad on **before** you press Start and leave it alone. A USB adapter does
-  not have this problem.
+- **Internal chip and your gamepads.** The console's own chip is shared with the system's
+  Bluetooth, which your gamepads use. BlueV only listens to the chip for the few seconds
+  that setting up a connection takes, and not while the stream runs, which is much gentler
+  on the gamepads than earlier versions, but not harmless: a gamepad can still freeze
+  (connected, a button stuck) or fail to reconnect, mostly when something happens to it
+  while the stream is running. So: switch your gamepads on **first**, press Connect for the
+  speaker, then play, and do not switch a gamepad off or on during the stream. If a gamepad
+  freezes, hold it off and on again; if that does not help, put the console into rest mode
+  and wake it. To connect or switch a gamepad while the speaker plays, press **Disconnect**
+  first and **Connect** afterwards; a gamepad on the USB cable does not use Bluetooth at all.
+  The reason is the chip, which the console's driver owns and which has one radio: nothing a
+  program can do makes the two use it without a risk (see
+  [docs/shared-chip.md](docs/shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23)).
+  A USB adapter does not have this problem.
+- While streaming on the internal chip the speaker can go quiet for 10-40 seconds now and
+  then (the controller stops taking packets); about 1% of the audio is lost. The speaker's
+  volume buttons work, the volume slider on the page does not, and a speaker that
+  reconnects by itself is not heard: press **Connect**.
 - Connecting takes about 10 seconds with a USB adapter. On the internal chip the page is
   short now; the audio setup still takes a few seconds, and a packet lost to the console
   during it ends the setup instead of streaming a broken link (the page then asks for another

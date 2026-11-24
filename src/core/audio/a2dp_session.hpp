@@ -41,6 +41,23 @@ class A2dpSession
         m_quality.store(quality);
     }
 
+    // The reads to keep waiting on the shared chip while the stream runs: events,
+    // then ACL; a negative number means all of them. From any thread, applied by the
+    // streaming loop within a second, once the stream is a few seconds old.
+    void setStreamReads(int events, int acl)
+    {
+        m_streamEvents.store(events);
+        m_streamAcl.store(acl);
+    }
+    int streamEvents() const
+    {
+        return m_streamEvents.load();
+    }
+    int streamAcl() const
+    {
+        return m_streamAcl.load();
+    }
+
     // stop request from the service, read by the streaming loop
     void requestStop()
     {
@@ -81,6 +98,7 @@ class A2dpSession
     L2Channel m_media{"media", 0x42};
     A2dpConfig m_config;
     std::atomic<int> m_quality{0};
+    std::atomic<int> m_streamEvents{0}, m_streamAcl{0};
 
     std::uint8_t m_sinkSeid = 0;       // the device's SBC sink endpoint
     std::uint8_t m_label = 0;          // transaction label of the next command

@@ -44,9 +44,11 @@ this chip, and again when the scan hears nothing for 3 s
 ([section 6](bluetooth.md#6-connections-and-pairing-corebluetoothbt_stack_linkcpp-bt_stack_inquirycpp));
 without that, finding a new device is a matter of luck.
 
-What the program does about it: **nothing yet.** The radio is opened at
+What the first versions did about it: **nothing.** The radio was opened at
 start and read continuously, so a controller must not connect, disconnect or
-reconnect while the program runs. Switch the controller on before the
+reconnect while the program ran. Since 2026-11-23 the reads wait only while
+something of ours needs an answer ([12f](#12f-reads-only-while-something-needs-them-2026-11-23)),
+which is much gentler but still not proven harmless. Switch the controller on before the
 program starts and leave it alone while it runs. Stopping the program does
 not repair a controller that has been switched off and on in the meantime
 (the later measurements below).
@@ -97,7 +99,7 @@ Working rule: the pad is switched on before the payload starts and is left
 alone while it runs. (A run-time knob for the number of armed reads was used for
 the measurements above; it is not part of the program.)
 
-The limitation is accepted (2026-10-31). After the changes that leave the chip's name,
+The limitation was accepted on 2026-10-31 (later work: [12f](#12f-reads-only-while-something-needs-them-2026-11-23)). After the changes that leave the chip's name,
 class, scan setting and other links alone (sections [5](bluetooth.md#5-controller-setup-btstackstart) and [6](bluetooth.md#6-connections-and-pairing-corebluetoothbt_stack_linkcpp-bt_stack_inquirycpp)) a gamepad switched off and
 on while streaming still did not come back. The page and the README tell the user to
 leave it alone; a USB adapter is the way to avoid it. Fewer armed reads while streaming,
@@ -278,3 +280,94 @@ a radio heartbeat but the console repeating that the device is still in its list
 It keeps coming while the gamepad is off because the console never saw the disconnect:
 our armed reads took it, and with no `06` there is nothing to react to. Reacting to
 `/dev/bt` therefore does not work.
+
+## 12f. Reads only while something needs them (2026-11-23)
+
+Every packet that comes in on the chip's USB endpoints goes to exactly one waiting
+read, ours or the console's ([section 12](#12-the-controller-is-shared-with-the-console)).
+So the question is how many reads of ours wait, and when. All of this is the PS5 Slim
+(CFI-2116, Marvell chip `1286:2059`, 7 ACL buffers of 1021 bytes) with an Amazon Echo Dot
+as the speaker and two DualSense gamepads, unless said otherwise. Every row is one run
+(or a few); none is a statistic.
+
+| What waited | Result for the gamepad |
+|---|---|
+| 48 event + 16 ACL reads all the time, the way it was built | A gamepad link timed out during a stream, or a gamepad switched off and on did not come back; the session's totals were 2400 ACL packets and 200 events taken in 12 minutes, mostly the gamepad's own |
+| Full reads for the setup, then 1 event read and no ACL read while streaming | A gamepad switched off and on did **not** reconnect. The log shows the replies to the console's own `Write Link Policy`, `Disconnect` and `Reject Connection Request` coming to us. One read still wins about half of the replies, and a console command whose reply is taken leaves its stack waiting |
+| The same, then the radio turned off | The gamepad still did not reconnect: the damage stays after we stop reading |
+| Full reads for the setup (about 7 s), then **no** read while streaming | A gamepad switched off and on **reconnected**, with the stream at the full rate (once) |
+| All reads again during a stream (a control) | A gamepad broke within a minute without being touched |
+| No read while streaming, gamepads connected | A gamepad later froze (connected, a button stuck, no input) and had to be switched off and on until it worked; another run lost a gamepad and froze the other during a stall of the whole chip (below) |
+
+What is done now (the service, `Service::runSession` and friends, through
+`IRadio::setReadsActive`):
+
+| Moment | Reads |
+|---|---|
+| Opening the radio, closing it | on |
+| Scan | on |
+| Connect: paging, pairing, encryption, AVDTP | on (about 7-9 s) |
+| Hanging up (`stopAudio`, `disconnect`) | on |
+| Radio on and idle | **off** |
+| Streaming | **off** |
+
+The `ACL from handle ... before a link of ours` lines and the `other links` counter of the
+stream status show what the setup took: 931 and 386 packets in two connects with a gamepad
+connected, 692 with two connected, 0 with none. Other changes that came out of this:
+
+- The 10 s freeze at the moment the reads were cut was not the stops (a stop takes 0 ms)
+  but the volume-control channel waiting for an answer
+  ([section 9a](audio.md#9a-the-headsets-volume-avrcp-coreaudioavrcp)).
+- A command sent while no event read waits has its answer taken by the console's own stack
+  (the 10 s `Read RSSI` and `Read Link Quality` probe did that to it for hours); the probe
+  now only runs while events are read.
+- With the radio on and idle nothing hears a speaker that dials in by itself: press
+  **Connect** on the page. The service no longer polls the controller while idle.
+- `POST /api/reads?events=N&acl=M` (-1 = all) sets what a stream keeps waiting, for
+  experiments; the default is none.
+
+**Rough patches.** Whatever the reads, the stream has patches in which the controller stops
+taking packets for 10-40 s: the bitpool falls to 28, up to a few seconds of audio are cut,
+the back-off pauses, and it recovers by itself ([section 10](audio.md#10-audio-streaming-loop-a2dpstreamerrun)).
+They also happen with **both gamepads off** and nothing taken (`other links 0`): about 1.4%
+of the audio in 4 minutes. Two gamepads connected and left alone: 0.85% in 10 minutes, one
+patch. Gamepads breaking (disconnecting, freezing, "unsupported device" on reconnecting)
+were noticed in or right after such patches in most runs (not every patch broke one, and
+a gamepad switched off and on by hand has its own failures). Not the signal (RSSI -6
+to -12 dBm, speaker next to the console), not the reads (none waited), not the loop (never
+more than 20 ms), not the console's own Wi-Fi band (it was on 5 GHz; a shared antenna on the chip is not
+excluded). Unproven guess: the
+console's stack pages a bonded gamepad that is not connected, the chip's radio is busy
+doing that, and the speaker's link starves; a gamepad being switched or reconnecting
+meanwhile fails. What would show it: a stream with a gamepad switched off once, and a
+console with no bonded gamepad at all.
+
+**Recovery.** A gamepad that is connected but frozen came back when it was held off and on
+again (it disconnected by itself once on the way) with BlueV's radio off. When it did not,
+putting the console into rest mode and waking it cleared the console's Bluetooth every
+time it was tried (several times, a few of them after a gamepad was refused as an
+unsupported device). Turning the radio off alone did not.
+
+**What to tell the user** (README): connect the speaker first, then play; keep the gamepads
+connected and do not switch them while streaming; a USB adapter avoids all of it.
+
+**Where the causes stand (2026-11-24).** What was found, how sure it is, and what is left:
+
+| Problem | Cause | How sure |
+|---|---|---|
+| Crackle and dropouts of the first versions | The link kept DM1 packets (the compatibility page attempt) and the stream loop waited inside the blocking USB write: 5.5 packets of 47 needed, about 88% of the audio dropped | Proven: the rate went to 47 a second as soon as the packet types were allowed |
+| A gamepad frozen, "unsupported device", not reconnecting | Reads of ours that wait take the console's own packets: replies to its HCI commands, a gamepad's connection requests. The console's stack then waits for an answer that went to us, and stays stuck until it is reset (rest mode) | Proven (one waiting read was enough, the control with all reads broke a gamepad in a minute, the replies of the console's commands show in the log). Removed while streaming; during the 7-9 s of a connect it remains |
+| A controller refusing to connect or reconnect while a stream runs, with nothing being taken | The chip's one radio does not serve a new connection while it is busy with the stream; each such attempt came with a stall of the whole chip (6-12 s) | Likely, not provable from a program; it happens in the chip's firmware |
+| Rough patches of 10-40 s in the stream, 0.85-6% of the audio | Not found: they happen with no gamepad, no read waiting, with the network on or off, and vary a lot between runs (6% in one 28 minute run, 0.85-1.4% in four others) | Unknown; the Echo Dot's own radio and the chip's scheduling are the candidates. A different speaker would separate them |
+
+So on the console's own chip nothing of ours can make a gamepad connect during a stream
+and nothing can be fully safe: the console's driver owns the chip and there is no way for
+a second user of it to take part. Two ways out were looked at and not taken: giving the
+packets back to the console (a hook in its kernel driver: nothing in a payload reaches it
+without reverse engineering the kernel, and another project's survey of those structures
+crashed a console, see [design.md](design.md#162-what-we-tried-or-considered-and-did-not-choose)),
+and the console's own Bluetooth stack (it has no A2DP, AVDTP or SBC at all, found by another
+project in the decrypted system software). What is left is the way of using it that has
+worked: gamepads connected first, then the speaker, no gamepad connecting meanwhile (press
+Disconnect for the speaker first); a gamepad on the USB cable takes its Bluetooth out of it.
+A USB adapter, which this program supports, has none of these problems.

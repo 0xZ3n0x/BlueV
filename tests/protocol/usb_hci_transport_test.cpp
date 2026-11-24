@@ -269,6 +269,39 @@ TEST_F(UsbTransport, ARefusedStartIsCountedLoggedAndTriedAgainOnTheNextPump)
     EXPECT_EQ(1, device.startCount(5));
 }
 
+TEST_F(UsbTransport, AWholeTableOfReadsThatCannotBeStartedMeansTheDeviceIsGone)
+{
+    openStandard();
+    device.errorNumber = 25; // what the console answers when its Bluetooth chip was reset under us
+    for (int i = 0; i < 64; i++)
+    {
+        device.failStartAt.insert(i);
+    }
+
+    EXPECT_FALSE(transport.deviceLost());
+    transport.pump(0);
+    EXPECT_TRUE(transport.deviceLost());
+    EXPECT_EQ(1, sink.count("hci: the controller's USB device is gone (errno 25)"));
+    EXPECT_LE(sink.count("hci: USB_FS_START"), 8) << "the first few only, not one line per attempt";
+
+    // nothing is tried again and the transport does not spin
+    device.failStartAt.clear();
+    const auto before = device.waitedMicroseconds;
+    EXPECT_FALSE(transport.pump(10));
+    EXPECT_EQ(0, device.startCount(0));
+    EXPECT_GT(device.waitedMicroseconds, before);
+    EXPECT_EQ(1, sink.count("hci: the controller's USB device is gone"));
+}
+
+TEST_F(UsbTransport, ASingleRefusedStartIsNotTheDeviceGoing)
+{
+    openStandard();
+    device.failStartAt = {5};
+    transport.pump(0);
+    transport.pump(0);
+    EXPECT_FALSE(transport.deviceLost());
+}
+
 // ---- writing ----
 
 TEST_F(UsbTransport, ACommandGoesOutAsAControlRequestWithItsOpcodeAndLength)
@@ -331,6 +364,58 @@ TEST_F(UsbTransport, ASecondAclPacketWaitsUntilTheFirstHasGone)
     EXPECT_TRUE(transport.sendAcl(second.data(), static_cast<std::uint32_t>(second.size())));
     EXPECT_EQ(4, waits);
     EXPECT_EQ(second, device.sentBuffer(kAclOut));
+}
+
+TEST_F(UsbTransport, ASmallerReadBudgetStopsTheOtherReadsAndKeepsThemStopped)
+{
+    openStandard();
+    transport.pump(0);
+    ASSERT_TRUE(device.started(0));
+    ASSERT_TRUE(device.started(47));
+    ASSERT_TRUE(device.started(kFirstAcl));
+
+    transport.setReadBudget(1, 0);
+    EXPECT_TRUE(sink.has("hci: keeping 1 of 48 event reads and 0 of 16 ACL reads waiting"));
+    EXPECT_EQ(47u + 16u, device.stops.size()); // the extra reads are stopped at once, none of them is left waiting
+    EXPECT_TRUE(device.started(0));
+    EXPECT_FALSE(device.started(1));
+    EXPECT_FALSE(device.started(47));
+    EXPECT_FALSE(device.started(kFirstAcl));
+    EXPECT_FALSE(device.started(kFirstAcl + 15));
+
+    transport.pump(0); // idle reads are started again, but only those within the budget
+    EXPECT_TRUE(device.started(0));
+    EXPECT_FALSE(device.started(1));
+    EXPECT_FALSE(device.started(kFirstAcl));
+
+    transport.setReadBudget(0, 0); // the last one too
+    EXPECT_FALSE(device.started(0));
+    transport.pump(0);
+    EXPECT_FALSE(device.started(0));
+
+    transport.setReadBudget(1000, 1000); // more than there are: all of them
+    transport.pump(0);
+    EXPECT_TRUE(device.started(47));
+    EXPECT_TRUE(device.started(kFirstAcl + 15));
+}
+
+TEST_F(UsbTransport, TheReadBudgetOfAClosedTransportIsIgnored)
+{
+    transport.setReadBudget(1, 0);
+    EXPECT_TRUE(device.stops.empty());
+}
+
+TEST_F(UsbTransport, TheOutTransferIsReadyOnlyWhenTheLastPacketHasGone)
+{
+    openStandard();
+    const UsbBytes packet = aclPacket(0x0042, 10);
+
+    EXPECT_TRUE(transport.aclOutReady());
+    ASSERT_TRUE(transport.sendAcl(packet.data(), static_cast<std::uint32_t>(packet.size())));
+    EXPECT_FALSE(transport.aclOutReady());
+    EXPECT_EQ(0u, device.waitedMicroseconds); // asking does not wait
+    device.deliver(kAclOut, {});
+    EXPECT_TRUE(transport.aclOutReady());
 }
 
 TEST_F(UsbTransport, AnAclPacketThatNeverLeavesFailsAfterOneSecond)

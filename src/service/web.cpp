@@ -220,9 +220,18 @@ bool HttpServer::start()
     m_listenFd = fd;
     m_port = m_wantedPort;
     m_stopping.store(false);
+    m_failed.store(false);
     m_acceptThread = std::thread([this] { acceptLoop(); });
     logLine("web: listening on port %d%s", m_port.load(), m_localOnly.load() ? " (this console only)" : "");
     return true;
+}
+
+void HttpServer::breakListenSocketForTest()
+{
+    if (m_listenFd >= 0)
+    {
+        shutdown(m_listenFd, SHUT_RDWR);
+    }
 }
 
 void HttpServer::stop()
@@ -278,9 +287,21 @@ void HttpServer::acceptLoop()
         pollfd waiting{m_listenFd, POLLIN, 0};
 
         // wake up regularly to notice that we are stopping
-        if (poll(&waiting, 1, 200) <= 0)
+        const int ready = poll(&waiting, 1, 200);
+
+        if (ready < 0 && errno != EINTR)
+        {
+            m_failed.store(true); // the socket is no good any more (the network went away and came back, say)
+            return;
+        }
+        if (ready <= 0)
         {
             continue;
+        }
+        if ((waiting.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+        {
+            m_failed.store(true);
+            return;
         }
 
         sockaddr_in peer{};
@@ -289,6 +310,15 @@ void HttpServer::acceptLoop()
 
         if (fd < 0)
         {
+            if (errno != EINTR && errno != ECONNABORTED && errno != EAGAIN && errno != EWOULDBLOCK)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50)); // never spin on an error
+                if (errno != EMFILE && errno != ENFILE && errno != ENOBUFS && errno != ENOMEM)
+                {
+                    m_failed.store(true);
+                    return;
+                }
+            }
             continue;
         }
         if (!reserveConnection())
@@ -456,6 +486,10 @@ HttpResponse HttpServer::route(std::string_view method, std::string_view path, s
         if (path == "/api/volume")
         {
             return postResponse(m_service.setVolume(queryValue(query, "v")));
+        }
+        if (path == "/api/reads")
+        {
+            return postResponse(m_service.setReads(queryValue(query, "events"), queryValue(query, "acl")));
         }
         if (path == "/api/network")
         {

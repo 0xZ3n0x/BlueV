@@ -59,7 +59,31 @@ process; nothing is re-detected per connection.
   transfers by hand and moving the clock when the transport waits
   (`tests/protocol/usb_hci_transport_test.cpp`).
 - `UsbHciTransport::sendAcl` uses a single output transfer and waits up to 1 s for the
-  previous one.
+  previous one. `aclOutReady()` says whether that transfer is free (it collects
+  finished transfers and never waits), so a caller with other work, the stream
+  loop reading the audio capture, does not sit inside `sendAcl`; `BtStack::canSend`
+  asks it. When the controller stops taking packets the transfer stays busy, which
+  is the flow control that matters when no reports are read (below).
+- **The device going away** (`IHciTransport::deviceLost`). When the console resets its
+  Bluetooth chip the open USB device vanishes and every `USB_FS_START` fails with
+  `errno 25`. A whole table of reads (64) failing in a row marks the transport lost: one log
+  line `hci: the controller's USB device is gone (errno N)`, no read is started again
+  (before this the loop retried at full speed and wrote 10,500 log lines in 7 s, and the
+  radio stayed "on" with a dead handle), `pump` only waits, `BtStack::linkLost()` is true so
+  a stream ends, and `BtStack::disconnect` does not wait for an answer. The service then
+  closes the radio and shows "Bluetooth chip reset by the console" (section 1 of
+  [program.md](program.md)). Only the first 8 failed starts are logged one by one.
+- **The read budget** (`IHciTransport::setReadBudget(events, acl)`,
+  `BtStack::setReadBudget`, [section 12f](shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23)):
+  how many of the 48 event and 16 ACL reads may wait. `pump` starts idle reads only
+  within the budget; reads above it that are waiting are stopped at once
+  (`USB_FS_STOP`, then `reap`), because a read that waits takes the next packet that
+  comes, whoever it was meant for. Stopping costs the controller nothing (0 ms
+  measured; the 10 s stall that was blamed on the stops was the volume-control
+  channel waiting for an answer, [section 9a](audio.md#9a-the-headsets-volume-avrcp-coreaudioavrcp)).
+  A larger budget starts reads again at the next `pump`. `BtStack::aclReadsOn()` and
+  `eventReadsOn()` tell whether anything can be answered: no ACL read means no L2CAP
+  or AVDTP answer will arrive, no event read means no command reply will.
 - The system's own traffic passes through the same controller, so replies to
   other parties' commands are counted and the first 50 are logged, not
   processed.
@@ -151,6 +175,39 @@ effect of [section 12](shared-chip.md#12-the-controller-is-shared-with-the-conso
 logged as `link role: ... we are the master`) the same setup ran 4.5 minutes
 with a game and audio and no loss, so far one run: not proven.
 
+**Tuning the link (`BtStack::tuneLink`, right after the link is encrypted).** The
+first page attempt asks for DM1 packets only (`setPageVariant`: odd attempts are the
+compatibility variant, no role switch), and nothing ever allowed the larger types
+afterwards. On the Slim the controller then moved only about 5.5 packets of 965 bytes a
+second to an Amazon Echo Dot where 47 were needed, and about 88% of the audio was
+dropped (2026-11-23). So `tuneLink` sends:
+
+- `Change Connection Packet Type` with `0xcc18` (DM1 DH1 DM3 DH3 DM5 DH5, every EDR
+  type allowed). The answer is the event `Connection Packet Type Changed` (`0x1d`),
+  logged as `link: packet types 0xcc18 in use` together with `Max Slots Change`
+  (`0x1b`, `max slots 5`). The same stream then ran at 47 packets a second.
+- `Write Link Policy Settings` 0: no sniff, hold or park on this link, so the device
+  cannot put it to sleep in the middle of a stream (`Mode Change`, `0x14`, is logged).
+- `Write Automatic Flush Timeout` 240 slots (150 ms). Media packets go out as
+  automatically flushable (the PB flag is `0x02`), and the default flush timeout is
+  "never": the controller repeated a packet until the device had it and every packet
+  behind it waited, so one bad moment became a stall. With the limit a stale packet is
+  dropped (`Flush Occurred`, `0x11`, logged) and the stream goes on. A different chip
+  (a MediaTek one, in another project's tests) is said to report completions much later
+  with it; the Marvell chip of the Slim did not.
+
+`BtStack::probeLink` sends `Read RSSI` and `Read Link Quality` (answers logged as
+`link: rssi ...`). It is only used while the event reads are on: the answer to a
+command is an event, and with no read waiting it goes to the console's own stack, which
+did not ask for it. Measured on the Slim with the speaker next to the console: RSSI
+-6 to -12 dBm, quality 255 of 255 (the chip reports a constant), so distance is not
+the cause of the stalls described in [12f](shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23).
+
+`BtStack::logEventCounts` (called from the stream status) logs how many events of each
+type came in the last window (`events: 13=368 11=2`), and the events `0x10` (hardware
+error), `0x11` (flush occurred), `0x1a` (data buffer overflow) and `0x1e` (QoS violation)
+are logged one by one (the first 40).
+
 **`encrypt_link`**: sends Authentication Requested and waits up to 18 s for
 authentication, sending the request again every 5 s as a nudge. A headset starts
 pairing by itself only seconds after the link is up, once it has looked at the
@@ -226,11 +283,16 @@ connection generation number) that new link is kept for the next session.
 - A tick runs once a second; the service uses it to publish snapshots and to
   honour stop requests during streaming.
 - **Flow control**: ACL credit counter plus timestamps of packets in flight.
-  `canSend` is true only with credit and at most 5 unconfirmed packets;
+  `canSend` is true only with the output transfer free (`aclOutReady`), credit and at
+  most 5 unconfirmed packets;
   packets without a completion report after 31 ms count as completed
   ("completions assumed"). Limits of 3 packets and 100 ms cap the stream near
   40 packets/s; a 44.1/48 kHz stream needs 49-53, and with those limits the
-  Slim dropped about 20 ms of audio every 10 s.
+  Slim dropped about 20 ms of audio every 10 s. With no event read waiting
+  ([12f](shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23)) no report
+  arrives at all: every completion is assumed after 31 ms and the output transfer
+  being free is the only real limit (the controller's buffers full means the transfer
+  stays busy). That ran at the full rate.
 
 Channel API: `openChannel` (one connection request, then configure requests
 every 6 s until the channel is `up` and `configured`), `closeChannel`,

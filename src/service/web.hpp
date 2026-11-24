@@ -49,6 +49,15 @@ class HttpServer
         m_localOnly.store(localOnly);
     }
 
+    // True when the accept loop ended because the listening socket failed (a network reset can
+    // do that); the service stops the server and starts it again.
+    bool failed() const
+    {
+        return m_failed.load();
+    }
+    // For tests: shuts the listening socket down under the accept loop, the way a failure would.
+    void breakListenSocketForTest();
+
     // The port in use; 0 while not listening.
     int port() const
     {
@@ -81,6 +90,7 @@ class HttpServer
     std::atomic<bool> m_localOnly{false};
     std::thread m_acceptThread;
     std::atomic<bool> m_stopping{false};
+    std::atomic<bool> m_failed{false};
 
     // number of connections being served
     std::atomic<int> m_active{0};

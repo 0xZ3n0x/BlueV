@@ -39,6 +39,11 @@ class ServiceHarness : public ::testing::Test
     // starts the service thread; false when the server did not come up
     bool startService(bool capturing = true);
     void stopService();
+    // breaks the web server's listening socket, as a network reset can
+    void breakWebServer()
+    {
+        m_service->breakWebServerForTest();
+    }
 
     // ---- HTTP ----
     int request(const std::string& method, const std::string& target, std::string& body);

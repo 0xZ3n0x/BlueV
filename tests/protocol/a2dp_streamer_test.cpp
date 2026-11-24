@@ -225,14 +225,120 @@ TEST_F(Stream, NoCompletionReportsAreHandledByAssumingThem)
     EXPECT_NEAR(215, static_cast<int>(speaker.media.size()), 25);
 }
 
-TEST_F(Stream, TheQueueIsTrimmedWhenTheAudioArrivesInBursts)
+TEST_F(Stream, ByDefaultTheStreamWaitsForNoPacketsAndAsksTheControllerNothing)
 {
     ready();
-    audio.minIntervalMs = 200; // 9600 frames at once
-    endAfter(3000);
+    endAfter(11000); // past the first status lines
     streamer.run(true);
-    EXPECT_FALSE(sink.has("trimmed 0"));
-    EXPECT_TRUE(sink.has("stream: ended after 3 s"));
+    ASSERT_FALSE(controller.readBudgets.empty());
+    EXPECT_EQ(std::make_pair(0, 0), controller.readBudgets.front());
+    EXPECT_TRUE(sink.has("stream: reads kept while streaming: 0 event, 0 ACL"));
+    // no Read RSSI, no Read Link Quality: nobody would read the answer, the console's stack would get it
+    EXPECT_FALSE(controller.sawCommand(0x1405));
+    EXPECT_FALSE(controller.sawCommand(0x1403));
+}
+
+TEST_F(Stream, WhenEventsAreReadTheLinkIsProbedEveryStatusLine)
+{
+    session.setStreamReads(1, 0);
+    ready();
+    endAfter(11000);
+    streamer.run(true);
+    EXPECT_EQ(std::make_pair(1, 0), controller.readBudgets.front());
+    EXPECT_TRUE(controller.sawCommand(0x1405));
+    EXPECT_TRUE(controller.sawCommand(0x1403));
+}
+
+TEST_F(Stream, TheReadsCanBeAskedForAgainWhileStreaming)
+{
+    ready();
+    const auto begun = clock.nowMs();
+
+    audio.onRead = [&] {
+        if (clock.nowMs() - begun > 3000)
+        {
+            session.setStreamReads(-1, -1); // what POST /api/reads?events=-1&acl=-1 does
+        }
+    };
+    endAfter(6000);
+    streamer.run(true);
+    EXPECT_EQ(std::make_pair(0, 0), controller.readBudgets.front());
+    EXPECT_EQ(std::make_pair(1000, 1000), controller.readBudgets.back());
+}
+
+TEST_F(Stream, TheBitrateFallsWhenTheQueueBacksUpAndComesBackWhenItIsCalm)
+{
+    ready();
+    const auto begun = clock.nowMs();
+    bool stalled = false;
+
+    // the controller takes nothing from 3 s to 4.5 s: the FIFO fills and is cut
+    audio.onRead = [&] {
+        const auto t = clock.nowMs() - begun;
+
+        controller.aclOutBusy = t > 3000 && t < 4500;
+        stalled = stalled || controller.aclOutBusy;
+    };
+    endAfter(30000);
+    streamer.run(true);
+    ASSERT_TRUE(stalled);
+    EXPECT_TRUE(sink.has("sbc: bitpool 36 (")) << sink.all(); // 40 - 4
+    EXPECT_TRUE(sink.has("sbc: bitpool 28 (")) << sink.all(); // down to the floor
+    // after ten calm seconds it climbs again, to the bitpool the speaker was set to
+    EXPECT_TRUE(sink.has("sbc: bitpool 40 ("));
+    EXPECT_NE(std::string::npos, sink.all().rfind("sbc: bitpool 40 (")) << "it ends at the negotiated bitpool";
+}
+
+TEST_F(Stream, WhenTheControllerStopsTakingPacketsTheStreamPausesAndGoesOnWhenItDoes)
+{
+    ready();
+    const auto begun = clock.nowMs();
+
+    // the controller is stuck from 2 s to 3.5 s into the stream
+    audio.onRead = [&] {
+        const auto t = clock.nowMs() - begun;
+
+        controller.aclOutBusy = t > 2000 && t < 3500;
+    };
+    endAfter(8000);
+    streamer.run(true);
+    EXPECT_TRUE(sink.has("stream: the controller stopped taking packets, pausing 300 ms")) << sink.all();
+    EXPECT_TRUE(sink.has("pausing 600 ms"));   // still stuck after the first pause, so the next one is longer
+    EXPECT_FALSE(sink.has("pausing 2000 ms")); // but it was taking packets again before the longest
+
+    // and the stream went on afterwards: packets after the stuck stretch
+    EXPECT_GT(speaker.media.size(), 200u);
+}
+
+TEST_F(Stream, TheQueueIsTrimmedWhenAStallLetsTheAudioPileUp)
+{
+    ready();
+    const auto begun = clock.nowMs();
+    bool stalled = false;
+
+    // a second without a round of the loop (the radio, say): the capture has a second of audio
+    // waiting, long after the first 3 s of the stream, where old audio is dropped and counted apart
+    audio.onRead = [&] {
+        if (!stalled && clock.nowMs() - begun > 5000)
+        {
+            stalled = true;
+            clock.advance(1000);
+        }
+    };
+    endAfter(9000);
+    streamer.run(true);
+    ASSERT_TRUE(stalled);
+    EXPECT_FALSE(sink.has("trimmed 0")) << sink.all();
+}
+
+TEST_F(Stream, AudioThePileUpHadKeptBeforeTheStartIsDroppedNotPlayed)
+{
+    ready();
+    audio.minIntervalMs = 200; // 9600 frames at once, as a capture that had not been read for a while gives
+    endAfter(10500);           // long enough for the 10 s status lines
+    streamer.run(true);
+    EXPECT_TRUE(sink.has("start drop "));
+    EXPECT_FALSE(sink.has("start drop 0 ms"));
 }
 
 TEST_F(Stream, AFrameThatDoesNotFitIsRefused)

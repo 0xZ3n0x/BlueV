@@ -127,6 +127,14 @@ PS5 Pro run (MediaTek `0e8d:3605`) the WH-1000XM5's slider was present on every
 stream. Not tried on a headset without absolute volume (that path is covered by
 the PC tests only).**
 
+**Not while the ACL reads are off.** `Avrcp::service` returns at once when
+`BtStack::aclReadsOn()` is false ([section 12f](shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23)):
+opening the channel waits up to 10 s for an answer that cannot come, and in a stream
+that read nothing that wait froze the whole loop (and its audio capture) for 10 s right
+after the reads were cut back. So a stream on the internal chip, which reads nothing,
+has no volume slider; the speaker's own buttons work as before. The headset can still
+open the channel itself while the reads are on (during the connect).
+
 What it does: shows the headset's own volume on the page, lets the page set it,
 and announces changes made with the headset's buttons. It is the headset's
 volume only: the console's volume and the captured PCM are never touched. A
@@ -185,26 +193,74 @@ SET_ABSOLUTE_VOLUME), packet type and parameter length.
 
 ## 10. Audio streaming loop (`A2dpStreamer::run`)
 
-The encoder is set up; at most 8 SBC frames go into a packet (bounded by the
-headset's MTU and the ACL size). The loop runs until the link drops, the media
-channel closes, or a stop is requested:
+The encoder is set up; at most 10 SBC frames go into a packet (bounded by the
+headset's MTU and the ACL size): at bitpool 40 that is 10 frames of 93 bytes, 26 ms of
+audio and 943 bytes, 37.5 packets a second. Fewer, larger packets are on purpose: on the
+Slim the limit was the number of packets, not the bytes (at bitpool 28, 40% fewer bytes,
+the packet rate did not change; with 10 frames the chip took every packet at once). The
+loop runs until the link drops, the media channel closes, or a stop is requested. Each
+round:
 
 1. **Capture state.** Without capture, the queue is filled with wall-clock
    silence (so the stream does not stall) and `AvcapCapture::restart` is tried
-   every 500 ms. With capture, records are read.
+   every 500 ms. With capture, records are read until a read returns nothing.
 2. **FIFO** (24000 stereo frames, int16): 48 kHz float is clamped to +-1 and
    scaled by 32767. A 44.1 kHz sink gets linear resampling. A capture error
    resets the FIFO and enters the waiting state.
-3. **Latency trim:** if the FIFO exceeds ~50 ms (rate/20) the excess is dropped
-   ("trimmed"); this keeps the stream from falling more than ~160 ms behind.
-4. **Packetising:** when a packet's worth of samples is queued and
-   `canSend()` is true, a packet is sent. Sending pauses while it is more
-   than 25 ms ahead of the wall clock and the FIFO is below 80 ms; at 80 ms or
-   more there is no rate limit. A packet is a 12-byte RTP header (v2, PT 96,
-   seq, timestamp = samples sent, SSRC 1) + the SBC frame count byte + the SBC
-   frames, sent to the L2CAP media channel with `BtStack::send`.
-5. `poll(0)` after a send, `poll(2)` otherwise, so events and credits are
-   processed.
-6. Every 10 s a status line is logged (packets, queue ms, trimmed, overruns,
-   restarts, credits, assumed completions, missing reports). The same numbers
-   feed `/api/status`.
+3. **Keeping the delay short.** For the first 3 s of a stream the FIFO is cut back to
+   60 ms (`kStartFlushMs`, `kStartKeepMs`): whatever the capture had piled up while the
+   link was set up is old audio, and playing it only delays the sound. It is counted
+   apart (`start drop N ms` in the `timing:` line). After that the FIFO may hold 150 ms
+   (`kBacklogMs`); a stall of the radio fills it, and what is beyond 150 ms is cut from
+   the front in whole packets (`trimmed`). 300 ms was used before: it absorbed short
+   stalls without a gap but added up to 300 ms of delay that took about 20 s to drain.
+4. **Rate adaptation** (`adaptBitrate`, every 250 ms after the first second): when the
+   FIFO was cut or holds more than 150 ms the SBC bitpool goes down by 4, to a floor of
+   28 (about 207 kbit/s at 48 kHz), at most every 0.5 s; after 10 s without trouble it
+   goes up by 2 every 2 s to the bitpool the speaker was configured with. libsbc reads
+   the bitpool from the encoder for every frame and the frame carries it in its header,
+   so no new AVDTP configuration is needed. The Echo Dot played through the changes.
+   (Another project reports that this made the packet rate collapse on a MediaTek chip;
+   it did not on the Slim's Marvell chip.)
+5. **Back-off** (`backedOff`): when the output transfer has not been free for 150 ms
+   the controller has stopped taking packets (its buffers are full, the speaker is
+   not answering). It keeps trying to send what it has, and on a chip that also serves
+   a gamepad that is radio time the gamepad does not get. Sending then pauses for
+   300 ms, then 600 ms, doubling up to 2 s, back to 300 ms after 4 s without a pause
+   (`stream: the controller stopped taking packets, pausing N ms`). Not measured to
+   help yet; it was in the run in which both gamepads stayed connected (below).
+6. **Packetising:** when a packet's worth of samples is queued and `canSend()` is true
+   (the output transfer free, credit, at most 5 unconfirmed), a packet is sent. Sending
+   pauses while it is more than 25 ms ahead of the wall clock and the FIFO is below
+   80 ms; at 80 ms or more there is no rate limit. A packet is a 12-byte RTP header (v2,
+   PT 96, seq, timestamp = samples sent, SSRC 1) + the SBC frame count byte + the SBC
+   frames, sent to the L2CAP media channel with `BtStack::send`, which never waits
+   (the loop keeps reading the capture while the chip is busy).
+7. `poll(0)` after a send, `poll(2)` otherwise, so events and credits are
+   processed (when events are read at all).
+8. **Reads** (`applyReadBudget`): the service lowers the controller's reads before
+   `stream` is called ([12f](shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23)),
+   and the loop applies the numbers of `A2dpSession::setStreamReads` (default none; set
+   with `POST /api/reads?events=N&acl=M`, -1 = all) when the stream starts and within
+   half a second of a change.
+9. Every 10 s three lines are logged and feed `/api/status`: `stream:` (packets, capture
+   records, queue, trimmed, overruns, restarts, credits, assumed completions, reports
+   missing, other links), `timing:` (send time average and maximum, the longest round of
+   the loop, rounds over 40 ms, the bitpool and its range, audio dropped at the start) and
+   `events:`. A part of a round that takes 250 ms or more is logged as
+   `stream: <part> took N ms` (the first 20). `other links` counts ACL packets of other
+   connections that the setup took; with no ACL read it stops growing.
+
+What was measured (PS5 Slim, internal chip, an Amazon Echo Dot, SBC 48 kHz, 2026-11-23/24):
+
+| Run | Packets/s | Audio dropped |
+|---|---|---|
+| unchanged BlueV 0.5.0 | 5.5 | about 88% |
+| packet types allowed, 8 frames/packet | 47 at first, then falling | growing |
+| 10 frames, 300 ms FIFO, nothing blocking | 37.5 | a stall every 1-2 min (0.4-1.5 s) |
+| both gamepads connected and untouched, 10 min | 37.5 | 5.1 s in 10 min (0.85%), one patch of ~15 s |
+| both gamepads off, 4 min | 37.5 | 3.4 s in 4 min (1.4%), two patches of 30-40 s |
+
+The rough patches (the controller stops taking packets for 10-40 s, the bitpool drops
+to 28 and audio is lost) are not caused by the capture, the loop or the reads; see
+[12f](shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23).

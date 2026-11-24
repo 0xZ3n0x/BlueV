@@ -55,6 +55,6 @@ byte for byte.
 | [Bluetooth stack](bluetooth.md) | The USB transport, controller setup, connections, L2CAP and SDP. |
 | [Adapter firmware](adapter-firmware.md) | Uploading the firmware some USB adapters need. |
 | [Audio](audio.md) | Capture, A2DP setup, the headset volume and the streaming loop. |
-| [The console's chip](shared-chip.md) | What sharing the chip with the console means, and what was tried and measured. |
+| [The console's chip](shared-chip.md) | What sharing the chip with the console means, and what was tried and measured, including the reads that wait only while something needs them (12f). |
 | [Design decisions](design.md) | Choices made, and what was tried and not chosen. |
 | [TODO](todo.md) | Open work. |

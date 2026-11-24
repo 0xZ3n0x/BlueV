@@ -99,6 +99,10 @@ bool UsbHciTransport::open()
         std::memset(m_pending, 0, sizeof m_pending);
         m_events.clear();
         m_acl.clear();
+        m_eventBudget = m_eventReads;
+        m_aclBudget = m_aclReads;
+        m_startFailures = 0;
+        m_gone = false;
         logLine("hci: controller open alongside the system, %d event and %d ACL reads (ep ev=%#x acl_in=%#x "
                 "acl_out=%#x)",
                 m_eventReads, m_aclReads, m_layout.events, m_layout.aclIn, m_layout.aclOut);
@@ -164,7 +168,7 @@ bool UsbHciTransport::command(std::uint16_t opcode, const std::uint8_t* params, 
 // running.
 void UsbHciTransport::armReads(int first, int count, std::uint32_t length)
 {
-    for (int i = first; i < first + count; i++)
+    for (int i = first; i < first + count && !m_gone; i++)
     {
         if (m_pending[i])
         {
@@ -173,13 +177,59 @@ void UsbHciTransport::armReads(int first, int count, std::uint32_t length)
         if (m_device.start(i, length))
         {
             m_pending[i] = true;
+            m_startFailures = 0;
+            continue;
         }
-        else
+        m_dgStartError++;
+        if (m_dgStartError <= kStartErrorsLogged)
         {
-            m_dgStartError++;
             logLine("hci: USB_FS_START %d errno=%d", i, m_device.lastError());
         }
+        // A whole table of reads that cannot be started is not a hiccup: the device is gone (errno 25 on
+        // the console when its Bluetooth chip was reset). Retrying in a loop only fills the log.
+        if (++m_startFailures >= kGoneAfterFailures)
+        {
+            m_gone = true;
+            logLine("hci: the controller's USB device is gone (errno %d), %u starts failed; no read is started "
+                    "again, the radio has to be started again",
+                    m_device.lastError(), m_dgStartError);
+        }
     }
+}
+
+// Stops the running reads from `from` up to (not including) `to`. A read left waiting
+// would take the next packet that comes, whoever it was meant for.
+void UsbHciTransport::stopReads(int from, int to)
+{
+    for (int i = from; i < to; i++)
+    {
+        if (m_pending[i])
+        {
+            m_device.stop(i);
+            m_pending[i] = false;
+        }
+    }
+    reap(); // the completions of the stopped reads, before any of them is started again
+}
+
+void UsbHciTransport::setReadBudget(int events, int acl)
+{
+    if (!m_open)
+    {
+        return;
+    }
+    const int e = events < 0 ? 0 : (events > m_eventReads ? m_eventReads : events);
+    const int a = acl < 0 ? 0 : (acl > m_aclReads ? m_aclReads : acl);
+
+    if (e == m_eventBudget && a == m_aclBudget)
+    {
+        return;
+    }
+    m_eventBudget = e;
+    m_aclBudget = a;
+    stopReads(kEventFirst + e, kEventFirst + m_eventReads);
+    stopReads(kAclFirst + a, kAclFirst + m_aclReads);
+    logLine("hci: keeping %d of %d event reads and %d of %d ACL reads waiting", e, m_eventReads, a, m_aclReads);
 }
 
 // Submits any idle async reads, then waits for something to land in a queue
@@ -188,16 +238,26 @@ bool UsbHciTransport::pump(std::uint32_t timeoutMs)
 {
     const std::uint64_t deadline = m_clock.nowMs() + timeoutMs;
 
+    if (m_gone)
+    {
+        m_device.wait(1000); // nothing can arrive any more; do not spin
+        return false;
+    }
+
     for (;;)
     {
-        armReads(kEventFirst, m_eventReads, m_eventLength);
-        armReads(kAclFirst, m_aclReads, kUsbTransferBytes);
+        armReads(kEventFirst, m_eventBudget, m_eventLength);
+        armReads(kAclFirst, m_aclBudget, kUsbTransferBytes);
 
         const std::uint32_t r = reap();
 
         if (m_events.count() != 0 || m_acl.count() != 0)
         {
             return true;
+        }
+        if (m_gone)
+        {
+            return false;
         }
         if (r == 0)
         {
@@ -314,6 +374,15 @@ bool UsbHciTransport::sendAcl(const std::uint8_t* packet, std::uint32_t length)
     }
     m_pending[kAclOut] = true;
     return true;
+}
+
+bool UsbHciTransport::aclOutReady()
+{
+    if (m_pending[kAclOut])
+    {
+        reap();
+    }
+    return !m_pending[kAclOut];
 }
 
 int UsbHciTransport::nextEvent(std::uint8_t* out, int max)

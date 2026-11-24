@@ -268,6 +268,30 @@ Service::PostResult Service::setQuality(std::string_view quality)
     return PostResult::Ok;
 }
 
+Service::PostResult Service::setReads(std::string_view events, std::string_view acl)
+{
+    const auto number = [](std::string_view text, int maximum, int& out) {
+        const std::string copy(text);
+        char* end = nullptr;
+        const long value = std::strtol(copy.c_str(), &end, 10);
+
+        if (copy.empty() || end == nullptr || *end != 0 || value < -1 || value > maximum)
+        {
+            return false;
+        }
+        out = static_cast<int>(value);
+        return true;
+    };
+    int e = 0, a = 0;
+
+    if (!number(events, 48, e) || !number(acl, 16, a))
+    {
+        return PostResult::BadValue;
+    }
+    m_radio.setStreamReads(e, a);
+    return PostResult::Ok;
+}
+
 Service::PostResult Service::setNetwork(std::string_view who)
 {
     if (who != "lan" && who != "local")
@@ -554,6 +578,7 @@ void Service::runSession(bool capturing, const BdAddr* address)
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
     };
 
+    m_radio.setReadsActive(true);
     if (address == nullptr)
     {
         m_disconnectRequested.store(false); // a device dialled in: an old request does not end this session
@@ -595,7 +620,9 @@ void Service::runSession(bool capturing, const BdAddr* address)
                 secondsSince(begun) - linkSeconds, secondsSince(begun));
         tick();
         setState(State::Streaming, "streaming to %s", m_radio.peerName().c_str());
+        m_radio.setReadsActive(false); // a stream only writes
         m_radio.stream(capturing);
+        m_radio.setReadsActive(true);
         m_radio.stopAudio();
     }
     m_radio.disconnect();
@@ -608,6 +635,7 @@ void Service::runSession(bool capturing, const BdAddr* address)
     }
     m_current.reset();
     publishStream(0, 0, 0, 0);
+    m_radio.setReadsActive(false);
     setState(State::Idle, "%s", failure != nullptr ? failure : "stream ended");
     publishDevices();
 }
@@ -659,6 +687,7 @@ bool Service::openRadio(const std::string& node)
         setState(State::Idle, "radio off: %s", why.c_str());
         return false;
     }
+    m_radio.setReadsActive(false); // the controller is set up: nothing waits for packets until something needs them
     m_radio.setTick([this] { tick(); });
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -677,6 +706,7 @@ void Service::closeRadio()
     {
         return;
     }
+    m_radio.setReadsActive(true); // closing asks the controller things
     m_radio.close();
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -763,12 +793,38 @@ bool Service::run(bool capturing)
     autostartRadio();
 
     auto lastServerTry = std::chrono::steady_clock::now();
+    const auto started = lastServerTry;
+    auto lastFlush = lastServerTry;
+    auto lastBeat = lastServerTry;
 
     while (!m_quit.load())
     {
         if (checkQuitSignal())
         {
             continue;
+        }
+        // tick() flushes the log once a second while the radio is on; with the radio
+        // off nothing did, so a copy that disappeared left nothing in the file
+        const auto now = std::chrono::steady_clock::now();
+
+        if (now - lastFlush >= std::chrono::seconds(1))
+        {
+            lastFlush = now;
+            flushLog();
+            if (m_serverUp && m_server.failed())
+            {
+                // the listening socket died (the network went down and up, say) while the program lived on:
+                // the page was gone until the program was started again
+                logLine("web: the listening socket failed, starting the server again");
+                m_server.stop();
+                m_serverUp = m_server.start();
+            }
+        }
+        if (now - lastBeat >= std::chrono::seconds(60))
+        {
+            lastBeat = now;
+            logLine("alive: up %ld min, radio %s, web %s", static_cast<long>((now - started) / std::chrono::minutes(1)),
+                    radioIsOn() ? "on" : "off", m_serverUp ? "up" : "down");
         }
         applyNetwork();
         // started at boot, the network may not be up yet
@@ -791,7 +847,9 @@ bool Service::run(bool capturing)
             break;
         case Command::Scan:
             setState(State::Scanning, "scanning");
+            m_radio.setReadsActive(true);
             m_radio.scan(kScanMilliseconds);
+            m_radio.setReadsActive(false);
             publishDevices();
             setState(State::Idle, "scan finished");
             break;
@@ -806,6 +864,16 @@ bool Service::run(bool capturing)
             if (!radioIsOn())
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                break;
+            }
+            if (m_radio.deviceLost())
+            {
+                // the console reset its Bluetooth chip under us: the open device is dead, and holding on to
+                // it floods the log and may keep the console from taking the chip back
+                logLine("service: the controller's USB device is gone, closing the radio");
+                notify("Bluetooth chip reset by the console: BlueV's radio is closed. Start it again.");
+                closeRadio();
+                publishDevices();
                 break;
             }
             m_radio.poll(200);

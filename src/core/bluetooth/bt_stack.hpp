@@ -142,10 +142,47 @@ class BtStack
     {
         return m_connDone && m_connStatus == 0 && !m_disconnected;
     }
+    // Asks the controller for the link RSSI and quality (logged on the answer).
+    void probeLink();
+
+    // See IHciTransport::setReadBudget().
+    void setReadBudget(int events, int acl)
+    {
+        m_aclReadsOn = acl != 0;
+        m_eventReadsOn = events != 0;
+        m_transport.setReadBudget(events, acl);
+    }
+    // False once the event reads were cut back: a command sent then gets its answer taken by
+    // the console's own stack instead of ours.
+    bool eventReadsOn() const
+    {
+        return m_eventReadsOn;
+    }
+    // Whether the controller took the last packet we sent (the USB transfer is free again).
+    bool aclOutReady()
+    {
+        return m_transport.aclOutReady();
+    }
+    // False once the ACL reads were cut back: nothing that needs an answer from the
+    // device (opening a channel, say) can work then, and it would wait for nothing.
+    bool aclReadsOn() const
+    {
+        return m_aclReadsOn;
+    }
+
+    // Logs how many events of each type came since the last call (the stream calls
+    // it with its own statistics), then starts counting again.
+    void logEventCounts();
+
     // The device hung up, or the controller reported the link gone.
     bool linkLost() const
     {
-        return m_disconnected;
+        return m_disconnected || m_transport.deviceLost();
+    }
+    // The controller itself is gone (see IHciTransport::deviceLost).
+    bool deviceLost() const
+    {
+        return m_transport.deviceLost();
     }
     // the console's chip, where a packet for us can go to the console instead
     bool sharedChip() const
@@ -226,6 +263,7 @@ class BtStack
 
   private:
     // commands
+    void tuneLink(const std::uint8_t* handle);
     // Sends a command and notes it, so its reply can be told from the console's.
     bool cmd(std::uint16_t opcode, const std::uint8_t* params = nullptr, std::uint8_t length = 0);
     // Whether a command reply answers a command we sent recently (the console's
@@ -384,6 +422,10 @@ class BtStack
     std::uint32_t m_aclMtu = 0;
     int m_credits = 0;
     int m_creditsMax = 0;
+    std::uint32_t m_eventCounts[256] = {};
+    int m_oddEventsLogged = 0;
+    bool m_aclReadsOn = true;
+    bool m_eventReadsOn = true;
     long m_sent = 0, m_reported = 0, m_assumed = 0;
     long m_otherCompleted = 0, m_otherAcl = 0;
     static constexpr int kInFlightSlots = 64;

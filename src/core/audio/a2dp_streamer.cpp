@@ -19,12 +19,22 @@ namespace bluev
 namespace
 {
 
-constexpr int kRecordBytes = 0x2000;   // the most one capture read returns
-constexpr int kMaxFramesPerPacket = 8; // SBC frames in one media packet
+constexpr int kRecordBytes = 0x2000; // the most one capture read returns
+constexpr int kMaxFramesPerPacket =
+    10; // SBC frames in one media packet (fewer, larger packets: the controller handles about 45 a second at best)
+constexpr std::uint64_t kStartFlushMs =
+    3000;                                  // for this long the fifo is kept short: what the capture had piled up is old
+constexpr int kStartKeepMs = 60;           // ... down to this much
+constexpr int kBacklogMs = 150;            // the longest the fifo may get after that (a stall of the radio fills it)
+constexpr std::uint64_t kLightAfterMs = 0; // the stream is this old before the reads are cut back
+constexpr std::uint64_t kStuckMs = 150;    // the controller has not taken the last packet for this long
+constexpr int kFirstPauseMs = 300;
+constexpr int kLongestPauseMs = 2000;
+constexpr int kBitpoolFloor = 28; // lowest bitpool the rate adaptation goes to (about 207 kbit/s at 48 kHz)
 
 // One run of the stream, from the first packet to the end of the link. Each
 // round of the loop: take what the capture has (or, while it has nothing,
-// silence at the pace of the clock) into the fifo, cut the fifo back to 50 ms
+// silence at the pace of the clock) into the fifo, cut the fifo back to 300 ms
 // when it has grown beyond that, send as many whole packets as the flow control
 // allows, publish the numbers, then let the controller work (poll) for 2 ms, or
 // not at all after sending, so that the next packet is not late.
@@ -54,7 +64,11 @@ class StreamRun
     void feedSilenceAndRestart();
     void drainCapture();
     bool sendPackets(std::uint32_t& pollMs);
+    bool backedOff();
     void publishNumbers();
+    void adaptBitrate();
+    void applyReadBudget();
+    void setBitpool(int bitpool);
     void logStatus();
     int queueMs() const
     {
@@ -74,7 +88,15 @@ class StreamRun
     std::size_t m_codesize = 0, m_framelen = 0;
     int m_framesPerPacket = 0;
     int m_framesTarget = 0; // PCM frames in one packet
-    int m_trimLimit = 0;    // 50 ms
+    int m_trimLimit = 0;    // 150 ms
+    int m_startLimit = 0;   // 60 ms
+    std::int64_t m_startDropped = 0;
+    int m_bitpool = 0, m_bitpoolMin = 0, m_bitpoolMax = 0; // the one in use, and the range it moves in
+    std::uint64_t m_lastAdapt = 0, m_lastChange = 0, m_lastStress = 0;
+    std::int64_t m_trimmedAtAdapt = 0;
+    std::uint64_t m_lastBudget = 0;
+    int m_appliedEvents = -2, m_appliedAcl = -2; // what was last handed to the transport
+    bool m_budgetApplied = false;
 
     std::vector<float> m_rec;                     // capture record (float PCM)
     std::uint8_t m_pkt[kMediaHeaderBytes + 1096]; // room for the largest frame BtStack::send accepts
@@ -87,6 +109,31 @@ class StreamRun
     std::int64_t m_filled = 0, m_sentSamples = 0, m_trimmed = 0;
     std::uint32_t m_seq = 1;
     int m_packets = 0, m_records = 0, m_restarts = 0;
+
+    // timing, per 10 s window: the longest send, the longest round of the loop and
+    // how many rounds took over 40 ms (the capture ring holds about 2 x that)
+    std::uint64_t m_sendMaxMs = 0, m_sendTotalMs = 0, m_loopMaxMs = 0;
+    int m_sendCount = 0, m_slowLoops = 0;
+    int m_slowSectionsLogged = 0;
+
+    // When the controller stops taking packets (its buffers full, the speaker not answering) it
+    // keeps trying to send what it has, and with a second link on the same radio (the gamepads)
+    // that is time they do not get. So we stop adding to it for a while, longer each time.
+    std::uint64_t m_busySince = 0, m_pauseUntil = 0, m_lastPause = 0;
+    int m_pauseMs = kFirstPauseMs, m_pauses = 0;
+
+    // Logs a part of the loop that took long: 10 s freezes were seen right after the reads
+    // were cut back, and the log should say which part it was.
+    void noteSection(const char* name, std::uint64_t begunMs)
+    {
+        const std::uint64_t took = m_clock.nowMs() - begunMs;
+
+        if (took >= 250 && m_slowSectionsLogged < 20)
+        {
+            m_slowSectionsLogged++;
+            logLine("stream: %s took %llu ms", name, static_cast<unsigned long long>(took));
+        }
+    }
 };
 
 // The encoder, and how many SBC frames go into one packet: what the device's
@@ -124,7 +171,15 @@ bool StreamRun::prepareEncoder()
         return false;
     }
     m_framesTarget = m_framesPerPacket * static_cast<int>(m_codesize / 4);
-    m_trimLimit = static_cast<int>(m_sc.rate / 20);
+    m_trimLimit = static_cast<int>(m_sc.rate) * kBacklogMs / 1000; // a short stall of the radio is waited out, not cut
+    m_startLimit = static_cast<int>(m_sc.rate) * kStartKeepMs / 1000;
+    m_bitpoolMax = static_cast<int>(m_sc.bitpool);
+    m_bitpoolMin = m_bitpoolMax < kBitpoolFloor ? m_bitpoolMax : kBitpoolFloor;
+    if (m_bitpoolMin < m_sc.poolMin)
+    {
+        m_bitpoolMin = m_sc.poolMin;
+    }
+    m_bitpool = m_bitpoolMax;
     return true;
 }
 
@@ -192,11 +247,50 @@ void StreamRun::drainCapture()
     }
 }
 
+// True while sending is paused because the controller stopped taking packets.
+bool StreamRun::backedOff()
+{
+    const std::uint64_t now = m_clock.nowMs();
+
+    if (now < m_pauseUntil)
+    {
+        return true;
+    }
+    if (m_bt.aclOutReady())
+    {
+        m_busySince = 0;
+        if (m_lastPause != 0 && now - m_lastPause > 4000)
+        {
+            m_pauseMs = kFirstPauseMs; // it has been well for a while
+            m_lastPause = 0;
+        }
+        return false;
+    }
+    if (m_busySince == 0)
+    {
+        m_busySince = now;
+        return false;
+    }
+    if (now - m_busySince < kStuckMs)
+    {
+        return false;
+    }
+    m_busySince = 0;
+    m_pauseUntil = now + static_cast<std::uint64_t>(m_pauseMs);
+    m_lastPause = m_pauseUntil;
+    if (m_pauses++ < 20)
+    {
+        logLine("stream: the controller stopped taking packets, pausing %d ms", m_pauseMs);
+    }
+    m_pauseMs = m_pauseMs * 2 > kLongestPauseMs ? kLongestPauseMs : m_pauseMs * 2;
+    return true;
+}
+
 // Pack and send what the flow control allows. `pollMs` becomes 0 after a send,
 // so that the next packet is not late. False when the stream cannot go on.
 bool StreamRun::sendPackets(std::uint32_t& pollMs)
 {
-    if (m_fifo.size() < m_framesTarget || !m_bt.canSend())
+    if (m_fifo.size() < m_framesTarget || backedOff() || !m_bt.canSend())
     {
         return true;
     }
@@ -229,7 +323,17 @@ bool StreamRun::sendPackets(std::uint32_t& pollMs)
             off += static_cast<int>(written);
         }
         m_fifo.dropFront(m_framesTarget);
-        if (!m_bt.send(m_media.theirCid, m_pkt, off))
+        const std::uint64_t sendStart = m_clock.nowMs();
+        const bool sent = m_bt.send(m_media.theirCid, m_pkt, off);
+        const std::uint64_t sendMs = m_clock.nowMs() - sendStart;
+
+        m_sendTotalMs += sendMs;
+        m_sendCount++;
+        if (sendMs > m_sendMaxMs)
+        {
+            m_sendMaxMs = sendMs;
+        }
+        if (!sent)
         {
             logLine("media: send failed after %d packets", m_packets);
             return false;
@@ -243,6 +347,77 @@ bool StreamRun::sendPackets(std::uint32_t& pollMs)
         }
     } while (m_bt.canSend());
     return true;
+}
+
+void StreamRun::setBitpool(int bitpool)
+{
+    m_bitpool = bitpool;
+    m_enc.bitpool = static_cast<std::uint8_t>(bitpool);
+    m_framelen = sbc_get_frame_length(&m_enc);
+    m_lastChange = m_clock.nowMs();
+    logLine("sbc: bitpool %d (%zu-byte frames)", bitpool, m_framelen);
+}
+
+// The controller takes what the radio can carry, and that changes with the
+// room and with what the console's own Bluetooth does. When the fifo backs up
+// (or had to be cut) the rate goes down quickly; after ten calm seconds it goes
+// up again, a little at a time, to the bitpool the sink negotiated. libsbc
+// reads the bitpool from the encoder for every frame, and each frame carries
+// it in its header, so a change needs no new A2DP configuration.
+void StreamRun::adaptBitrate()
+{
+    const std::uint64_t now = m_clock.nowMs();
+
+    if (now - m_lastAdapt < 250 || now - m_streamStart < 1000) // the first second is a burst of backlog
+    {
+        return;
+    }
+    m_lastAdapt = now;
+
+    const bool stressed = m_trimmed > m_trimmedAtAdapt || queueMs() > 150;
+
+    m_trimmedAtAdapt = m_trimmed;
+    if (stressed)
+    {
+        m_lastStress = now;
+        if (m_bitpool > m_bitpoolMin && now - m_lastChange >= 500)
+        {
+            setBitpool(m_bitpool - 4 < m_bitpoolMin ? m_bitpoolMin : m_bitpool - 4);
+        }
+    }
+    else if (m_bitpool < m_bitpoolMax && now - m_lastStress >= 10000 && now - m_lastChange >= 2000)
+    {
+        setBitpool(m_bitpool + 2 > m_bitpoolMax ? m_bitpoolMax : m_bitpool + 2);
+    }
+}
+
+// The console's own Bluetooth stack shares the chip, and every read we keep waiting
+// takes packets from it, replies to its commands and a gamepad's connection requests
+// among them. Setup needs many reads; a stream that only writes does not, so after
+// the first seconds the reads are cut back to what the service says (none,
+// unless told otherwise).
+void StreamRun::applyReadBudget()
+{
+    const std::uint64_t now = m_clock.nowMs();
+
+    if (now - m_streamStart < kLightAfterMs || now - m_lastBudget < 500)
+    {
+        return;
+    }
+    m_lastBudget = now;
+
+    const int events = m_session.streamEvents();
+    const int acl = m_session.streamAcl();
+
+    if (events == m_appliedEvents && acl == m_appliedAcl)
+    {
+        return;
+    }
+    m_appliedEvents = events;
+    m_appliedAcl = acl;
+    m_budgetApplied = true;
+    m_bt.setReadBudget(events < 0 ? 1000 : events, acl < 0 ? 1000 : acl);
+    logLine("stream: reads kept while streaming: %d event, %d ACL (-1 = all)", events, acl);
 }
 
 // numbers for the web interface, a few times a second
@@ -275,6 +450,18 @@ void StreamRun::logStatus()
             m_packets, m_records, queueMs(), static_cast<long>(m_trimmed), m_audio.overruns(), m_restarts,
             m_capturing ? "capturing" : "waiting for audio", m_bt.credits(), m_bt.completionsAssumed(),
             m_bt.reportsMissing(), m_bt.otherTraffic());
+    logLine(
+        "timing: send avg %llu max %llu ms, loop max %llu ms, slow loops %d, bitpool %d (%d-%d), start drop %lld ms",
+        static_cast<unsigned long long>(m_sendCount > 0 ? m_sendTotalMs / m_sendCount : 0),
+        static_cast<unsigned long long>(m_sendMaxMs), static_cast<unsigned long long>(m_loopMaxMs), m_slowLoops,
+        m_bitpool, m_bitpoolMin, m_bitpoolMax, static_cast<long long>(m_startDropped * 1000 / m_sc.rate));
+    m_bt.logEventCounts();
+    if (m_bt.eventReadsOn())
+    {
+        m_bt.probeLink(); // the answers come back to us only while the events are read
+    }
+    m_sendMaxMs = m_sendTotalMs = m_loopMaxMs = 0;
+    m_sendCount = m_slowLoops = 0;
 }
 
 bool StreamRun::run()
@@ -294,8 +481,21 @@ bool StreamRun::run()
     m_waitUntil = m_capturing ? 0 : m_streamStart;
     m_lastStats = m_streamStart;
 
+    std::uint64_t loopStart = m_clock.nowMs();
+
     while (!m_bt.linkLost() && !m_media.closed && !m_session.stopRequested())
     {
+        const std::uint64_t roundStart = m_clock.nowMs();
+
+        if (roundStart - loopStart > m_loopMaxMs && roundStart != loopStart)
+        {
+            m_loopMaxMs = roundStart - loopStart;
+        }
+        if (roundStart - loopStart > 40)
+        {
+            m_slowLoops++;
+        }
+        loopStart = roundStart;
         if (m_capturing)
         {
             drainCapture();
@@ -304,27 +504,48 @@ bool StreamRun::run()
         {
             feedSilenceAndRestart();
         }
+        noteSection("capture", roundStart);
 
-        // trim the fifo if it grew past the target latency
+        // trim the fifo if it grew past the target latency; in the first seconds what the
+        // capture had kept for us is old, and playing it would only delay the sound
+        if (roundStart - m_streamStart < kStartFlushMs)
+        {
+            while (m_framesTarget > 0 && m_fifo.size() > m_startLimit)
+            {
+                m_fifo.dropFront(m_framesTarget);
+                m_startDropped += m_framesTarget;
+            }
+        }
         while (m_framesTarget > 0 && m_fifo.size() > m_trimLimit)
         {
             m_fifo.dropFront(m_framesTarget);
             m_trimmed += m_framesTarget;
         }
 
+        const std::uint64_t adaptStart = m_clock.nowMs();
+
+        adaptBitrate();
+        applyReadBudget();
+        noteSection("rate and read budget", adaptStart);
+
         std::uint32_t pollMs = 2;
+        const std::uint64_t sendStart = m_clock.nowMs();
 
         if (!sendPackets(pollMs))
         {
             break;
         }
+        noteSection("sending", sendStart);
         publishNumbers();
         if (m_clock.nowMs() - m_lastStats >= 10000)
         {
             m_lastStats = m_clock.nowMs();
             logStatus(); // every 10 s
         }
+        const std::uint64_t pollStart = m_clock.nowMs();
+
         m_bt.poll(pollMs);
+        noteSection("bluetooth poll", pollStart);
     }
 
     logLine("stream: ended after %ld s, %d packets, %d capture records, trimmed %ld",

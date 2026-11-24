@@ -15,6 +15,10 @@ log file -> lock (flock)
   -> AvcapCapture::close
 ```
 
+- If the controller's USB device goes away while the radio is on (the console reset its
+  Bluetooth chip), the loop notices (`IRadio::deviceLost`, [bluetooth.md section 4](bluetooth.md#4-hci-transport-corebluetoothusb_hci_transportcpp-platformps5ugen_devicecpp)),
+  logs `service: the controller's USB device is gone, closing the radio`, shows a
+  notification and closes the radio; starting it again opens the new device.
 - `/data/bluev/bluev.lock` is taken with
   `flock(LOCK_EX|LOCK_NB)` so only one copy runs. If the lock is held, the new
   copy looks for another process already named `bluev.elf` (elfldr names an
@@ -39,7 +43,7 @@ log file -> lock (flock)
 
 | State | Meaning |
 |---|---|
-| `idle` | page scan on; a paired device that dials in is accepted automatically |
+| `idle` | the radio is off, or on with no read waiting ([12f](shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23)): nothing hears a device that dials in, press Connect |
 | `scanning` | inquiry running (30 s); results are listed in the UI |
 | `connecting` | paging or adopting an inbound link, securing it, setting up AVDTP |
 | `streaming` | audio is flowing; ends when the device leaves or on `disconnect` |
@@ -51,7 +55,7 @@ runs `A2dpSession::start` -> `A2dpStreamer::run` -> `A2dpSession::stop` ->
 
 ## 2. Web interface (`service/web.cpp`, `web/index.html`)
 
-One accept thread (it polls every 200 ms so it notices a stop request); each
+One accept thread (it polls every 200 ms so it notices a stop request, and ends with a `failed` flag when the listening socket reports an error: the service checks it once a second and starts the server again, which is what brings the page back after the console's network went down and up); each
 connection is served by a short-lived thread (browsers keep idle sockets open
 and must not block the others), at most 8 at a time, reserved with a
 compare-and-swap. `stop()` stops accepting and then waits for the requests in
@@ -71,6 +75,7 @@ it comes up once the network does). No authentication: by default it listens on 
 | `POST /api/autostart?on=1\|0` | open the radio with the USB adapter in use when BlueV starts ([section 12b](shared-chip.md#12b-starting-the-radio)); needs the radio on with a USB adapter, `409` otherwise; `on=0` always works; `/api/status` shows `radio.autostart` |
 | `POST /api/network?v=lan\|local` | who can open the page: `lan` (the default) every address of the console, `local` only the loopback address, which the console's own browser (the home screen entry) uses; saved in the settings file (`network=`); the radio thread starts the server again right after the answer, so the answer still arrives, and a PC or phone is shut out from then on; `/api/status` shows `network` |
 | `POST /api/quality?v=0\|1` | the sound quality of the next stream, 0 normal (bitpool 40), 1 high (bitpool 53); saved in the settings file; `/api/status` shows `quality` |
+| `POST /api/reads?events=N&acl=M` | how many controller reads a stream keeps waiting (events 0..48, ACL 0..16, -1 = all); not saved, the default is 0 and 0; only for measuring ([12f](shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23)) |
 | `POST /api/volume?v=N` | set the headset's volume, N = 0..100 percent; only while streaming to a headset that reports a volume ([section 9a](audio.md#9a-the-headsets-volume-avrcp-coreaudioavrcp)) |
 | `POST /api/quit` | stop the service |
 
@@ -92,8 +97,14 @@ refused unless the service is idle.
 - `AppLog::line` formats the line, then under the `LogBuffer` mutex only touches memory
   (the numbered ring buffer of 300 lines and a pending-text buffer for the
   file). The file is written by `flush()`, called once a second from the
-  service tick and on close, with its own lock, so a log call never waits for
-  file I/O. A crash can lose at most the last second of the file. Nothing is
+  service tick (radio on) or from the idle loop (radio off; it was not before, and
+  a copy that died while idle left nothing), and on close, with its own lock, so a
+  log call never waits for file I/O. A crash can lose at most the last second of the file.
+  While idle a line `alive: up N min, radio on|off, web up|down` is added every minute,
+  and a fatal signal (`SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGFPE`, `SIGABRT`, `SIGHUP`, `SIGINT`,
+  `SIGQUIT`, `SIGUSR1`) appends `FATAL: ended by signal N` to the file before the
+  process ends (`installCrashTrace`); `SIGKILL` cannot be caught, so a copy that
+  vanishes with neither line was killed from outside. Nothing is
   written to the console's kernel log: it is shared with the whole system and
   BlueV's lines (about a tenth of what a 25 s look at it showed) only made it
   harder to read; the page and the file are where to look.
@@ -128,7 +139,7 @@ Rules that keep this race-free:
 
 Tests: `tests/run.sh [plain|thread|address] [gtest filter]` builds everything
 except the PS5 adapters on a PC (CMake + Ninja, googletest submodule) and runs
-about 350 tests: the Bluetooth stack against a fake controller and a fake
+about 400 tests: the Bluetooth stack against a fake controller and a fake
 speaker (pairing, paging, L2CAP, flow control, AVDTP, the streaming loop), the
 service against a gmock radio over real HTTP (including 8 clients firing random
 requests), and the file/log/notification helpers. The PS5 adapters under
