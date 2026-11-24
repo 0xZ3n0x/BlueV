@@ -40,6 +40,12 @@ class UsbHciTransport final : public IHciTransport
     int nextEvent(std::uint8_t* out, int max) override;
     int nextAcl(std::uint8_t* out, int max) override;
     bool sendAcl(const std::uint8_t* packet, std::uint32_t length) override;
+    bool aclOutReady() override;
+    bool deviceLost() override
+    {
+        return m_gone;
+    }
+    void setReadBudget(int events, int acl) override;
     int detectRoles(std::uint32_t timeoutMs) override;
     std::string describe(const char* why) override;
 
@@ -48,6 +54,8 @@ class UsbHciTransport final : public IHciTransport
     static constexpr int kAclFirst = 48, kAclLast = 63;
     static constexpr int kAclOut = 64;
     static constexpr int kEventBuf = 0x104;
+    static constexpr int kGoneAfterFailures = 64; // a whole table of reads
+    static constexpr unsigned kStartErrorsLogged = 8;
 
     std::uint32_t reap();
     void onTransferComplete(int t);
@@ -55,6 +63,7 @@ class UsbHciTransport final : public IHciTransport
     int openTransfers(int first, int last, std::uint8_t endpoint, std::uint32_t length);
     void closeDevice();
     void armReads(int first, int count, std::uint32_t length);
+    void stopReads(int from, int to);
 
     IUsbDevice& m_device;
     IClock& m_clock;
@@ -73,8 +82,12 @@ class UsbHciTransport final : public IHciTransport
     unsigned m_dgCommands = 0, m_dgEventData = 0, m_dgAclData = 0;
 
     bool m_pending[kUsbTransfers] = {}; // started and not yet complete
-    int m_eventReads = 0;
+    int m_eventReads = 0;               // opened
     int m_aclReads = 0;
+    int m_startFailures = 0; // reads in a row that could not be started
+    bool m_gone = false;     // see deviceLost()
+    int m_eventBudget = 0;   // kept waiting, see setReadBudget()
+    int m_aclBudget = 0;
     HciPacketQueue m_events;
     HciPacketQueue m_acl;
 };

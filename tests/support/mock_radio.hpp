@@ -40,10 +40,14 @@ class MockRadio : public IRadio
     MOCK_METHOD(int, volume, (), (override));
     MOCK_METHOD(void, setVolume, (int volume), (override));
     MOCK_METHOD(void, setQuality, (int quality), (override));
+    MOCK_METHOD(void, setStreamReads, (int events, int acl), (override));
+    MOCK_METHOD(void, setReadsActive, (bool active), (override));
+    MOCK_METHOD(bool, deviceLost, (), (override));
 
     MockRadio()
     {
         ON_CALL(*this, volume()).WillByDefault(::testing::Return(-1));
+        ON_CALL(*this, deviceLost()).WillByDefault(::testing::Return(false));
     }
 };
 

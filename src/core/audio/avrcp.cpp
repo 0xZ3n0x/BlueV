@@ -175,6 +175,10 @@ void Avrcp::service()
     {
         return; // openChannel() polls, and the tick can call this again
     }
+    if (!m_bt.aclReadsOn())
+    {
+        return; // a stream that reads nothing cannot hear the answers (asking cost it ten seconds)
+    }
     const int wanted = m_wanted.exchange(-1);
 
     if (m_channel.up && m_channel.configured)

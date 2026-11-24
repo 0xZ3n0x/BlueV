@@ -138,6 +138,7 @@ int main()
     // us could send SIGTERM before we are ready to treat it as "quit
     // peacefully" rather than its default disposition (terminate at once).
     bluev::installQuitSignalHandling();
+    bluev::installCrashTrace(kLogPath);
 
     bluev::LogBuffer buffer;
     bluev::LogFile file;

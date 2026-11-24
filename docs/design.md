@@ -64,3 +64,9 @@ Choices made, and what was tried and not chosen.
 | Compute the NIDs from the function names (SDK `nid_encode`) | Its implementation is not in the SDK libraries; the 8 NIDs stay as strings, each next to its name |
 | Test `src/platform/ps5/` on the PC | It cannot run there; it is compiled by the console build and checked on the console, with the external adapter |
 | Convert `tools/usbprobe` (C) to C++ | A separate diagnostic payload; not worth it |
+| Keep 1 event read waiting while streaming | Tried (2026-11-23): the console's own command replies still came to us and a gamepad switched off and on did not reconnect ([12f](shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23)) |
+| Stop reads one at a time, or let event reads run out by themselves | Stopping costs nothing (0 ms); a read left waiting takes the console's next packet |
+| An automatic bitrate drop that only the speaker's reports could trigger | No reports are read while streaming; the FIFO filling is the signal ([section 10](audio.md#10-audio-streaming-loop-a2dpstreamerrun)) |
+| A 300 ms FIFO | Absorbed short stalls but added up to 300 ms of delay for about 20 s each time; 150 ms |
+| Give the packets we take back to the console (a kernel hook or injection into its waiting reads) | Needs the console's USB and Bluetooth driver structures, found by reverse engineering its kernel; no payload API reaches them, a survey of such structures crashed a console (12), and it would not fix the chip's own scheduling ([12f](shared-chip.md#12f-reads-only-while-something-needs-them-2026-11-23)) |
+| Use the console's own Bluetooth stack for the audio link | It has no A2DP, AVDTP, AVRCP or SBC; only HID. Another project searched all of the decrypted system software |

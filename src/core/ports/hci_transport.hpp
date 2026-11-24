@@ -46,6 +46,32 @@ class IHciTransport
     // One ACL packet: HCI ACL header, then the data. False when it was not accepted.
     virtual bool sendAcl(const std::uint8_t* packet, std::uint32_t length) = 0;
 
+    // Whether sendAcl() would take a packet at once. A transport that has to wait
+    // for the controller says no meanwhile, so that a caller with other work
+    // (the audio capture) can do it instead of waiting inside sendAcl().
+    virtual bool aclOutReady()
+    {
+        return true;
+    }
+
+    // True once the controller's USB device is gone for good (the console reset its Bluetooth
+    // chip, say): every attempt to start a read failed. Nothing is left to do with the
+    // transport but close it.
+    virtual bool deviceLost()
+    {
+        return false;
+    }
+
+    // How many read transfers to keep waiting, at most, for events and for ACL
+    // data. On the console's chip every packet that comes in goes to one waiting
+    // read, ours or the system's, so each of ours takes packets the system's own
+    // Bluetooth stack would have needed. Reads beyond the numbers are ended and
+    // not started again until a larger number is set. A transport without such
+    // reads ignores this.
+    virtual void setReadBudget(int /*events*/, int /*acl*/)
+    {
+    }
+
     // Find out which endpoint carries the events when the layout is not
     // known: 1 = as selected, 2 = events on the second IN pipe (select the
     // standard layout and open again), 0 = no answer or not supported.

@@ -14,6 +14,11 @@ namespace bluev
 // looking for this process by name.
 void installQuitSignalHandling();
 
+// Makes a crash or a hang-up leave a line in the log file: a copy that ends this way
+// never reaches its normal flush, and nothing else says why it is gone. `path` must
+// stay valid for the life of the process.
+void installCrashTrace(const char* path);
+
 // True once, the first time it is called after a SIGTERM landed since the
 // last call. Safe to poll from the service loop.
 bool takeQuitRequestedFlag();

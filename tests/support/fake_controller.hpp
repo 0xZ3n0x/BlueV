@@ -72,6 +72,18 @@ class FakeController final : public IHciTransport
         return take(m_acl, out, max);
     }
     bool sendAcl(const std::uint8_t* packet, std::uint32_t length) override;
+    bool aclOutReady() override
+    {
+        return !aclOutBusy;
+    }
+    bool deviceLost() override
+    {
+        return deviceGone;
+    }
+    void setReadBudget(int events, int acl) override
+    {
+        readBudgets.emplace_back(events, acl);
+    }
     int detectRoles(std::uint32_t) override
     {
         return detectResult;
@@ -94,7 +106,10 @@ class FakeController final : public IHciTransport
     std::uint16_t manufacturer = 0x000a; // CSR
     bool bredr = true;
     bool openOk = true;
-    bool aclSendOk = true; // sendAcl() fails when off
+    bool aclSendOk = true;                        // sendAcl() fails when off
+    bool aclOutBusy = false;                      // the controller does not take another packet
+    bool deviceGone = false;                      // the USB device is gone (deviceLost)
+    std::vector<std::pair<int, int>> readBudgets; // every setReadBudget(events, acl) call
     int detectResult = 1;
     std::vector<std::uint16_t> silentOpcodes;  // commands that get no answer
     std::vector<std::uint16_t> failingOpcodes; // commands answered with status 0x01

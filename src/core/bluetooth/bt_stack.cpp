@@ -256,7 +256,9 @@ void BtStack::popInFlight()
     m_ifCount--;
 }
 
-// Credits > 0 and at most 5 unconfirmed packets in flight. A packet with no
+// The USB transfer for ACL data is free, credits > 0 and at most 5 unconfirmed
+// packets in flight (the first lets the stream go on reading the capture while
+// the chip is busy, instead of waiting inside send()). A packet with no
 // completion report after 31 ms is assumed complete (completionsAssumed()).
 //
 // Limits of 3 unconfirmed packets and 100 ms would cap the stream near 40
@@ -285,7 +287,7 @@ bool BtStack::canSend()
         } while (m_ifCount > 5);
         ok = m_ifCount < 6;
     }
-    return m_credits > 0 && ok;
+    return m_credits > 0 && ok && m_transport.aclOutReady();
 }
 
 } // namespace bluev

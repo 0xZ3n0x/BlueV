@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // paging, encryption and the connect / disconnect entry points
+#include <cstdio>
 #include <cstring>
 
 #include "core/bluetooth/bt_stack.hpp"
@@ -27,6 +28,7 @@ using CreateConn = std::uint8_t[kCreateConnLength];
 constexpr std::uint32_t kAuthMs = 18000;
 constexpr std::uint32_t kAuthResendMs = 5000;
 constexpr std::uint32_t kEncryptionMs = 10000;
+constexpr std::uint16_t kFlushTimeoutSlots = 240; // 150 ms in 0.625 ms slots
 
 // Alternates between the tries: the odd ones use DM1 only and no role switch,
 // the even ones every packet type.
@@ -286,7 +288,67 @@ bool BtStack::encryptLink()
 
     cmd(hci::kRoleDiscovery, handle, 2);
     poll(100);
+    tuneLink(handle);
     return true;
+}
+
+// The page may have asked for DM1 only (see setPageVariant), and the controller
+// then keeps to the small packets: a 965-byte media packet needs 36 of them.
+// Allow every packet type again, and keep the headset from putting the link
+// into sniff or hold mode in the middle of a stream (link policy 0). Both are
+// requests: the answers are logged (Connection Packet Type Changed, Mode Change).
+void BtStack::tuneLink(const std::uint8_t* handle)
+{
+    std::uint8_t type[4];
+    std::uint8_t policy[4];
+
+    std::memcpy(type, handle, 2);
+    putLe16(type + 2, 0xcc18); // DM1 DH1 DM3 DH3 DM5 DH5, every EDR type allowed
+    cmd(hci::kChangeConnPacketType, type, 4);
+    poll(50);
+    std::memcpy(policy, handle, 2);
+    putLe16(policy + 2, 0x0000);
+    cmd(hci::kWriteLinkPolicy, policy, 4);
+    poll(50);
+
+    // Media packets are sent as automatically flushable. With the default (never
+    // flush) the controller repeats a packet until the speaker has it, and every
+    // packet behind it waits: one bad moment on the air becomes a long stall. With
+    // a limit it drops the stale packet (a short gap) and goes on with fresh ones.
+    std::uint8_t flush[4];
+
+    std::memcpy(flush, handle, 2);
+    putLe16(flush + 2, kFlushTimeoutSlots);
+    cmd(hci::kWriteAutoFlushTimeout, flush, 4);
+    poll(50);
+}
+
+void BtStack::logEventCounts()
+{
+    char text[160];
+    int used = std::snprintf(text, sizeof text, "events:");
+
+    for (int code = 0; code < 256 && used < static_cast<int>(sizeof text) - 14; code++)
+    {
+        if (m_eventCounts[code] != 0)
+        {
+            used += std::snprintf(text + used, sizeof text - static_cast<std::size_t>(used), " %02x=%u", code,
+                                  static_cast<unsigned>(m_eventCounts[code]));
+            m_eventCounts[code] = 0;
+        }
+    }
+    logLine("%s", text);
+}
+
+// Asks for the signal strength and the link quality of the link; the answers
+// are logged when they arrive (onCommandComplete).
+void BtStack::probeLink()
+{
+    std::uint8_t handle[2];
+
+    putLe16(handle, m_handle);
+    cmd(hci::kReadRssi, handle, 2);
+    cmd(hci::kReadLinkQuality, handle, 2);
 }
 
 void BtStack::resetLinkState()
@@ -392,6 +454,12 @@ bool BtStack::adoptIncoming()
 void BtStack::disconnect()
 {
     const unsigned oldGen = m_connGen;
+
+    if (m_transport.deviceLost())
+    {
+        m_disconnected = true; // nobody can answer a Disconnect any more
+        return;
+    }
 
     if (m_handle != 0 && !m_disconnected)
     {

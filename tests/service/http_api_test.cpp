@@ -196,6 +196,61 @@ TEST_F(HttpApi, StartingAndStoppingTheRadio)
     ASSERT_TRUE(waitFor([&] { return status().find("\"on\":false") != std::string::npos; }, 2000));
 }
 
+TEST_F(HttpApi, TheControllerReadsWaitOnlyWhileSomethingNeedsThem)
+{
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    {
+        InSequence order;
+        EXPECT_CALL(radio, open("")).WillOnce(Return(true));
+        EXPECT_CALL(radio, setReadsActive(false)).Times(1); // set up: nothing is waiting for packets any more
+        EXPECT_CALL(radio, setTick(_)).Times(1);
+    }
+    EXPECT_EQ(200, request("POST", "/api/radio/on?adapter=internal", body));
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":true") != std::string::npos; }, 2000));
+
+    {
+        InSequence order;
+        EXPECT_CALL(radio, setReadsActive(true)).Times(1); // closing asks the controller things
+        EXPECT_CALL(radio, close()).Times(1);
+    }
+    EXPECT_EQ(200, request("POST", "/api/radio/off", body));
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":false") != std::string::npos; }, 2000));
+}
+
+TEST_F(HttpApi, TheWebServerStartsAgainWhenItsListeningSocketFails)
+{
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_EQ(200, request("GET", "/api/status", body));
+    breakWebServer();
+    EXPECT_TRUE(waitFor(
+        [&] {
+            std::string again;
+            return request("GET", "/api/status", again) == 200;
+        },
+        5000))
+        << sink.all();
+    EXPECT_TRUE(sink.has("web: the listening socket failed, starting the server again"));
+}
+
+TEST_F(HttpApi, AControllerThatIsGoneClosesTheRadioAndSaysSo)
+{
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_CALL(radio, open("")).WillOnce(Return(true));
+    EXPECT_EQ(200, request("POST", "/api/radio/on?adapter=internal", body));
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":true") != std::string::npos; }, 2000));
+
+    EXPECT_CALL(radio, deviceLost()).WillRepeatedly(Return(true));
+    EXPECT_CALL(radio, close()).Times(1);
+    ASSERT_TRUE(waitFor([&] { return status().find("\"on\":false") != std::string::npos; }, 3000));
+    EXPECT_TRUE(sink.has("service: the controller's USB device is gone, closing the radio"));
+}
+
 TEST_F(HttpApi, AnExternalAdapterIsOpenedByItsNode)
 {
     UsbDevice csr;
@@ -415,6 +470,22 @@ TEST_F(HttpApi, TheSoundQualityIsPassedOnAndRemembered)
     EXPECT_CALL(radio, setQuality(1)).Times(1);
     ASSERT_TRUE(startService());
     EXPECT_NE(std::string::npos, status().find("\"quality\":1"));
+}
+
+TEST_F(HttpApi, TheReadsKeptWhileStreamingArePassedOn)
+{
+    EXPECT_CALL(radio, setQuality(0)).Times(1);
+    ASSERT_TRUE(startService());
+    std::string body;
+
+    EXPECT_CALL(radio, setStreamReads(1, 0)).Times(1);
+    EXPECT_EQ(200, request("POST", "/api/reads?events=1&acl=0", body));
+    EXPECT_CALL(radio, setStreamReads(-1, -1)).Times(1);
+    EXPECT_EQ(200, request("POST", "/api/reads?events=-1&acl=-1", body));
+    EXPECT_EQ(400, request("POST", "/api/reads?events=49&acl=0", body));
+    EXPECT_EQ(400, request("POST", "/api/reads?events=1&acl=17", body));
+    EXPECT_EQ(400, request("POST", "/api/reads?events=x&acl=0", body));
+    EXPECT_EQ(400, request("POST", "/api/reads", body));
 }
 
 TEST_F(HttpApi, AFailedStartLeavesTheRadioOffWithTheReason)
